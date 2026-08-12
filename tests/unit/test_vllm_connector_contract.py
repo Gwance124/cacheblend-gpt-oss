@@ -459,6 +459,10 @@ def test_scheduler_records_all_groups_while_recomputing_every_token(
             null_blocks,
             num_external_tokens=0,
         )
+    with pytest.raises(
+        RuntimeError, match="not compatible with the request allocation"
+    ):
+        connector.request_finished_all_groups(request, ([99], [11]))
     assert connector.request_finished_all_groups(request, ([3], [11])) == (
         False,
         None,

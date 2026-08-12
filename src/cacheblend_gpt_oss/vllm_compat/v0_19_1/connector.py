@@ -126,6 +126,37 @@ _SUPPORTED_VLLM_VERSION = "0.19.1"
 _METADATA_SCHEMA_VERSION = METADATA_SCHEMA_VERSION
 
 
+def _is_ordered_subsequence(
+    observed: tuple[tuple[object, ...], ...],
+    allocated: tuple[tuple[int, ...], ...],
+) -> bool:
+    """Accept only allocation tables with vLLM-dropped rows removed.
+
+    The pinned scheduler calls ``remove_skipped_blocks`` immediately before
+    ``request_finished_all_groups``.  Sliding-window groups can therefore be a
+    shorter, order-preserving subsequence of their allocation-time table; a
+    completion must never introduce a new or reordered physical block.
+    https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/v1/core/sched/scheduler.py#L2022-L2038
+    """
+
+    if len(observed) != len(allocated):
+        return False
+    for current, original in zip(observed, allocated, strict=True):
+        if any(
+            isinstance(block_id, bool) or not isinstance(block_id, int)
+            for block_id in current
+        ):
+            return False
+        cursor = 0
+        for block_id in current:
+            while cursor < len(original) and original[cursor] != block_id:
+                cursor += 1
+            if cursor == len(original):
+                return False
+            cursor += 1
+    return True
+
+
 def _v2_model_runner_enabled() -> bool:
     """Mirror the pinned vLLM environment flag without importing GPU workers."""
 
@@ -842,6 +873,28 @@ class GptOssCacheBlendConnector(
         self._require_role(KVConnectorRole.SCHEDULER, "request_finished_all_groups")
         self._validate_group_count(block_ids)
         request_id = request.request_id
+        # vLLM calls this HMA hook before releasing the group's blocks.  The
+        # count check above prevents a single-group fallback, but a table from
+        # another request would still be an invalid completion receipt. vLLM
+        # may drop old sliding-window blocks before this hook, so accept only
+        # an order-preserving subsequence of the allocation-time tables. This
+        # remains permissive for early cancellation, where no allocation exists.
+        state = self._control_plane.state(request_id)
+        if state.allocation is not None:
+            try:
+                observed_block_ids = tuple(tuple(group) for group in block_ids)
+            except TypeError as exc:
+                raise RuntimeError(
+                    "Completion block tables are not valid grouped sequences."
+                ) from exc
+            if not _is_ordered_subsequence(
+                observed_block_ids,
+                state.allocation.grouped_blocks.block_ids_by_group,
+            ):
+                raise RuntimeError(
+                    "Completion block tables are not compatible with the "
+                    "request allocation."
+                )
         if self._scheduler_resources is not None:
             self._scheduler_resources.runtime.discard(request_id)
         self._scheduler_lookup_metadata.pop(request_id, None)
