@@ -94,8 +94,10 @@ segmentation, SHA-256 fingerprints, exact-token verification, weighted
 non-overlap matching, and injected storage boundaries. CPU tests use fakes for
 each boundary. The dormant CPU-only `ForwardRowPlan` and
 `ForwardRowPlanContext` also validate full-shaped per-layer row coverage for
-the future M6 spike; they are not wired into vLLM. A lower-than-100%
-`RecomputePolicy` remains future work.
+the future M6 spike; they are not wired into vLLM. The dormant CPU-only
+`CacheBlendSelectionPolicy` and its strict selection-sweep artifact format
+provide deterministic lower-than-100% row plans, but remain disconnected from
+vLLM until the required GPU correctness gates pass.
 
 `vllm_compat.v0_19_1.selective_registry` adds the corresponding guarded
 registration seam. It requires explicit proof of all M3--M5 prerequisites,
