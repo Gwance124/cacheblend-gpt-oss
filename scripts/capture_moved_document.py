@@ -323,6 +323,7 @@ def main() -> int:
     fixture = build_correctness_fixture(CorrectnessCase(args.case))
     connector = None
     target_prompt_tokens_processed: int | None = None
+    target_prompt_source_delta: dict[str, int] | None = None
     target_timing_delta: VllmTimingSnapshot | None = None
     if mode is CorrectnessRunMode.CACHEBLEND_100PCT:
         initial_metrics = client.get_text("/metrics")
@@ -425,8 +426,11 @@ def main() -> int:
             vllm_prompt_source_delta(initial_prompt_source, source_prompt_source),
             expected_prompt_tokens=len(fixture.source_prompt_token_ids),
         )
+        target_prompt_source_delta = vllm_prompt_source_delta(
+            source_prompt_source, target_prompt_source
+        )
         require_full_prefill_prompt_source_delta(
-            vllm_prompt_source_delta(source_prompt_source, target_prompt_source),
+            target_prompt_source_delta,
             expected_prompt_tokens=len(fixture.target_prompt_token_ids),
         )
         source_prefill_delta = vllm_prefill_work_snapshot_delta(
@@ -510,8 +514,11 @@ def main() -> int:
         if target_prompt_tokens_processed != len(fixture.target_prompt_token_ids):
             raise ValueError("target native prompt-token delta does not match fixture")
         after_prompt_source = parse_vllm_prompt_source_snapshot(after_metrics)
+        target_prompt_source_delta = vllm_prompt_source_delta(
+            initial_prompt_source, after_prompt_source
+        )
         require_full_prefill_prompt_source_delta(
-            vllm_prompt_source_delta(initial_prompt_source, after_prompt_source),
+            target_prompt_source_delta,
             expected_prompt_tokens=len(fixture.target_prompt_token_ids),
         )
         target_prefill_work = parse_vllm_prefill_work_snapshot(after_metrics)
@@ -559,6 +566,7 @@ def main() -> int:
                     }
                 ),
                 "native_prompt_tokens_processed": target_prompt_tokens_processed,
+                "native_prompt_source_delta": target_prompt_source_delta,
                 "vllm_timing_delta": (
                     None
                     if target_timing_delta is None
