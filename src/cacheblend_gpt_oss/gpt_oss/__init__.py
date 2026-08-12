@@ -19,6 +19,17 @@ from cacheblend_gpt_oss.gpt_oss.layout import (
     extract_gpt_oss_layer_index,
     plan_token_scatter,
 )
+from cacheblend_gpt_oss.gpt_oss.torch_yarn import (
+    GPT_OSS_KV_DTYPE,
+    GPT_OSS_YARN_CONFIG,
+    GPT_OSS_YARN_INVERSE_FREQUENCIES,
+    GptOssTorchYarnCorrector,
+    TorchYarnError,
+    TorchYarnErrorCode,
+    TorchYarnTensorArithmetic,
+    YarnTensorArithmetic,
+    load_torch_yarn_corrector,
+)
 from cacheblend_gpt_oss.gpt_oss.yarn import (
     YarnRopeConfig,
     apply_yarn_to_key,
@@ -28,14 +39,18 @@ from cacheblend_gpt_oss.gpt_oss.yarn import (
 )
 
 __all__ = [
+    "GPT_OSS_KV_DTYPE",
     "GPT_OSS_MAX_CONTEXT_TOKENS",
     "GPT_OSS_NUM_CACHE_GROUPS",
     "GPT_OSS_NUM_LAYERS",
     "GPT_OSS_SLIDING_WINDOW",
+    "GPT_OSS_YARN_CONFIG",
+    "GPT_OSS_YARN_INVERSE_FREQUENCIES",
     "AttentionKind",
     "AttentionLayerLayout",
     "CacheGroupLayout",
     "GptOssHybridCacheLayout",
+    "GptOssTorchYarnCorrector",
     "GroupBlockTable",
     "GroupTokenScatterSpan",
     "HybridLayoutError",
@@ -43,10 +58,15 @@ __all__ = [
     "LayerTokenScatterSpan",
     "TokenScatterPlan",
     "TokenTransfer",
+    "TorchYarnError",
+    "TorchYarnErrorCode",
+    "TorchYarnTensorArithmetic",
     "YarnRopeConfig",
+    "YarnTensorArithmetic",
     "apply_yarn_to_key",
     "correct_shifted_key",
     "extract_gpt_oss_layer_index",
+    "load_torch_yarn_corrector",
     "plan_token_scatter",
     "yarn_inverse_frequencies",
     "yarn_magnitude_scale",
