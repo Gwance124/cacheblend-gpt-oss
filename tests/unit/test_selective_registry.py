@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import replace
+from hashlib import sha256
+from pathlib import Path
 
 import pytest
 
@@ -283,4 +285,74 @@ def test_gate_evidence_requires_lowercase_sha256_digests(field: str) -> None:
     values[field] = "not-a-digest"
     with pytest.raises(SelectiveRegistrationError) as error:
         SelectiveGateEvidence(**values)
+    assert error.value.code is SelectiveRegistrationErrorCode.INVALID_EVIDENCE
+
+
+def test_gate_evidence_can_be_derived_from_regular_artifacts(tmp_path: Path) -> None:
+    paths = []
+    for index in range(5):
+        path = tmp_path / f"artifact-{index}.json"
+        path.write_bytes(f"artifact-{index}".encode("ascii"))
+        paths.append(path)
+
+    evidence = SelectiveGateEvidence.from_artifact_paths(
+        runtime=paths[0],
+        full_prefill=paths[1],
+        transfer=paths[2],
+        yarn=paths[3],
+        hybrid_sink=paths[4],
+    )
+
+    assert evidence.runtime_digest == sha256(b"artifact-0").hexdigest()
+    assert evidence.full_prefill_digest == sha256(b"artifact-1").hexdigest()
+    assert evidence.transfer_digest == sha256(b"artifact-2").hexdigest()
+    assert evidence.yarn_digest == sha256(b"artifact-3").hexdigest()
+    assert evidence.hybrid_sink_digest == sha256(b"artifact-4").hexdigest()
+    assert SelectiveGateEvidence.from_dict(evidence.to_dict()) == evidence
+
+
+def test_gate_evidence_decoder_rejects_schema_and_extra_keys() -> None:
+    values = _ready().evidence
+    assert values is not None
+    encoded = values.to_dict()
+    encoded["unexpected"] = True
+    with pytest.raises(SelectiveRegistrationError) as error:
+        SelectiveGateEvidence.from_dict(encoded)
+    assert error.value.code is SelectiveRegistrationErrorCode.INVALID_EVIDENCE
+
+    encoded = values.to_dict()
+    encoded["schema_version"] = 2
+    with pytest.raises(SelectiveRegistrationError) as error:
+        SelectiveGateEvidence.from_dict(encoded)
+    assert error.value.code is SelectiveRegistrationErrorCode.INVALID_EVIDENCE
+
+
+@pytest.mark.parametrize("bad_kind", ["missing", "directory", "symlink"])
+def test_gate_evidence_artifact_failures_are_bounded(
+    tmp_path: Path, bad_kind: str
+) -> None:
+    paths = []
+    for index in range(5):
+        path = tmp_path / f"artifact-{index}"
+        path.write_bytes(b"ok")
+        paths.append(path)
+    if bad_kind == "missing":
+        paths[2] = tmp_path / "missing"
+    elif bad_kind == "directory":
+        paths[2].unlink()
+        paths[2].mkdir()
+    else:
+        target = tmp_path / "target"
+        target.write_bytes(b"ok")
+        paths[2].unlink()
+        paths[2].symlink_to(target)
+
+    with pytest.raises(SelectiveRegistrationError) as error:
+        SelectiveGateEvidence.from_artifact_paths(
+            runtime=paths[0],
+            full_prefill=paths[1],
+            transfer=paths[2],
+            yarn=paths[3],
+            hybrid_sink=paths[4],
+        )
     assert error.value.code is SelectiveRegistrationErrorCode.INVALID_EVIDENCE

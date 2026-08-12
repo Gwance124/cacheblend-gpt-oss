@@ -36,6 +36,32 @@ the complete output. This gate only proves that the pinned stock backend has
 the expected extension contract; it does not prove CacheBlend transfer,
 position correction, sink parity, logits equivalence, or speedup.
 
+## Evidence-hash handoff (after M3--M5 review)
+
+Do not type five arbitrary hexadecimal values into a future registration
+configuration. After the M3--M5 artifacts have been independently reviewed,
+copy the exact files to one immutable handoff directory and derive the strict
+digest bundle from their bytes:
+
+```bash
+export CACHEBLEND_GATE_DIR=/absolute/path/to/reviewed-m3-m5-artifacts
+uv run python scripts/hash_selective_gate_artifacts.py \
+  --runtime "$CACHEBLEND_GATE_DIR/runtime.txt" \
+  --full-prefill "$CACHEBLEND_GATE_DIR/frozen-bf16-tolerance.json" \
+  --transfer "$CACHEBLEND_GATE_DIR/transfer-evidence.json" \
+  --yarn "$CACHEBLEND_GATE_DIR/yarn-correction.txt" \
+  --hybrid-sink "$CACHEBLEND_GATE_DIR/hybrid-sink.txt" \
+  --output "$CACHEBLEND_GATE_DIR/selective-gate-evidence.json" \
+  | tee "$CACHEBLEND_GATE_DIR/selective-gate-evidence.txt"
+```
+
+The helper accepts only regular, non-symlink files with bounded nonzero size,
+checks that each file is unchanged while read, and emits schema version 1 with
+five SHA-256 digests. The bundle is an identity handoff, not semantic proof:
+registration remains disabled until reviewers verify the contents and set all
+four prerequisite results from the corresponding M3--M5 gates. The digest
+JSON contains no prompt text, token IDs, request IDs, or document identifiers.
+
 ## M6 model/backend command (not yet enabled)
 
 Do not run a `CUSTOM` server command yet. This repository intentionally has no

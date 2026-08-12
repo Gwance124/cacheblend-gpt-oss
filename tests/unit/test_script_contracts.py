@@ -17,6 +17,10 @@ _responses = runpy.run_path(
     "scripts/check_responses_contract.py",
     run_name="cacheblend_responses_script_test",
 )
+_gate_hash = runpy.run_path(
+    "scripts/hash_selective_gate_artifacts.py",
+    run_name="cacheblend_gate_hash_script_test",
+)
 
 
 @pytest.mark.parametrize(
@@ -87,3 +91,7 @@ def test_capture_payload_is_json_serializable_without_nonfinite_values() -> None
     payload = _capture["_completion_payload"]((1, 2), full=False)
     encoded = json.dumps(payload, allow_nan=False)
     assert '"prompt": [1, 2]' in encoded
+
+
+def test_gate_hash_script_exposes_a_callable_main() -> None:
+    assert callable(_gate_hash["main"])

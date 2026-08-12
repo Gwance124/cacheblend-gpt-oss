@@ -113,6 +113,13 @@ evidence, YaRN correction, and hybrid/sink behavior. Four unbound boolean
 claims cannot enable registration. These digests are supplied by the eventual
 solab-g3 hand-off and are never Prometheus labels or request metadata.
 
+`SelectiveGateEvidence.from_artifact_paths` and
+`scripts/hash_selective_gate_artifacts.py` bind those digests to the exact
+reviewed files rather than operator-entered hex strings. The helper rejects
+missing, symlinked, empty, oversized, or changing files and emits a strict
+schema-1 handoff. Hashing does not approve the artifacts or enable the dormant
+registrar; semantic review and all prerequisite results remain mandatory.
+
 `gpt_oss.selective_kv` is the tensor-free companion for the backend boundary:
 it splits complete 24-layer hybrid spans by recompute ranges, preserves old
 source positions for YaRN correction, and computes destination physical slots

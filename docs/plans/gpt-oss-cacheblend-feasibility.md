@@ -367,6 +367,12 @@ SHA-256 digests for the exact runtime, full-prefill tolerance, 100%-transfer,
 YaRN, and hybrid/sink artifacts. This prevents a future plugin from turning
 four manually supplied booleans into an implicit serving default.
 
+The bundle can be derived with
+`scripts/hash_selective_gate_artifacts.py`, which hashes the five reviewed
+files with bounded regular-file and unchanged-while-read checks and emits a
+strict schema-1 JSON handoff. This binds registration identity to actual
+artifact bytes; it does not replace semantic review of the M3--M5 results.
+
 The tensor-free `gpt_oss.selective_kv` planner now splits complete hybrid
 layer spans by those row selections and preserves source-position metadata and
 physical destination slots. It is a structural contract for

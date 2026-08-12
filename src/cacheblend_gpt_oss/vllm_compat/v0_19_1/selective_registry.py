@@ -20,14 +20,28 @@ target before this registrar is called.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
+from hashlib import sha256
 from importlib import import_module
-from typing import Any, NoReturn, Protocol
+from pathlib import Path
+from typing import Any, NoReturn, Protocol, cast
 
 GPT_OSS_MODEL_ARCHITECTURE = "GptOssForCausalLM"
 CUSTOM_ATTENTION_BACKEND_NAME = "CUSTOM"
 _PACKAGE_PREFIX = "cacheblend_gpt_oss.vllm_compat.v0_19_1."
+SELECTIVE_GATE_EVIDENCE_SCHEMA_VERSION = 1
+_EVIDENCE_KEYS = frozenset(
+    {
+        "schema_version",
+        "runtime_digest",
+        "full_prefill_digest",
+        "transfer_digest",
+        "yarn_digest",
+        "hybrid_sink_digest",
+    }
+)
 
 
 def _is_digest(value: object) -> bool:
@@ -83,6 +97,98 @@ class SelectiveGateEvidence:
     transfer_digest: str
     yarn_digest: str
     hybrid_sink_digest: str
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the strict, identifier-free handoff representation."""
+
+        return {
+            "schema_version": SELECTIVE_GATE_EVIDENCE_SCHEMA_VERSION,
+            "runtime_digest": self.runtime_digest,
+            "full_prefill_digest": self.full_prefill_digest,
+            "transfer_digest": self.transfer_digest,
+            "yarn_digest": self.yarn_digest,
+            "hybrid_sink_digest": self.hybrid_sink_digest,
+        }
+
+    @classmethod
+    def from_dict(cls, value: object) -> SelectiveGateEvidence:
+        """Decode one canonical evidence handoff without trusting extra keys."""
+
+        if (
+            not isinstance(value, Mapping)
+            or frozenset(value) != _EVIDENCE_KEYS
+            or isinstance(value.get("schema_version"), bool)
+            or value.get("schema_version") != SELECTIVE_GATE_EVIDENCE_SCHEMA_VERSION
+        ):
+            _fail(SelectiveRegistrationErrorCode.INVALID_EVIDENCE)
+        fields = (
+            "runtime_digest",
+            "full_prefill_digest",
+            "transfer_digest",
+            "yarn_digest",
+            "hybrid_sink_digest",
+        )
+        values = tuple(value.get(field) for field in fields)
+        if any(not _is_digest(item) for item in values):
+            _fail(SelectiveRegistrationErrorCode.INVALID_EVIDENCE)
+        return cls(*cast(tuple[str, ...], values))
+
+    @classmethod
+    def from_artifact_paths(
+        cls,
+        *,
+        runtime: Path,
+        full_prefill: Path,
+        transfer: Path,
+        yarn: Path,
+        hybrid_sink: Path,
+    ) -> SelectiveGateEvidence:
+        """Bind evidence to exact immutable files from the GPU hand-off.
+
+        The registrar only consumes digests, but accepting operator-entered
+        hex strings alone would make the proof bundle unauditable.  This
+        helper hashes regular files with bounded size, rejects symlinks and
+        missing paths, and maps every filesystem failure to the same bounded
+        ``INVALID_EVIDENCE`` code.  Artifact semantics remain the caller's
+        responsibility and are reviewed separately before registration.
+        """
+
+        paths = (runtime, full_prefill, transfer, yarn, hybrid_sink)
+        digests: list[str] = []
+        try:
+            for path in paths:
+                if not isinstance(path, Path) or path.is_symlink():
+                    _fail(SelectiveRegistrationErrorCode.INVALID_EVIDENCE)
+                stat = path.stat()
+                if (
+                    not path.is_file()
+                    or stat.st_size <= 0
+                    or stat.st_size > 64 * 1024 * 1024
+                ):
+                    _fail(SelectiveRegistrationErrorCode.INVALID_EVIDENCE)
+                digest = sha256()
+                with path.open("rb") as handle:
+                    remaining = stat.st_size
+                    while remaining:
+                        chunk = handle.read(min(1024 * 1024, remaining))
+                        if not chunk:
+                            _fail(SelectiveRegistrationErrorCode.INVALID_EVIDENCE)
+                        digest.update(chunk)
+                        remaining -= len(chunk)
+                after = path.stat()
+                if (
+                    after.st_size != stat.st_size
+                    or after.st_mtime_ns != stat.st_mtime_ns
+                    or after.st_ino != stat.st_ino
+                    or after.st_dev != stat.st_dev
+                ):
+                    _fail(SelectiveRegistrationErrorCode.INVALID_EVIDENCE)
+                digests.append(digest.hexdigest())
+        except SelectiveRegistrationError:
+            raise
+        except (OSError, ValueError, TypeError):
+            _fail(SelectiveRegistrationErrorCode.INVALID_EVIDENCE)
+        return cls(*digests)
 
     def __post_init__(self) -> None:
         if not all(
@@ -335,6 +441,7 @@ def register_selective_extension(
 __all__ = [
     "CUSTOM_ATTENTION_BACKEND_NAME",
     "GPT_OSS_MODEL_ARCHITECTURE",
+    "SELECTIVE_GATE_EVIDENCE_SCHEMA_VERSION",
     "SelectiveExtensionRegistrar",
     "SelectiveGateEvidence",
     "SelectivePrerequisites",
