@@ -1,0 +1,320 @@
+"""Fail-closed validation of the pinned vLLM configuration objects.
+
+This is deliberately separate from CUDA/device validation.  The scheduler
+constructs its connector without owning model tensors, so this module checks
+only facts available in ``VllmConfig`` and the finalized ``KVCacheConfig``.
+
+The field names and KV-cache spec types are pinned to vLLM 0.19.1 commit
+``b1388b1fbf5aaef47937fabe98931211684666a6``:
+
+* ``VllmConfig`` and its component configs:
+  https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/config/vllm.py#L251-L326
+* GPT-OSS attention construction and alternating window:
+  https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/model_executor/models/gpt_oss.py#L67-L153
+* ``KVCacheGroupSpec``, ``FullAttentionSpec``, and ``SlidingWindowSpec``:
+  https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/v1/kv_cache_interface.py#L21-L193
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+from cacheblend_gpt_oss.targets import PINNED_TARGET
+
+_ARCHITECTURE = "GptOssForCausalLM"
+_NUM_LAYERS = 24
+_NUM_QUERY_HEADS = 64
+_NUM_KV_HEADS = 8
+_HEAD_DIMENSION = 64
+_SLIDING_WINDOW = 128
+_MAX_POSITION = 131_072
+_NUM_EXPERTS = 32
+_ACTIVE_EXPERTS = 4
+_DEFAULT_BLOCK_SIZE = 16
+
+
+@dataclass(frozen=True, slots=True, order=True)
+class PinnedConfigIssue:
+    """One bounded configuration incompatibility."""
+
+    field: str
+    expected: str
+    observed: str
+
+
+class UnsupportedPinnedConfigError(RuntimeError):
+    """Raised before reuse when the runtime leaves the audited envelope."""
+
+    def __init__(self, issues: tuple[PinnedConfigIssue, ...]) -> None:
+        self.issues = issues
+        details = "; ".join(
+            f"{issue.field}: expected {issue.expected}, observed {issue.observed}"
+            for issue in issues
+        )
+        super().__init__(f"unsupported GPT-OSS CacheBlend configuration: {details}")
+
+
+def _display(value: object) -> str:
+    if isinstance(value, bool):
+        return str(value).lower()
+    if value is None:
+        return "<none>"
+    name = getattr(value, "name", None)
+    if isinstance(name, str):
+        return name
+    if isinstance(value, list | tuple | set | frozenset):
+        return ",".join(sorted(_display(item) for item in value))
+    return str(value)
+
+
+def _get(value: object, name: str, default: Any = None) -> Any:
+    return getattr(value, name, default)
+
+
+def _mapping_get(value: object, name: str, default: Any = None) -> Any:
+    if isinstance(value, dict):
+        return value.get(name, default)
+    return _get(value, name, default)
+
+
+def _served_model_names(model_config: object) -> tuple[str, ...]:
+    names = _get(model_config, "served_model_name")
+    if isinstance(names, str):
+        return (names,)
+    if isinstance(names, list | tuple):
+        return tuple(str(name) for name in names)
+    model = _get(model_config, "model")
+    return (str(model),) if model is not None else ()
+
+
+def _rope_parameters(hf_config: object) -> object:
+    parameters = _get(hf_config, "rope_parameters")
+    if parameters is not None:
+        return parameters
+    return _get(hf_config, "rope_scaling", {})
+
+
+def _layer_index(layer_name: str) -> int | None:
+    prefix = "model.layers."
+    suffix = ".attn.attn"
+    if not layer_name.startswith(prefix) or not layer_name.endswith(suffix):
+        return None
+    value = layer_name[len(prefix) : -len(suffix)]
+    return int(value) if value.isdigit() else None
+
+
+def collect_pinned_config_issues(
+    vllm_config: object,
+    kv_cache_config: object,
+    *,
+    v2_model_runner_enabled: bool,
+) -> tuple[PinnedConfigIssue, ...]:
+    """Return every static incompatibility in deterministic field order."""
+
+    issues: list[PinnedConfigIssue] = []
+
+    def expect(field: str, expected: object, observed: object) -> None:
+        if observed != expected:
+            issues.append(
+                PinnedConfigIssue(
+                    field=field,
+                    expected=_display(expected),
+                    observed=_display(observed),
+                )
+            )
+
+    model = _get(vllm_config, "model_config")
+    hf = _get(model, "hf_config")
+    parallel = _get(vllm_config, "parallel_config")
+    scheduler = _get(vllm_config, "scheduler_config")
+    cache = _get(vllm_config, "cache_config")
+    attention = _get(vllm_config, "attention_config")
+
+    expect(
+        "model.served_name",
+        True,
+        PINNED_TARGET.model_id in _served_model_names(model),
+    )
+    expect(
+        "model.architectures",
+        (_ARCHITECTURE,),
+        tuple(_get(hf, "architectures", ())),
+    )
+    expect("model.model_type", "gpt_oss", _get(hf, "model_type"))
+    expect("model.num_hidden_layers", _NUM_LAYERS, _get(hf, "num_hidden_layers"))
+    expect(
+        "model.num_attention_heads",
+        _NUM_QUERY_HEADS,
+        _get(hf, "num_attention_heads"),
+    )
+    expect(
+        "model.num_key_value_heads",
+        _NUM_KV_HEADS,
+        _get(hf, "num_key_value_heads"),
+    )
+    expect("model.head_dim", _HEAD_DIMENSION, _get(hf, "head_dim"))
+    expect("model.sliding_window", _SLIDING_WINDOW, _get(hf, "sliding_window"))
+    expect(
+        "model.max_position_embeddings",
+        _MAX_POSITION,
+        _get(hf, "max_position_embeddings"),
+    )
+    expect("model.num_local_experts", _NUM_EXPERTS, _get(hf, "num_local_experts"))
+    expect(
+        "model.num_experts_per_tok",
+        _ACTIVE_EXPERTS,
+        _get(hf, "num_experts_per_tok"),
+    )
+    quantization = _get(hf, "quantization_config", {})
+    expect("model.quantization", "mxfp4", _mapping_get(quantization, "quant_method"))
+    expect("model.attention_bias", True, _get(hf, "attention_bias"))
+    expect("model.disable_sliding_window", False, _get(model, "disable_sliding_window"))
+    expect("model.enable_prompt_embeds", False, _get(model, "enable_prompt_embeds"))
+
+    rope = _rope_parameters(hf)
+    expect("rope.type", "yarn", _mapping_get(rope, "rope_type"))
+    expect("rope.theta", 150_000, _get(hf, "rope_theta"))
+    expect("rope.factor", 32.0, _mapping_get(rope, "factor"))
+    expect(
+        "rope.original_max_position_embeddings",
+        4096,
+        _mapping_get(rope, "original_max_position_embeddings"),
+    )
+    expect("rope.beta_fast", 32.0, _mapping_get(rope, "beta_fast"))
+    expect("rope.beta_slow", 1.0, _mapping_get(rope, "beta_slow"))
+    expect("rope.truncate", False, _mapping_get(rope, "truncate"))
+
+    expect("parallel.tensor_parallel_size", 1, _get(parallel, "tensor_parallel_size"))
+    expect(
+        "parallel.pipeline_parallel_size", 1, _get(parallel, "pipeline_parallel_size")
+    )
+    expect("parallel.data_parallel_size", 1, _get(parallel, "data_parallel_size"))
+    expect(
+        "parallel.prefill_context_parallel_size",
+        1,
+        _get(parallel, "prefill_context_parallel_size"),
+    )
+    expect(
+        "parallel.decode_context_parallel_size",
+        1,
+        _get(parallel, "decode_context_parallel_size", 1),
+    )
+    expect("parallel.enable_dbo", False, _get(parallel, "enable_dbo"))
+    expect(
+        "parallel.enable_expert_parallel",
+        False,
+        _get(parallel, "enable_expert_parallel"),
+    )
+
+    expect(
+        "scheduler.hybrid_kv_cache_manager_enabled",
+        False,
+        _get(scheduler, "disable_hybrid_kv_cache_manager"),
+    )
+    expect("runner.v2_enabled", False, v2_model_runner_enabled)
+    expect("attention.backend", "TRITON_ATTN", _display(_get(attention, "backend")))
+    expect(
+        "features.speculative_decoding",
+        None,
+        _get(vllm_config, "speculative_config"),
+    )
+    expect("features.lora", None, _get(vllm_config, "lora_config"))
+    expect("cache.kv_offloading_size", None, _get(cache, "kv_offloading_size"))
+    expect(
+        "cache.kv_sharing_fast_prefill",
+        False,
+        _get(cache, "kv_sharing_fast_prefill"),
+    )
+    expect("cache.block_size", _DEFAULT_BLOCK_SIZE, _get(cache, "block_size"))
+
+    groups = tuple(_get(kv_cache_config, "kv_cache_groups", ()))
+    expect("kv.groups.count", 2, len(groups))
+    seen_layers: set[int] = set()
+    seen_kinds: set[str] = set()
+    for group_index, group in enumerate(groups):
+        spec = _get(group, "kv_cache_spec")
+        kind = type(spec).__name__
+        seen_kinds.add(kind)
+        expect(
+            f"kv.groups.{group_index}.spec_type",
+            True,
+            kind in {"FullAttentionSpec", "SlidingWindowSpec"},
+        )
+        expect(
+            f"kv.groups.{group_index}.block_size",
+            _DEFAULT_BLOCK_SIZE,
+            _get(spec, "block_size"),
+        )
+        expect(
+            f"kv.groups.{group_index}.num_kv_heads",
+            _NUM_KV_HEADS,
+            _get(spec, "num_kv_heads"),
+        )
+        expect(
+            f"kv.groups.{group_index}.head_size",
+            _HEAD_DIMENSION,
+            _get(spec, "head_size"),
+        )
+        if kind == "SlidingWindowSpec":
+            expect(
+                f"kv.groups.{group_index}.sliding_window",
+                _SLIDING_WINDOW,
+                _get(spec, "sliding_window"),
+            )
+        elif kind == "FullAttentionSpec":
+            expect(
+                f"kv.groups.{group_index}.sliding_window",
+                None,
+                _get(spec, "sliding_window"),
+            )
+
+        for layer_name in tuple(_get(group, "layer_names", ())):
+            index = _layer_index(str(layer_name))
+            if index is None:
+                expect(
+                    f"kv.groups.{group_index}.layer_name",
+                    "model.layers.<0-23>.attn.attn",
+                    layer_name,
+                )
+                continue
+            expected_kind = (
+                "SlidingWindowSpec" if index % 2 == 0 else "FullAttentionSpec"
+            )
+            expect(f"kv.layer.{index}.spec_type", expected_kind, kind)
+            if index in seen_layers:
+                expect(f"kv.layer.{index}.unique", True, False)
+            seen_layers.add(index)
+
+    expect(
+        "kv.groups.spec_types",
+        {"FullAttentionSpec", "SlidingWindowSpec"},
+        seen_kinds,
+    )
+    expect("kv.layers", set(range(_NUM_LAYERS)), seen_layers)
+    return tuple(issues)
+
+
+def require_pinned_config(
+    vllm_config: object,
+    kv_cache_config: object,
+    *,
+    v2_model_runner_enabled: bool,
+) -> None:
+    """Raise a structured error unless all static target facts match."""
+
+    issues = collect_pinned_config_issues(
+        vllm_config,
+        kv_cache_config,
+        v2_model_runner_enabled=v2_model_runner_enabled,
+    )
+    if issues:
+        raise UnsupportedPinnedConfigError(issues)
+
+
+__all__ = [
+    "PinnedConfigIssue",
+    "UnsupportedPinnedConfigError",
+    "collect_pinned_config_issues",
+    "require_pinned_config",
+]

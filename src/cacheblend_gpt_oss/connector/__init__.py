@@ -1,5 +1,21 @@
 """Scheduler/worker connector boundary."""
 
+from cacheblend_gpt_oss.connector.control_plane import (
+    FULL_RECOMPUTE_EXTERNAL_TOKENS,
+    METADATA_SCHEMA_VERSION,
+    CacheGroupLayout,
+    ControlPlaneError,
+    ControlPlaneErrorCode,
+    GroupBlockSnapshot,
+    GroupedBlockAllocation,
+    RequestAllocation,
+    RequestControlPlane,
+    RequestHandoffMetadata,
+    RequestLifecycleState,
+    RequestPhase,
+    RequestPlan,
+    WorkerValidationReceipt,
+)
 from cacheblend_gpt_oss.connector.runtime_validation import (
     GPT_OSS_ATTENTION_PATTERN,
     AttentionLayerKind,
@@ -16,9 +32,22 @@ from cacheblend_gpt_oss.connector.runtime_validation import (
 )
 
 __all__ = [
+    "FULL_RECOMPUTE_EXTERNAL_TOKENS",
     "GPT_OSS_ATTENTION_PATTERN",
+    "METADATA_SCHEMA_VERSION",
     "AttentionLayerKind",
+    "CacheGroupLayout",
+    "ControlPlaneError",
+    "ControlPlaneErrorCode",
+    "GroupBlockSnapshot",
+    "GroupedBlockAllocation",
     "MismatchAction",
+    "RequestAllocation",
+    "RequestControlPlane",
+    "RequestHandoffMetadata",
+    "RequestLifecycleState",
+    "RequestPhase",
+    "RequestPlan",
     "RuntimeExpectations",
     "RuntimeMode",
     "RuntimeObservation",
@@ -28,4 +57,5 @@ __all__ = [
     "RuntimeValidator",
     "UnsupportedFeature",
     "ValidationFailureCode",
+    "WorkerValidationReceipt",
 ]

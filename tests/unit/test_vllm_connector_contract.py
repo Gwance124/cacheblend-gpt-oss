@@ -118,17 +118,94 @@ def loaded_connector(
 
 
 def _config() -> SimpleNamespace:
+    hf_config = SimpleNamespace(
+        architectures=["GptOssForCausalLM"],
+        model_type="gpt_oss",
+        num_hidden_layers=24,
+        num_attention_heads=64,
+        num_key_value_heads=8,
+        head_dim=64,
+        sliding_window=128,
+        max_position_embeddings=131_072,
+        num_local_experts=32,
+        num_experts_per_tok=4,
+        quantization_config={"quant_method": "mxfp4"},
+        attention_bias=True,
+        rope_parameters={
+            "rope_type": "yarn",
+            "factor": 32.0,
+            "original_max_position_embeddings": 4096,
+            "beta_fast": 32.0,
+            "beta_slow": 1.0,
+            "truncate": False,
+        },
+        rope_theta=150_000,
+    )
     return SimpleNamespace(
         kv_transfer_config=SimpleNamespace(),
         scheduler_config=SimpleNamespace(disable_hybrid_kv_cache_manager=False),
+        model_config=SimpleNamespace(
+            model="/models/gpt-oss-20b",
+            served_model_name=["openai/gpt-oss-20b"],
+            hf_config=hf_config,
+            disable_sliding_window=False,
+            enable_prompt_embeds=False,
+        ),
+        parallel_config=SimpleNamespace(
+            tensor_parallel_size=1,
+            pipeline_parallel_size=1,
+            data_parallel_size=1,
+            prefill_context_parallel_size=1,
+            decode_context_parallel_size=1,
+            enable_dbo=False,
+            enable_expert_parallel=False,
+        ),
+        cache_config=SimpleNamespace(
+            block_size=16,
+            kv_offloading_size=None,
+            kv_sharing_fast_prefill=False,
+        ),
+        attention_config=SimpleNamespace(
+            backend=SimpleNamespace(name="TRITON_ATTN")
+        ),
+        speculative_config=None,
+        lora_config=None,
     )
+
+
+class SlidingWindowSpec(SimpleNamespace):
+    pass
+
+
+class FullAttentionSpec(SimpleNamespace):
+    pass
 
 
 def _kv_cache_config() -> SimpleNamespace:
     return SimpleNamespace(
         kv_cache_groups=[
-            SimpleNamespace(layer_names=["model.layers.0.attn"]),
-            SimpleNamespace(layer_names=["model.layers.1.attn"]),
+            SimpleNamespace(
+                layer_names=[
+                    f"model.layers.{index}.attn.attn" for index in range(0, 24, 2)
+                ],
+                kv_cache_spec=SlidingWindowSpec(
+                    block_size=16,
+                    num_kv_heads=8,
+                    head_size=64,
+                    sliding_window=128,
+                ),
+            ),
+            SimpleNamespace(
+                layer_names=[
+                    f"model.layers.{index}.attn.attn" for index in range(1, 24, 2)
+                ],
+                kv_cache_spec=FullAttentionSpec(
+                    block_size=16,
+                    num_kv_heads=8,
+                    head_size=64,
+                    sliding_window=None,
+                ),
+            ),
         ]
     )
 
@@ -165,10 +242,9 @@ def test_scheduler_records_all_groups_while_recomputing_every_token(
 
     assert isinstance(metadata, fake.metadata)
     assert metadata.transfer_enabled is False
-    assert metadata.group_layer_names == (
-        ("model.layers.0.attn",),
-        ("model.layers.1.attn",),
-    )
+    assert len(metadata.group_layer_names) == 2
+    assert metadata.group_layer_names[0][0] == "model.layers.0.attn.attn"
+    assert metadata.group_layer_names[1][0] == "model.layers.1.attn.attn"
     assert len(metadata.allocations) == 1
     assert metadata.allocations[0].block_ids_by_group == ((3, 4), (11, 12))
     assert metadata.allocations[0].num_external_tokens == 0
@@ -190,24 +266,23 @@ def test_worker_registers_every_layer_and_rejects_transfer_claims(
         _config(), fake.role.WORKER, _kv_cache_config()
     )
     caches = {
-        "model.layers.0.attn": object(),
-        "model.layers.1.attn": object(),
+        f"model.layers.{index}.attn.attn": object() for index in range(24)
     }
     connector.register_kv_caches(caches)
+    group_names = tuple(
+        tuple(group.layer_names) for group in _kv_cache_config().kv_cache_groups
+    )
     metadata = module.GptOssCacheBlendMetadata(
         schema_version=1,
-        group_layer_names=(
-            ("model.layers.0.attn",),
-            ("model.layers.1.attn",),
-        ),
+        group_layer_names=group_names,
         allocations=(
             module.CacheBlendAllocation("request-1", ((3,), (11,)), 0),
         ),
     )
     connector.bind_connector_metadata(metadata)
     connector.start_load_kv(SimpleNamespace())
-    connector.wait_for_layer_load("model.layers.0.attn")
-    connector.save_kv_layer("model.layers.1.attn", object(), object())
+    connector.wait_for_layer_load("model.layers.0.attn.attn")
+    connector.save_kv_layer("model.layers.1.attn.attn", object(), object())
     connector.wait_for_save()
     assert connector.get_finished(set()) == (None, None)
     assert connector.get_block_ids_with_load_errors() == set()

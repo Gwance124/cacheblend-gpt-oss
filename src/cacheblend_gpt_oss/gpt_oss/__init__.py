@@ -1,5 +1,24 @@
-"""GPT-OSS-20B-specific KV correction and model-adapter boundary."""
+"""GPT-OSS-20B-specific KV layout, correction, and model-adapter boundary."""
 
+from cacheblend_gpt_oss.gpt_oss.layout import (
+    GPT_OSS_MAX_CONTEXT_TOKENS,
+    GPT_OSS_NUM_CACHE_GROUPS,
+    GPT_OSS_NUM_LAYERS,
+    GPT_OSS_SLIDING_WINDOW,
+    AttentionKind,
+    AttentionLayerLayout,
+    CacheGroupLayout,
+    GptOssHybridCacheLayout,
+    GroupBlockTable,
+    GroupTokenScatterSpan,
+    HybridLayoutError,
+    HybridLayoutErrorCode,
+    LayerTokenScatterSpan,
+    TokenScatterPlan,
+    TokenTransfer,
+    extract_gpt_oss_layer_index,
+    plan_token_scatter,
+)
 from cacheblend_gpt_oss.gpt_oss.yarn import (
     YarnRopeConfig,
     apply_yarn_to_key,
@@ -9,10 +28,26 @@ from cacheblend_gpt_oss.gpt_oss.yarn import (
 )
 
 __all__ = [
+    "GPT_OSS_MAX_CONTEXT_TOKENS",
+    "GPT_OSS_NUM_CACHE_GROUPS",
+    "GPT_OSS_NUM_LAYERS",
+    "GPT_OSS_SLIDING_WINDOW",
+    "AttentionKind",
+    "AttentionLayerLayout",
+    "CacheGroupLayout",
+    "GptOssHybridCacheLayout",
+    "GroupBlockTable",
+    "GroupTokenScatterSpan",
+    "HybridLayoutError",
+    "HybridLayoutErrorCode",
+    "LayerTokenScatterSpan",
+    "TokenScatterPlan",
+    "TokenTransfer",
     "YarnRopeConfig",
     "apply_yarn_to_key",
     "correct_shifted_key",
+    "extract_gpt_oss_layer_index",
+    "plan_token_scatter",
     "yarn_inverse_frequencies",
     "yarn_magnitude_scale",
 ]
-

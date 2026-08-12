@@ -19,8 +19,13 @@ The API references below are pinned to vLLM 0.19.1 commit
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+
+from cacheblend_gpt_oss.vllm_compat.v0_19_1.config_validation import (
+    require_pinned_config,
+)
 
 try:
     from vllm import __version__ as _VLLM_VERSION  # type: ignore[import-not-found]
@@ -57,6 +62,19 @@ if TYPE_CHECKING:
 
 _SUPPORTED_VLLM_VERSION = "0.19.1"
 _METADATA_SCHEMA_VERSION = 1
+
+
+def _v2_model_runner_enabled() -> bool:
+    """Mirror the pinned vLLM environment flag without importing GPU workers."""
+
+    raw_value = os.environ.get("VLLM_USE_V2_MODEL_RUNNER", "0")
+    try:
+        return bool(int(raw_value))
+    except ValueError as exc:
+        raise RuntimeError(
+            "VLLM_USE_V2_MODEL_RUNNER must be an integer and must remain 0 "
+            "for the pinned CacheBlend connector."
+        ) from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,6 +122,12 @@ class GptOssCacheBlendConnector(
                 "GptOssCacheBlendConnector requires the vLLM 0.19.1 "
                 "three-argument constructor with a finalized KVCacheConfig."
             )
+
+        require_pinned_config(
+            vllm_config,
+            kv_cache_config,
+            v2_model_runner_enabled=_v2_model_runner_enabled(),
+        )
 
         # vLLM otherwise defaults to disabling HMA whenever a connector is set.
         # Pinned source:
