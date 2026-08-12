@@ -239,6 +239,7 @@ def _config() -> SimpleNamespace:
         architectures=["GptOssForCausalLM"],
         model_type="gpt_oss",
         num_hidden_layers=24,
+        layer_types=["sliding_attention", "full_attention"] * 12,
         num_attention_heads=64,
         num_key_value_heads=8,
         vocab_size=201_088,

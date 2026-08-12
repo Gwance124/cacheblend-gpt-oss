@@ -33,6 +33,7 @@ _NUM_EXPERTS = 32
 _ACTIVE_EXPERTS = 4
 _VOCAB_SIZE = 201_088
 _DEFAULT_BLOCK_SIZE = 16
+_LAYER_TYPES = ("sliding_attention", "full_attention") * 12
 
 
 @dataclass(frozen=True, slots=True, order=True)
@@ -144,6 +145,7 @@ def collect_pinned_config_issues(
     )
     expect("model.model_type", "gpt_oss", _get(hf, "model_type"))
     expect("model.num_hidden_layers", _NUM_LAYERS, _get(hf, "num_hidden_layers"))
+    expect("model.layer_types", _LAYER_TYPES, tuple(_get(hf, "layer_types", ())))
     expect(
         "model.num_attention_heads",
         _NUM_QUERY_HEADS,

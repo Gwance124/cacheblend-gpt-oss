@@ -40,6 +40,7 @@ def _valid_config() -> tuple[SimpleNamespace, SimpleNamespace]:
         architectures=["GptOssForCausalLM"],
         model_type="gpt_oss",
         num_hidden_layers=24,
+        layer_types=["sliding_attention", "full_attention"] * 12,
         num_attention_heads=64,
         num_key_value_heads=8,
         vocab_size=201_088,
@@ -150,6 +151,14 @@ def test_exact_pinned_configuration_is_accepted() -> None:
                 config.model_config.hf_config, "head_dim", 128
             ),
             "model.head_dim",
+        ),
+        (
+            lambda config, _: setattr(
+                config.model_config.hf_config,
+                "layer_types",
+                ["full_attention", "sliding_attention"] * 12,
+            ),
+            "model.layer_types",
         ),
         (
             lambda config, _: setattr(
