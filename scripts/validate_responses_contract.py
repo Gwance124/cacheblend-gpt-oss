@@ -9,6 +9,8 @@ import json
 from pathlib import Path
 
 from cacheblend_gpt_oss.responses_evidence import (
+    RESPONSES_EVIDENCE_CONTRACT,
+    RESPONSES_EVIDENCE_SCHEMA_VERSION,
     ResponsesEvidenceError,
     read_responses_contract_evidence,
     responses_contract_evidence_digest,
@@ -25,8 +27,8 @@ def main() -> int:
     except ResponsesEvidenceError as exc:
         parser.error(exc.code)
     report = {
-        "schema_version": 1,
-        "contract": "gpt_oss_responses_harmony_tool_append_only_multiturn",
+        "schema_version": RESPONSES_EVIDENCE_SCHEMA_VERSION,
+        "contract": RESPONSES_EVIDENCE_CONTRACT,
         "passed": True,
         "evidence_digest": responses_contract_evidence_digest(evidence),
         "runtime": {

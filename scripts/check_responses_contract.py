@@ -48,6 +48,10 @@ from cacheblend_gpt_oss.responses_contract import (
     require_forced_tool_call,
     require_reasoned_message,
 )
+from cacheblend_gpt_oss.responses_evidence import (
+    RESPONSES_EVIDENCE_CONTRACT,
+    RESPONSES_EVIDENCE_SCHEMA_VERSION,
+)
 from cacheblend_gpt_oss.targets import PINNED_TARGET
 
 _TOOL_NAME = "get_weather"
@@ -314,8 +318,8 @@ def main() -> int:
         expected_requests=3,
     )
     report = {
-        "schema_version": 1,
-        "contract": "gpt_oss_responses_harmony_tool_append_only_multiturn",
+        "schema_version": RESPONSES_EVIDENCE_SCHEMA_VERSION,
+        "contract": RESPONSES_EVIDENCE_CONTRACT,
         "runtime": asdict(runtime),
         "passed": True,
         "turns": [
