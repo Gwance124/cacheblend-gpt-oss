@@ -249,6 +249,15 @@ class BenchmarkTrial:
             _fail(BenchmarkErrorCode.INVALID_DIGEST)
         if self.correctness_passed and self.correctness_artifact_digest is None:
             _fail(BenchmarkErrorCode.CORRECTNESS_MISSING)
+        if self.correctness_passed and (
+            self.metrics.correctness.max_abs_logit_error is None
+            or self.metrics.correctness.mean_abs_logit_error is None
+        ):
+            # A response digest identifies an external artifact, but it is
+            # not numerical correctness evidence by itself. Benchmark
+            # readiness must remain tied to the deterministic logit/hidden
+            # state comparison recorded in the request metrics.
+            _fail(BenchmarkErrorCode.CORRECTNESS_MISSING)
         if self.transfer_evidence_digest is not None and (
             not isinstance(self.transfer_evidence_digest, str)
             or _HEX_64.fullmatch(self.transfer_evidence_digest) is None

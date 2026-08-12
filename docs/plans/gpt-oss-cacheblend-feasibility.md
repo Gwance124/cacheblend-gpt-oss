@@ -495,8 +495,10 @@ Stop criteria:
 
 The dependency-free `cacheblend_gpt_oss.benchmark` package now defines the
 controlled-trial evidence boundary. A trial records one arm, cache state,
-reconciled request counters/timers, peak memory, recomputation ratio, and a
-digest of its independent correctness artifact. CacheBlend arms also require a
+reconciled request counters/timers, peak memory, recomputation ratio, a digest
+of its independent correctness artifact, and finite maximum and mean absolute
+numerical error from the deterministic logit/hidden-state comparison.
+CacheBlend arms also require a
 transfer-evidence digest, while one prompt-fixture digest binds all arms in a
 case. The ordinary `full_prefill` arm is additionally required to recompute
 every prompt row with zero reusable-document/KV counters; it cannot silently

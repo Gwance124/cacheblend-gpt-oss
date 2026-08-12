@@ -262,6 +262,27 @@ def test_missing_correctness_makes_report_not_ready_but_remains_recordable() -> 
     assert summary.failure_codes == (BenchmarkFailureCode.CORRECTNESS_FAILED,)
 
 
+def test_passing_trial_requires_numerical_correctness_errors() -> None:
+    metrics = _metrics(reusable=False)
+    without_errors = replace(
+        metrics,
+        correctness=RequestCorrectnessMetrics(),
+    )
+    with pytest.raises(BenchmarkError) as caught:
+        BenchmarkTrial(
+            arm=BenchmarkArm.FULL_PREFILL,
+            case=CorrectnessCase.MOVED_DOCUMENT,
+            cache_state=BenchmarkCacheState.WARM,
+            trial_index=1,
+            metrics=without_errors,
+            recompute_ratio=None,
+            peak_memory_bytes=1,
+            correctness_passed=True,
+            correctness_artifact_digest="d" * 64,
+        )
+    assert caught.value.code is BenchmarkErrorCode.CORRECTNESS_MISSING
+
+
 def test_artifact_cannot_mix_warm_and_cold_cache_states() -> None:
     with pytest.raises(BenchmarkError) as caught:
         _artifact(

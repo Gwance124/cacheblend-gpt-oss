@@ -63,7 +63,10 @@ cd ~/Workspace/Github/work/cacheblend-gpt-oss
 
 The report includes per-arm means, medians, and normal-approximation 95%
 confidence intervals. `benchmark_ready` and `passed` remain false if a required
-control arm is missing or any recorded trial lacks passing correctness evidence.
+control arm is missing or any recorded trial lacks passing numerical
+correctness evidence. A correctness artifact digest alone is not sufficient:
+each passing trial must also carry finite maximum and mean absolute logit (or
+adapter-produced hidden-state) error in its request metrics.
 The derived report retains the artifact digest, prompt-fixture digest, one
 uniform warm/cold cache state, and the complete pinned runtime/config identity;
 do not detach the report from those fields when copying evidence between hosts.
