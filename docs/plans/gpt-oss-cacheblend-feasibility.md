@@ -150,6 +150,13 @@ Implementation status: the complete control/data path is wired into the
 connector. GPU evidence that transfer occurred, was overwritten, and preserved
 deterministic logits is still required.
 
+The first live artifact harness and exact manual commands are now implemented
+in `docs/runbooks/solab-g3-moved-document-correctness.md`. Because pinned
+vLLM's Harmony Responses service rejects GPT-OSS logprobs, this gate uses raw
+token IDs through `/v1/completions` and compares all 201,088 normalized output
+logprobs. `/v1/responses` Harmony/tool/multi-turn behavior remains a separate
+M8 contract gate. No live result has yet been supplied from `solab-g3`.
+
 Deliverables:
 
 - Return `(0, False)` from `get_num_new_matched_tokens` while retaining the

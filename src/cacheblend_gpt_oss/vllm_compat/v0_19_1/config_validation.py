@@ -31,6 +31,7 @@ _SLIDING_WINDOW = 128
 _MAX_POSITION = 131_072
 _NUM_EXPERTS = 32
 _ACTIVE_EXPERTS = 4
+_VOCAB_SIZE = 201_088
 _DEFAULT_BLOCK_SIZE = 16
 
 
@@ -153,6 +154,11 @@ def collect_pinned_config_issues(
         _NUM_KV_HEADS,
         _get(hf, "num_key_value_heads"),
     )
+    # The pinned vLLM GPT-OSS kernel fixtures use the released model's exact
+    # vocabulary size.  The correctness harness relies on this to request the
+    # complete output distribution rather than a top-k proxy:
+    # https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/tests/kernels/moe/test_gpt_oss_triton_kernels.py#L195-L205
+    expect("model.vocab_size", _VOCAB_SIZE, _get(hf, "vocab_size"))
     expect("model.head_dim", _HEAD_DIMENSION, _get(hf, "head_dim"))
     expect("model.sliding_window", _SLIDING_WINDOW, _get(hf, "sliding_window"))
     expect(

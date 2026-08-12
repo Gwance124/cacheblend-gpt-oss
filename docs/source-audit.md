@@ -79,8 +79,10 @@ The eventual configuration shape is therefore:
 }
 ```
 
-The class does not exist in this audit-only scaffold yet. This JSON documents
-the proven loader boundary; it is not a runnable claim.
+The implemented class now exists at that exact module path. Connector loading,
+the transfer-disabled control-flow mode, and the `transfer_100pct` lifecycle
+are CPU-fake tested; real construction/model execution is still a manual
+`solab-g3` gate and is not claimed as passed.
 
 ### V1 connector contract
 
@@ -330,6 +332,33 @@ CacheBlend-enabled endpoint. Future work should only configure that endpoint
 and record the model revision, vLLM/LMCache versions, connector/config digest,
 deployment ID, and CacheBlend commit SHA. Any proposed file edits remain
 document-only until separately authorized.
+
+## Pinned numerical-observability boundary
+
+vLLM 0.19.1's GPT-OSS/Harmony Responses handler explicitly rejects requests
+that include output logprobs in
+[`OpenAIServingResponses._validate_create_responses_input`](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/entrypoints/openai/responses/serving.py#L293-L302).
+The first deterministic numerical gate therefore cannot obtain logits through
+the production `/v1/responses` route.
+
+The pinned completions route provides a source-supported test surface without
+changing model execution: [`CompletionRequest.prompt`](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/entrypoints/openai/completion/protocol.py#L42-L60)
+accepts exact integer token IDs, and its token-ID output fields are defined at
+[`CompletionRequest.return_tokens_as_token_ids`/`return_token_ids`](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/entrypoints/openai/completion/protocol.py#L126-L142).
+With server `--max-logprobs -1`, pinned
+[`SamplingParams._validate_logprobs`](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/sampling_params.py#L638-L653)
+expands the limit to the model vocabulary. The released GPT-OSS configuration
+is additionally rejected unless its vocabulary is exactly 201,088, matching
+the pinned [vLLM GPT-OSS kernel fixture](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/tests/kernels/moe/test_gpt_oss_triton_kernels.py#L195-L205).
+
+The resulting artifact is a complete normalized output-logprob vector, not an
+unnormalized raw-logit tensor. It preserves every relative final-logit
+difference except that the pinned completion serializer clamps non-finite
+values to `-9999.0` in
+[`_create_completion_logprobs`](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/entrypoints/openai/completion/serving.py#L610-L638).
+Artifacts label this representation precisely and freeze the BF16
+full-prefill-versus-full-prefill envelope before CacheBlend is run. Harmony and
+tool correctness must still be checked separately on `/v1/responses`.
 
 ## Patch conclusion
 

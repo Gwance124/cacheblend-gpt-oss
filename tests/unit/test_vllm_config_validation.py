@@ -41,6 +41,7 @@ def _valid_config() -> tuple[SimpleNamespace, SimpleNamespace]:
         num_hidden_layers=24,
         num_attention_heads=64,
         num_key_value_heads=8,
+        vocab_size=201_088,
         head_dim=64,
         sliding_window=128,
         max_position_embeddings=131_072,
@@ -149,6 +150,12 @@ def test_exact_pinned_configuration_is_accepted() -> None:
                 config.model_config.hf_config, "head_dim", 128
             ),
             "model.head_dim",
+        ),
+        (
+            lambda config, _: setattr(
+                config.model_config.hf_config, "vocab_size", 201_087
+            ),
+            "model.vocab_size",
         ),
         (
             lambda config, _: setattr(

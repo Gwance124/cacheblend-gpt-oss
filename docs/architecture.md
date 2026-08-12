@@ -361,7 +361,7 @@ artifacts. Connector metric labels are limited to vLLM's bounded engine labels:
 | Metric | Meaning |
 |---|---|
 | `vllm:cacheblend_reusable_document_tokens_requested_total` | Prompt tokens covered by at least one planner query window |
-| `vllm:cacheblend_kv_tokens_found_total` | Exact-sidecar-key candidate tokens found before final non-overlap selection |
+| `vllm:cacheblend_kv_tokens_found_total` | Raw LMCache candidate tokens; every row must finish as loaded or rejected after exact sidecar verification and transfer |
 | `vllm:cacheblend_kv_tokens_verified_total` | Exact-token candidates selected in the non-overlapping plan |
 | `vllm:cacheblend_kv_tokens_loaded_total` | Fully verified tokens transferred into staging/destination KV |
 | `vllm:cacheblend_kv_tokens_rejected_total` | Raw candidate tokens rejected in aggregate; bounded reasons remain structured test data, not labels |
@@ -376,14 +376,18 @@ artifacts. Connector metric labels are limited to vLLM's bounded engine labels:
 | Selective-recomputation latency | Not emitted in the 100% phase; required before M6 can pass |
 | vLLM TTFT/prefill metrics | Server-measured TTFT and total prefill latency; the non-streaming client cannot infer TTFT |
 
-Correctness artifacts record baseline and CacheBlend logits/hidden-state dtype,
-maximum and mean absolute error, relative error, top-token agreement, selected
-layer/group, seed, full runtime/config identity, and recomputation ratio. They
-are not high-cardinality Prometheus labels.
+The implemented M3 correctness artifacts record the complete normalized output
+logprob vector, sampled/top token, BF16 dtype, prompt/token digests, exact
+runtime/config/plugin identity, and reconciled connector work. The evaluator
+records maximum/mean absolute and relative error against a tolerance frozen
+from repeated full prefill before CacheBlend is run. These values are not
+high-cardinality Prometheus labels. Raw hidden-state/layer probes remain an
+additional live-debug surface, not a claimed artifact field.
 
-At the request boundary, `found >= loaded`, `found - loaded` reconciles with
-rejections, and `effective_saved_prefill_fraction == 0` whenever recomputation
-is 100%. Violating these invariants fails the test run.
+At the request boundary, `found == loaded + rejected`, and
+`effective_saved_prefill_fraction == 0` whenever recomputation is 100%.
+Violating these invariants fails the test run. The first live numerical gate is
+documented in `docs/runbooks/solab-g3-moved-document-correctness.md`.
 
 ## External RAG interface
 

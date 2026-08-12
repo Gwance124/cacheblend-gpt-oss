@@ -85,6 +85,8 @@ class CacheBlendLookupObservation:
             or self.kv_tokens_verified > self.kv_tokens_found
             or self.kv_tokens_verified
             > self.reusable_document_tokens_requested
+            or self.kv_tokens_found
+            != self.kv_tokens_verified + self.kv_tokens_rejected
             or self.reusable_document_tokens_requested > self.prompt_tokens
             or isinstance(self.latency_seconds, bool)
             or not isinstance(self.latency_seconds, int | float)
@@ -192,12 +194,17 @@ class GptOssCacheBlendStats(KVConnectorStats):  # type: ignore[misc]
     def record_load(
         self,
         *,
+        verified_tokens: int,
         loaded_tokens: int,
+        rejected_tokens: int,
         recomputed_tokens: int,
         fallback: bool,
         latency_seconds: float,
     ) -> None:
+        if verified_tokens != loaded_tokens + rejected_tokens:
+            raise ValueError("verified KV tokens must be loaded or rejected")
         self._append("kv_tokens_loaded", loaded_tokens)
+        self._append("kv_tokens_rejected", rejected_tokens)
         self._append("tokens_recomputed", recomputed_tokens)
         self._append("prefill_tokens_avoided", 0)
         self._append("load_fallbacks", int(fallback))

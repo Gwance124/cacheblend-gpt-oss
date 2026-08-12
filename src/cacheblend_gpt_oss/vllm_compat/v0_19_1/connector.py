@@ -427,6 +427,18 @@ class GptOssCacheBlendConnector(
             self._control_plane.accept_handoff(handoff)
             transfer = transfers_by_request.pop(handoff.plan.request_id, None)
             if transfer is None:
+                verified_tokens = sum(
+                    len(match.target_segment.token_range)
+                    for match in handoff.plan.match_plan.matches
+                )
+                self._stats.record_load(
+                    verified_tokens=verified_tokens,
+                    loaded_tokens=0,
+                    rejected_tokens=verified_tokens,
+                    recomputed_tokens=handoff.plan.prompt_tokens,
+                    fallback=False,
+                    latency_seconds=0.0,
+                )
                 receipt = self._control_plane.validate_worker(
                     handoff.plan.request_id,
                     loaded_match_indexes=(),
@@ -451,7 +463,15 @@ class GptOssCacheBlendConnector(
                 transfer, adapted_blocks
             )
             self._stats.record_load(
+                verified_tokens=sum(
+                    len(candidate.candidate.target_range)
+                    for candidate in transfer.verified_candidates
+                ),
                 loaded_tokens=outcome.loaded_kv_tokens,
+                rejected_tokens=sum(
+                    len(transfer.verified_candidates[index].candidate.target_range)
+                    for index in outcome.rejected_candidate_indexes
+                ),
                 recomputed_tokens=outcome.tokens_to_recompute,
                 fallback=(
                     outcome.state is TransferAttemptState.FULL_PREFILL_FALLBACK
@@ -657,7 +677,7 @@ class GptOssCacheBlendConnector(
                     reusable_document_tokens_requested=(
                         len(prompt_token_ids) if lookup.query_windows else 0
                     ),
-                    kv_tokens_found=counters.found_candidate_tokens,
+                    kv_tokens_found=counters.raw_candidate_tokens,
                     kv_tokens_verified=counters.verified_candidate_tokens,
                     kv_tokens_rejected=counters.rejected_candidate_tokens,
                     latency_seconds=lookup_latency,

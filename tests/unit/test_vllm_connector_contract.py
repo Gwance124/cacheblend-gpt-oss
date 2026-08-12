@@ -241,6 +241,7 @@ def _config() -> SimpleNamespace:
         num_hidden_layers=24,
         num_attention_heads=64,
         num_key_value_heads=8,
+        vocab_size=201_088,
         head_dim=64,
         sliding_window=128,
         max_position_embeddings=131_072,
@@ -801,7 +802,9 @@ def test_connector_metrics_aggregate_hits_fallbacks_and_reject_bad_data(
         )
     )
     stats.record_load(
+        verified_tokens=512,
         loaded_tokens=512,
+        rejected_tokens=0,
         recomputed_tokens=768,
         fallback=False,
         latency_seconds=0.5,
@@ -815,7 +818,9 @@ def test_connector_metrics_aggregate_hits_fallbacks_and_reject_bad_data(
 
     other = module.GptOssCacheBlendStats()
     other.record_load(
+        verified_tokens=0,
         loaded_tokens=0,
+        rejected_tokens=0,
         recomputed_tokens=256,
         fallback=True,
         latency_seconds=1.5,
@@ -840,6 +845,15 @@ def test_connector_metrics_aggregate_hits_fallbacks_and_reject_bad_data(
             kv_tokens_found=255,
             kv_tokens_verified=256,
             kv_tokens_rejected=0,
+            latency_seconds=0.1,
+        )
+    with pytest.raises(ValueError, match="loaded or rejected"):
+        stats.record_load(
+            verified_tokens=256,
+            loaded_tokens=128,
+            rejected_tokens=127,
+            recomputed_tokens=256,
+            fallback=True,
             latency_seconds=0.1,
         )
     malformed = {key: list(values) for key, values in stats.data.items()}
