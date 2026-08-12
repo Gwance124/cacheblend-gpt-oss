@@ -190,6 +190,13 @@ class BenchmarkTrial:
                 self.metrics.counters.is_full_recomputation
             ):
                 _fail(BenchmarkErrorCode.ARM_METRIC_MISMATCH)
+        elif self.arm is BenchmarkArm.FULL_PREFILL:
+            # The ordinary baseline is the work-conserving control.  A trial
+            # that reports fewer recomputed rows would silently turn a prefix
+            # or external-cache hit into the baseline and invalidate every
+            # comparison derived from this artifact.
+            if not self.metrics.counters.is_full_recomputation:
+                _fail(BenchmarkErrorCode.ARM_METRIC_MISMATCH)
         elif self.arm is BenchmarkArm.CACHEBLEND_SELECTIVE:
             if self.recompute_ratio is None or self.recompute_ratio >= 1.0:
                 _fail(BenchmarkErrorCode.ARM_METRIC_MISMATCH)
@@ -384,13 +391,30 @@ class BenchmarkArmSummary:
     arm: BenchmarkArm
     trial_count: int
     correctness_passed: bool
+    reusable_documents_requested: ConfidenceInterval
+    reusable_documents_hit: ConfidenceInterval
+    reusable_document_tokens_requested: ConfidenceInterval
+    kv_tokens_found: ConfidenceInterval
+    kv_tokens_loaded: ConfidenceInterval
+    kv_tokens_rejected: ConfidenceInterval
+    document_hit_fraction: ConfidenceInterval
+    candidate_token_hit_fraction: ConfidenceInterval
+    loaded_token_hit_fraction: ConfidenceInterval
+    lookup_latency_seconds: ConfidenceInterval
+    transfer_latency_seconds: ConfidenceInterval
+    position_correction_latency_seconds: ConfidenceInterval
+    selective_recomputation_latency_seconds: ConfidenceInterval
+    store_latency_seconds: ConfidenceInterval
     ttft_seconds: ConfidenceInterval | None
     queue_latency_seconds: ConfidenceInterval | None
     decode_latency_seconds: ConfidenceInterval | None
     prefill_latency_seconds: ConfidenceInterval
     end_to_end_latency_seconds: ConfidenceInterval | None
     recomputed_tokens: ConfidenceInterval
+    prefill_tokens_avoided: ConfidenceInterval
     saved_prefill_fraction: ConfidenceInterval
+    max_abs_logit_error: ConfidenceInterval | None
+    mean_abs_logit_error: ConfidenceInterval | None
     peak_memory_bytes: ConfidenceInterval
     staging_overhead_bytes: ConfidenceInterval
     failure_count: int
@@ -438,6 +462,95 @@ def summarize_benchmark(artifact: BenchmarkArtifact) -> tuple[BenchmarkArmSummar
                 correctness_passed=all(
                     trial.correctness_passed for trial in trials
                 ),
+                reusable_documents_requested=_confidence(
+                    [
+                        float(
+                            trial.metrics.counters.reusable_documents_requested
+                        )
+                        for trial in trials
+                    ]
+                ),
+                reusable_documents_hit=_confidence(
+                    [
+                        float(trial.metrics.counters.reusable_documents_hit)
+                        for trial in trials
+                    ]
+                ),
+                reusable_document_tokens_requested=_confidence(
+                    [
+                        float(
+                            trial.metrics.counters.reusable_document_tokens_requested
+                        )
+                        for trial in trials
+                    ]
+                ),
+                kv_tokens_found=_confidence(
+                    [float(trial.metrics.counters.kv_tokens_found) for trial in trials]
+                ),
+                kv_tokens_loaded=_confidence(
+                    [
+                        float(trial.metrics.counters.kv_tokens_loaded)
+                        for trial in trials
+                    ]
+                ),
+                kv_tokens_rejected=_confidence(
+                    [
+                        float(trial.metrics.counters.kv_tokens_rejected)
+                        for trial in trials
+                    ]
+                ),
+                document_hit_fraction=_confidence(
+                    [
+                        trial.metrics.counters.document_hit_fraction
+                        for trial in trials
+                    ]
+                ),
+                candidate_token_hit_fraction=_confidence(
+                    [
+                        trial.metrics.counters.candidate_token_hit_fraction
+                        for trial in trials
+                    ]
+                ),
+                loaded_token_hit_fraction=_confidence(
+                    [
+                        trial.metrics.counters.loaded_token_hit_fraction
+                        for trial in trials
+                    ]
+                ),
+                lookup_latency_seconds=_confidence(
+                    [
+                        float(trial.metrics.timers.lookup_latency_seconds)
+                        for trial in trials
+                    ]
+                ),
+                transfer_latency_seconds=_confidence(
+                    [
+                        float(trial.metrics.timers.transfer_latency_seconds)
+                        for trial in trials
+                    ]
+                ),
+                position_correction_latency_seconds=_confidence(
+                    [
+                        float(
+                            trial.metrics.timers.position_correction_latency_seconds
+                        )
+                        for trial in trials
+                    ]
+                ),
+                selective_recomputation_latency_seconds=_confidence(
+                    [
+                        float(
+                            trial.metrics.timers.selective_recomputation_latency_seconds
+                        )
+                        for trial in trials
+                    ]
+                ),
+                store_latency_seconds=_confidence(
+                    [
+                        float(trial.metrics.timers.store_latency_seconds)
+                        for trial in trials
+                    ]
+                ),
                 ttft_seconds=_optional_confidence(
                     [
                         None
@@ -482,11 +595,29 @@ def summarize_benchmark(artifact: BenchmarkArtifact) -> tuple[BenchmarkArmSummar
                         for trial in trials
                     ]
                 ),
+                prefill_tokens_avoided=_confidence(
+                    [
+                        float(trial.metrics.counters.prefill_tokens_avoided)
+                        for trial in trials
+                    ]
+                ),
                 saved_prefill_fraction=_confidence(
                     [
                         float(
                             trial.metrics.counters.effective_saved_prefill_fraction
                         )
+                        for trial in trials
+                    ]
+                ),
+                max_abs_logit_error=_optional_confidence(
+                    [
+                        trial.metrics.correctness.max_abs_logit_error
+                        for trial in trials
+                    ]
+                ),
+                mean_abs_logit_error=_optional_confidence(
+                    [
+                        trial.metrics.correctness.mean_abs_logit_error
                         for trial in trials
                     ]
                 ),

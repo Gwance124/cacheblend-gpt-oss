@@ -11,13 +11,14 @@ from pathlib import Path
 from cacheblend_gpt_oss.benchmark import (
     BenchmarkArtifact,
     BenchmarkError,
+    ConfidenceInterval,
     benchmark_artifact_digest,
     read_benchmark_artifact,
     summarize_benchmark,
 )
 
 
-def _confidence(value: object) -> dict[str, object] | None:
+def _confidence(value: ConfidenceInterval | None) -> dict[str, object] | None:
     if value is None:
         return None
     interval = value
@@ -47,6 +48,12 @@ def _report(artifact: BenchmarkArtifact) -> dict[str, object]:
             {
                 "arm": summary.arm.value,
                 "correctness_passed": summary.correctness_passed,
+                "candidate_token_hit_fraction": _confidence(
+                    summary.candidate_token_hit_fraction
+                ),
+                "document_hit_fraction": _confidence(
+                    summary.document_hit_fraction
+                ),
                 "end_to_end_latency_seconds": _confidence(
                     summary.end_to_end_latency_seconds
                 ),
@@ -57,22 +64,61 @@ def _report(artifact: BenchmarkArtifact) -> dict[str, object]:
                 "decode_latency_seconds": _confidence(
                     summary.decode_latency_seconds
                 ),
+                "kv_tokens_found": _confidence(summary.kv_tokens_found),
+                "kv_tokens_loaded": _confidence(summary.kv_tokens_loaded),
+                "kv_tokens_rejected": _confidence(summary.kv_tokens_rejected),
+                "lookup_latency_seconds": _confidence(
+                    summary.lookup_latency_seconds
+                ),
+                "max_abs_logit_error": _confidence(
+                    summary.max_abs_logit_error
+                ),
+                "mean_abs_logit_error": _confidence(
+                    summary.mean_abs_logit_error
+                ),
+                "position_correction_latency_seconds": _confidence(
+                    summary.position_correction_latency_seconds
+                ),
                 "prefill_latency_seconds": _confidence(
                     summary.prefill_latency_seconds
+                ),
+                "prefill_tokens_avoided": _confidence(
+                    summary.prefill_tokens_avoided
                 ),
                 "peak_memory_bytes": _confidence(summary.peak_memory_bytes),
                 "queue_latency_seconds": _confidence(
                     summary.queue_latency_seconds
                 ),
                 "recomputed_tokens": _confidence(summary.recomputed_tokens),
+                "reusable_document_tokens_requested": _confidence(
+                    summary.reusable_document_tokens_requested
+                ),
+                "reusable_documents_hit": _confidence(
+                    summary.reusable_documents_hit
+                ),
+                "reusable_documents_requested": _confidence(
+                    summary.reusable_documents_requested
+                ),
+                "selective_recomputation_latency_seconds": _confidence(
+                    summary.selective_recomputation_latency_seconds
+                ),
                 "saved_prefill_fraction": _confidence(
                     summary.saved_prefill_fraction
                 ),
                 "staging_overhead_bytes": _confidence(
                     summary.staging_overhead_bytes
                 ),
+                "store_latency_seconds": _confidence(
+                    summary.store_latency_seconds
+                ),
+                "transfer_latency_seconds": _confidence(
+                    summary.transfer_latency_seconds
+                ),
                 "trial_count": summary.trial_count,
                 "ttft_seconds": _confidence(summary.ttft_seconds),
+                "loaded_token_hit_fraction": _confidence(
+                    summary.loaded_token_hit_fraction
+                ),
             }
             for summary in summaries
         ],

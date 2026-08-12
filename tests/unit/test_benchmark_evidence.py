@@ -174,6 +174,33 @@ def test_summaries_have_repeated_trial_confidence_intervals() -> None:
     assert summaries[0].ttft_seconds.count == 2
     assert summaries[0].end_to_end_latency_seconds.mean == pytest.approx(0.406)
     assert summaries[1].recomputed_tokens.mean == pytest.approx(100.0)
+    assert summaries[1].kv_tokens_found.mean == pytest.approx(60.0)
+    assert summaries[1].kv_tokens_loaded.mean == pytest.approx(55.0)
+    assert summaries[1].kv_tokens_rejected.mean == pytest.approx(5.0)
+    assert summaries[1].document_hit_fraction.mean == pytest.approx(1.0)
+    assert summaries[1].candidate_token_hit_fraction.mean == pytest.approx(1.0)
+    assert summaries[1].loaded_token_hit_fraction.mean == pytest.approx(55 / 60)
+    assert summaries[1].lookup_latency_seconds.mean == pytest.approx(0.001)
+    assert summaries[1].transfer_latency_seconds.mean == pytest.approx(0.002)
+    assert summaries[1].store_latency_seconds.mean == pytest.approx(0.003)
+    assert summaries[1].max_abs_logit_error is not None
+    assert summaries[1].max_abs_logit_error.mean == pytest.approx(0.0)
+
+
+def test_full_prefill_arm_cannot_claim_avoided_work() -> None:
+    with pytest.raises(BenchmarkError) as caught:
+        BenchmarkTrial(
+            arm=BenchmarkArm.FULL_PREFILL,
+            case=CorrectnessCase.MOVED_DOCUMENT,
+            cache_state=BenchmarkCacheState.WARM,
+            trial_index=1,
+            metrics=_metrics(recomputed=40, avoided=60),
+            recompute_ratio=None,
+            peak_memory_bytes=1,
+            correctness_passed=True,
+            correctness_artifact_digest="d" * 64,
+        )
+    assert caught.value.code is BenchmarkErrorCode.ARM_METRIC_MISMATCH
 
 
 def test_missing_correctness_makes_report_not_ready_but_remains_recordable() -> None:
