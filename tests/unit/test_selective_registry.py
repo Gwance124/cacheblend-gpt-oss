@@ -8,6 +8,7 @@ from cacheblend_gpt_oss.vllm_compat.v0_19_1.selective_registry import (
     CUSTOM_ATTENTION_BACKEND_NAME,
     GPT_OSS_MODEL_ARCHITECTURE,
     SelectiveExtensionRegistrar,
+    SelectiveGateEvidence,
     SelectivePrerequisites,
     SelectiveRegistrationError,
     SelectiveRegistrationErrorCode,
@@ -16,7 +17,19 @@ from cacheblend_gpt_oss.vllm_compat.v0_19_1.selective_registry import (
 
 
 def _ready() -> SelectivePrerequisites:
-    return SelectivePrerequisites(True, True, True, True)
+    return SelectivePrerequisites(
+        True,
+        True,
+        True,
+        True,
+        SelectiveGateEvidence(
+            runtime_digest="a" * 64,
+            full_prefill_digest="b" * 64,
+            transfer_digest="c" * 64,
+            yarn_digest="d" * 64,
+            hybrid_sink_digest="e" * 64,
+        ),
+    )
 
 
 def _spec(suffix: str = "one") -> SelectiveRegistrationSpec:
@@ -161,3 +174,34 @@ def test_partial_registration_fails_closed_for_process_lifetime() -> None:
         )
     assert second.value.code is SelectiveRegistrationErrorCode.PARTIAL_REGISTRATION
     assert fakes.models == []
+
+
+def test_all_true_prerequisites_without_bound_gpu_evidence_are_not_ready() -> None:
+    prerequisites = SelectivePrerequisites(True, True, True, True)
+    assert not prerequisites.ready
+    with pytest.raises(SelectiveRegistrationError) as error:
+        SelectiveRegistrationSpec(
+            prerequisites=prerequisites,
+            model_class_path=(
+                "cacheblend_gpt_oss.vllm_compat.v0_19_1.model:GptOssModel"
+            ),
+            attention_backend_class_path=(
+                "cacheblend_gpt_oss.vllm_compat.v0_19_1.backend.GptOssBackend"
+            ),
+        )
+    assert error.value.code is SelectiveRegistrationErrorCode.INVALID_PREREQUISITES
+
+
+@pytest.mark.parametrize("field", ["runtime_digest", "transfer_digest"])
+def test_gate_evidence_requires_lowercase_sha256_digests(field: str) -> None:
+    values = {
+        "runtime_digest": "a" * 64,
+        "full_prefill_digest": "b" * 64,
+        "transfer_digest": "c" * 64,
+        "yarn_digest": "d" * 64,
+        "hybrid_sink_digest": "e" * 64,
+    }
+    values[field] = "not-a-digest"
+    with pytest.raises(SelectiveRegistrationError) as error:
+        SelectiveGateEvidence(**values)
+    assert error.value.code is SelectiveRegistrationErrorCode.INVALID_EVIDENCE

@@ -107,6 +107,12 @@ closed after a partial registration. It is intentionally not exposed as a
 `vllm.general_plugins` entry point until the pinned model/backend classes and
 GPU evidence exist.
 
+The prerequisite proof now also carries five lowercase SHA-256 artifact
+digests: runtime identity, repeated full-prefill tolerance, 100%-transfer
+evidence, YaRN correction, and hybrid/sink behavior. Four unbound boolean
+claims cannot enable registration. These digests are supplied by the eventual
+solab-g3 hand-off and are never Prometheus labels or request metadata.
+
 `gpt_oss.selective_kv` is the tensor-free companion for the backend boundary:
 it splits complete 24-layer hybrid spans by recompute ranges, preserves old
 source positions for YaRN correction, and computes destination physical slots

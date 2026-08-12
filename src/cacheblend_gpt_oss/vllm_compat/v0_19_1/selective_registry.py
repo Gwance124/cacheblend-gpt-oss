@@ -30,10 +30,19 @@ CUSTOM_ATTENTION_BACKEND_NAME = "CUSTOM"
 _PACKAGE_PREFIX = "cacheblend_gpt_oss.vllm_compat.v0_19_1."
 
 
+def _is_digest(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
 class SelectiveRegistrationErrorCode(str, Enum):
     """Bounded failures suitable for startup diagnostics."""
 
     INVALID_PREREQUISITES = "invalid_prerequisites"
+    INVALID_EVIDENCE = "invalid_evidence"
     INVALID_MODEL_ARCHITECTURE = "invalid_model_architecture"
     INVALID_MODEL_CLASS_PATH = "invalid_model_class_path"
     INVALID_BACKEND_CLASS_PATH = "invalid_backend_class_path"
@@ -58,6 +67,37 @@ def _is_bool(value: object) -> bool:
 
 
 @dataclass(frozen=True, slots=True)
+class SelectiveGateEvidence:
+    """Immutable digests binding registration to pinned GPU artifacts.
+
+    The booleans in :class:`SelectivePrerequisites` are assertions about the
+    artifacts; these digests make those assertions auditable and prevent a
+    future plugin entry point from being enabled with four unbound ``True``
+    values. The files themselves stay outside the runtime package and are
+    supplied by the solab-g3 experiment hand-off.
+    """
+
+    runtime_digest: str
+    full_prefill_digest: str
+    transfer_digest: str
+    yarn_digest: str
+    hybrid_sink_digest: str
+
+    def __post_init__(self) -> None:
+        if not all(
+            _is_digest(value)
+            for value in (
+                self.runtime_digest,
+                self.full_prefill_digest,
+                self.transfer_digest,
+                self.yarn_digest,
+                self.hybrid_sink_digest,
+            )
+        ):
+            _fail(SelectiveRegistrationErrorCode.INVALID_EVIDENCE)
+
+
+@dataclass(frozen=True, slots=True)
 class SelectivePrerequisites:
     """Immutable proof inputs required before registering selective classes."""
 
@@ -65,6 +105,7 @@ class SelectivePrerequisites:
     transfer_100pct: bool
     yarn_correction: bool
     hybrid_groups_and_sinks: bool
+    evidence: SelectiveGateEvidence | None = None
 
     def __post_init__(self) -> None:
         if not all(
@@ -77,6 +118,10 @@ class SelectivePrerequisites:
             )
         ):
             _fail(SelectiveRegistrationErrorCode.INVALID_PREREQUISITES)
+        if self.evidence is not None and not isinstance(
+            self.evidence, SelectiveGateEvidence
+        ):
+            _fail(SelectiveRegistrationErrorCode.INVALID_EVIDENCE)
 
     @property
     def ready(self) -> bool:
@@ -85,6 +130,7 @@ class SelectivePrerequisites:
             and self.transfer_100pct
             and self.yarn_correction
             and self.hybrid_groups_and_sinks
+            and self.evidence is not None
         )
 
 
@@ -255,6 +301,7 @@ __all__ = [
     "CUSTOM_ATTENTION_BACKEND_NAME",
     "GPT_OSS_MODEL_ARCHITECTURE",
     "SelectiveExtensionRegistrar",
+    "SelectiveGateEvidence",
     "SelectivePrerequisites",
     "SelectiveRegistrationError",
     "SelectiveRegistrationErrorCode",

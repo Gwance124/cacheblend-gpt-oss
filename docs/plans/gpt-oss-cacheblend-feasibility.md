@@ -362,6 +362,11 @@ must remain inside this project, `CUSTOM` is bound before the model override,
 and a partial registration fails closed for the process lifetime. It is a
 library seam only; no plugin entry point is enabled.
 
+The guard also requires a `SelectiveGateEvidence` bundle containing immutable
+SHA-256 digests for the exact runtime, full-prefill tolerance, 100%-transfer,
+YaRN, and hybrid/sink artifacts. This prevents a future plugin from turning
+four manually supplied booleans into an implicit serving default.
+
 The tensor-free `gpt_oss.selective_kv` planner now splits complete hybrid
 layer spans by those row selections and preserves source-position metadata and
 physical destination slots. It is a structural contract for
