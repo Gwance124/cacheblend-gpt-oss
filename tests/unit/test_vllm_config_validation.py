@@ -249,6 +249,28 @@ def test_pinned_config_does_not_coerce_object_names_to_strings(
 
 
 @pytest.mark.parametrize(
+    "layer_name_value",
+    [
+        "model.layers.00.attn.attn",
+        "model.layers." + "9" * 10_000 + ".attn.attn",
+    ],
+)
+def test_malformed_numeric_layer_names_fail_as_bounded_issues(
+    layer_name_value: str,
+) -> None:
+    vllm_config, kv_cache_config = _valid_config()
+    kv_cache_config.kv_cache_groups[0].layer_names[0] = layer_name_value
+
+    issues = collect_pinned_config_issues(
+        vllm_config,
+        kv_cache_config,
+        v2_model_runner_enabled=False,
+    )
+
+    assert "kv.groups.0.layer_name" in {issue.field for issue in issues}
+
+
+@pytest.mark.parametrize(
     ("mutation", "expected_field"),
     [
         (

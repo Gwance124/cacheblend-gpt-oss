@@ -107,7 +107,16 @@ def extract_gpt_oss_layer_index(layer_name: str) -> int:
     match = _LAYER_NAME_PATTERN.fullmatch(layer_name)
     if match is None:
         _raise(HybridLayoutErrorCode.INVALID_LAYER_NAME)
-    layer_index = int(match.group(1))
+    digits = match.group(1)
+    # The pinned module names are canonical decimal indices ``0`` through
+    # ``23``. Reject leading-zero aliases and bound conversion before calling
+    # ``int`` so malformed external objects cannot raise an unbounded parser
+    # exception or alias a different layer identity.
+    if len(digits) > 2:
+        _raise(HybridLayoutErrorCode.LAYER_INDEX_OUT_OF_RANGE)
+    if len(digits) > 1 and digits.startswith("0"):
+        _raise(HybridLayoutErrorCode.INVALID_LAYER_NAME)
+    layer_index = int(digits)
     if not 0 <= layer_index < GPT_OSS_NUM_LAYERS:
         _raise(HybridLayoutErrorCode.LAYER_INDEX_OUT_OF_RANGE)
     return layer_index

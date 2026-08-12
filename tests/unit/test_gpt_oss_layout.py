@@ -258,6 +258,7 @@ def test_duplicate_and_noncontiguous_group_ids_are_rejected() -> None:
         "draft_model.layers.0.attn.attn",
         "model.layers.zero.attn.attn",
         "model.layers.0.attn.attn.extra",
+        "model.layers.00.attn.attn",
     ],
 )
 def test_noncanonical_layer_name_is_rejected(bad_name: str) -> None:
@@ -268,10 +269,14 @@ def test_noncanonical_layer_name_is_rejected(bad_name: str) -> None:
 
 
 def test_out_of_range_layer_index_is_rejected() -> None:
-    assert_error(
-        HybridLayoutErrorCode.LAYER_INDEX_OUT_OF_RANGE,
-        lambda: extract_gpt_oss_layer_index(layer_name(24)),
-    )
+    for bad_name in (
+        layer_name(24),
+        "model.layers." + "9" * 10_000 + ".attn.attn",
+    ):
+        assert_error(
+            HybridLayoutErrorCode.LAYER_INDEX_OUT_OF_RANGE,
+            lambda bad_name=bad_name: extract_gpt_oss_layer_index(bad_name),
+        )
 
 
 def test_too_short_block_table_fails_before_a_plan_is_returned(

@@ -141,7 +141,11 @@ def _layer_index(layer_name: object) -> int | None:
     if not layer_name.startswith(prefix) or not layer_name.endswith(suffix):
         return None
     value = layer_name[len(prefix) : -len(suffix)]
-    return int(value) if value.isdigit() else None
+    if not value.isdigit() or len(value) > 2 or (
+        len(value) > 1 and value.startswith("0")
+    ):
+        return None
+    return int(value)
 
 
 def collect_pinned_config_issues(
