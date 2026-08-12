@@ -179,6 +179,12 @@ Deliverables:
 - Capture recomputed full- and sliding-layer K/V during `save_kv_layer`, not
   solely at request completion.
 
+The CPU-only `correctness.transfer` sidecar schema now defines this evidence
+boundary: every layer must carry K/V digests for destination-before, loaded
+source, and fresh-prefill values, with exact source/loaded and target/prefill
+agreement. It remains an empty contract until a worker-side `solab-g3` probe
+supplies real tensor samples.
+
 GPU correctness sequence:
 
 1. Run prompt A with document D at source position and store its reusable KV.

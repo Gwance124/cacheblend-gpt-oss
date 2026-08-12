@@ -425,6 +425,12 @@ from repeated full prefill before CacheBlend is run. These values are not
 high-cardinality Prometheus labels. Raw hidden-state/layer probes remain an
 additional live-debug surface, not a claimed artifact field.
 
+The separate `correctness.transfer` sidecar contract is the planned bridge for
+that live-debug evidence. It requires source/loaded/target digest agreement and
+an observed before/load/prefill transition for all 24 layers, with even
+sliding-window and odd full-attention kinds checked independently. Its presence
+is never inferred from fluent output or connector counters alone.
+
 At the request boundary, `found == loaded + rejected`, and
 `effective_saved_prefill_fraction == 0` whenever recomputation is 100%.
 Violating these invariants fails the test run. The first live numerical gate is
