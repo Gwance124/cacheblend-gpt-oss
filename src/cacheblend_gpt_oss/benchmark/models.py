@@ -195,7 +195,16 @@ class BenchmarkTrial:
             # that reports fewer recomputed rows would silently turn a prefix
             # or external-cache hit into the baseline and invalidate every
             # comparison derived from this artifact.
-            if not self.metrics.counters.is_full_recomputation:
+            counters = self.metrics.counters
+            if (
+                not counters.is_full_recomputation
+                or counters.reusable_documents_requested != 0
+                or counters.reusable_documents_hit != 0
+                or counters.reusable_document_tokens_requested != 0
+                or counters.kv_tokens_found != 0
+                or counters.kv_tokens_loaded != 0
+                or counters.kv_tokens_rejected != 0
+            ):
                 _fail(BenchmarkErrorCode.ARM_METRIC_MISMATCH)
         elif self.arm is BenchmarkArm.CACHEBLEND_SELECTIVE:
             if self.recompute_ratio is None or self.recompute_ratio >= 1.0:

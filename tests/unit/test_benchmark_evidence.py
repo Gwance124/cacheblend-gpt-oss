@@ -52,16 +52,18 @@ def _runtime() -> CorrectnessRuntimeIdentity:
     )
 
 
-def _metrics(*, recomputed: int = 100, avoided: int = 0) -> RequestMetrics:
+def _metrics(
+    *, recomputed: int = 100, avoided: int = 0, reusable: bool = True
+) -> RequestMetrics:
     return RequestMetrics(
         counters=RequestMetricCounters(
             prompt_tokens=100,
-            reusable_documents_requested=1,
-            reusable_documents_hit=1,
-            reusable_document_tokens_requested=60,
-            kv_tokens_found=60,
-            kv_tokens_loaded=55,
-            kv_tokens_rejected=5,
+            reusable_documents_requested=1 if reusable else 0,
+            reusable_documents_hit=1 if reusable else 0,
+            reusable_document_tokens_requested=60 if reusable else 0,
+            kv_tokens_found=60 if reusable else 0,
+            kv_tokens_loaded=55 if reusable else 0,
+            kv_tokens_rejected=5 if reusable else 0,
             tokens_recomputed=recomputed,
             prefill_tokens_avoided=avoided,
         ),
@@ -104,6 +106,7 @@ def _trial(
         metrics=_metrics(
             recomputed=100 if full_recompute else 40,
             avoided=0 if full_recompute else 60,
+            reusable=arm is not BenchmarkArm.FULL_PREFILL,
         ),
         recompute_ratio=(
             0.5
@@ -216,7 +219,7 @@ def test_missing_correctness_makes_report_not_ready_but_remains_recordable() -> 
 
 
 def test_missing_latency_is_not_reported_as_zero_or_ready() -> None:
-    metrics = _metrics()
+    metrics = _metrics(reusable=False)
     incomplete = RequestMetrics(
         counters=metrics.counters,
         timers=RequestMetricTimers(
