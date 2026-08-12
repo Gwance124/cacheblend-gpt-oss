@@ -104,8 +104,12 @@ class CacheNamespace:
         for name, value in self.canonical_fields():
             if name == "schema_version":
                 continue
+            if not isinstance(value, str):
+                raise TypeError(f"{name} must be a string")
             if not value:
                 raise ValueError(f"{name} must not be empty")
+            if "\x00" in value:
+                raise ValueError(f"{name} must not contain NUL")
 
     def canonical_fields(self) -> tuple[tuple[str, str], ...]:
         """Return a stable, explicitly named representation for hashing."""
@@ -154,12 +158,20 @@ class CacheRecord:
     cache_key: str
 
     def __post_init__(self) -> None:
+        if not isinstance(self.namespace, CacheNamespace):
+            raise TypeError("cache record namespace must be a CacheNamespace")
+        if not isinstance(self.fingerprint, SegmentFingerprint):
+            raise TypeError("cache record fingerprint must be a SegmentFingerprint")
         normalized = normalize_token_ids(self.token_ids)
         object.__setattr__(self, "token_ids", normalized)
         if not normalized:
             raise ValueError("a cache record must not be empty")
+        if not isinstance(self.source_range, TokenRange):
+            raise TypeError("cache record source range must be a TokenRange")
         if len(self.source_range) != len(normalized):
             raise ValueError("source range length must equal the token count")
+        if not isinstance(self.cache_key, str):
+            raise TypeError("cache key must be a string")
         if not self.cache_key:
             raise ValueError("cache key must not be empty")
 

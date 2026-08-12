@@ -4,6 +4,8 @@ import pytest
 
 from cacheblend_gpt_oss.planner import (
     CacheNamespace,
+    CacheRecord,
+    TokenRange,
     TokenSegment,
     canonical_token_bytes,
     fingerprint_segment,
@@ -43,6 +45,55 @@ def test_fingerprint_is_position_independent_but_namespace_bound() -> None:
         moved.token_ids,
     )
     assert source_fingerprint != fingerprint_segment(namespace(), [17, 23, 42])
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "model_id",
+        "model_revision",
+        "tokenizer_id",
+        "tokenizer_revision",
+        "model_config_digest",
+        "kv_cache_config_digest",
+        "adapter_revision",
+        "vllm_version",
+        "lmcache_version",
+        "torch_version",
+        "cuda_runtime",
+    ],
+)
+def test_cache_namespace_rejects_nonstring_or_nul_identity_fields(
+    field_name: str,
+) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        replace(namespace(), **{field_name: True})
+    with pytest.raises(ValueError):
+        replace(namespace(), **{field_name: "invalid\x00identity"})
+
+
+def test_cache_record_rejects_untyped_descriptor_fields() -> None:
+    segment = TokenSegment.at(10, [17, 23, 41])
+    record = CacheRecord(
+        namespace=namespace(),
+        fingerprint=fingerprint_segment(namespace(), segment.token_ids),
+        token_ids=segment.token_ids,
+        source_range=segment.token_range,
+        cache_key="cache-key",
+    )
+
+    invalid_fields = (
+        ("namespace", object()),
+        ("fingerprint", object()),
+        ("source_range", object()),
+        ("cache_key", True),
+    )
+    for field_name, invalid in invalid_fields:
+        with pytest.raises(TypeError):
+            replace(record, **{field_name: invalid})
+
+    with pytest.raises(ValueError):
+        replace(record, source_range=TokenRange(10, 12))
 
 
 def test_canonical_token_encoding_has_sequence_boundaries() -> None:
