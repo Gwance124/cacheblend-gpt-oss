@@ -38,6 +38,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from importlib import import_module
+from math import isfinite
+from time import perf_counter
 from typing import Any, NoReturn, Protocol
 
 from cacheblend_gpt_oss.gpt_oss.layout import (
@@ -179,10 +181,21 @@ class DataPlaneReceipt:
     copied_key_rows: int
     copied_value_rows: int
     sinks_touched: bool = False
+    position_correction_latency_seconds: float = 0.0
 
     def __post_init__(self) -> None:
         if self.sinks_touched:
             _fail(DataPlaneErrorCode.INVALID_SPAN, "attention sinks cannot be touched")
+        if (
+            isinstance(self.position_correction_latency_seconds, bool)
+            or not isinstance(self.position_correction_latency_seconds, int | float)
+            or not isfinite(self.position_correction_latency_seconds)
+            or self.position_correction_latency_seconds < 0
+        ):
+            _fail(
+                DataPlaneErrorCode.INVALID_SPAN,
+                "position-correction latency must be finite and nonnegative",
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,17 +267,18 @@ class GptOssDataPlane:
             )
 
         prepared: list[_PreparedCopy] = []
+        correction_latency_seconds = 0.0
         for span in validated.spans:
             staging_start = retrieval_buffer_offset + span.target_range.start
-            prepared.extend(
-                self._prepare_scatter_span(
-                    staging,
-                    paged_caches[span.layer_name],
-                    span,
-                    staging_start=staging_start,
-                    correct_key_positions=correct_key_positions,
-                )
+            span_prepared, span_correction_latency = self._prepare_scatter_span(
+                staging,
+                paged_caches[span.layer_name],
+                span,
+                staging_start=staging_start,
+                correct_key_positions=correct_key_positions,
             )
+            prepared.extend(span_prepared)
+            correction_latency_seconds += span_correction_latency
 
         self._apply(prepared, next(iter(paged_caches.values())))
         return DataPlaneReceipt(
@@ -275,6 +289,7 @@ class GptOssDataPlane:
             corrected_key_rows=validated.layer_token_rows,
             copied_key_rows=validated.layer_token_rows,
             copied_value_rows=validated.layer_token_rows,
+            position_correction_latency_seconds=correction_latency_seconds,
         )
 
     def gather_precomputed_kv(
@@ -433,7 +448,7 @@ class GptOssDataPlane:
         *,
         staging_start: int,
         correct_key_positions: KeyPositionCorrector,
-    ) -> tuple[_PreparedCopy, _PreparedCopy]:
+    ) -> tuple[tuple[_PreparedCopy, _PreparedCopy], float]:
         token_count = span.token_count
         try:
             staged_key = self._ops.staging_rows(
@@ -484,6 +499,7 @@ class GptOssDataPlane:
         self._validate_view(value_destination, expected_shape, paged)
         source_positions = tuple(range(span.source_range.start, span.source_range.end))
         target_positions = tuple(range(span.target_range.start, span.target_range.end))
+        correction_started_at = perf_counter()
         try:
             corrected_key = correct_key_positions(
                 key_rows,
@@ -496,6 +512,7 @@ class GptOssDataPlane:
                 DataPlaneErrorCode.POSITION_CORRECTION_FAILED,
                 "GPT-OSS YaRN key correction failed before cache mutation",
             ) from exc
+        correction_latency_seconds = perf_counter() - correction_started_at
         try:
             self._validate_view(corrected_key, expected_shape, staging)
         except DataPlaneError as exc:
@@ -504,8 +521,11 @@ class GptOssDataPlane:
                 "corrected K shape, dtype, or device is invalid",
             ) from exc
         return (
-            _PreparedCopy(key_destination, corrected_key),
-            _PreparedCopy(value_destination, value_rows),
+            (
+                _PreparedCopy(key_destination, corrected_key),
+                _PreparedCopy(value_destination, value_rows),
+            ),
+            correction_latency_seconds,
         )
 
     def _prepare_gather_span(

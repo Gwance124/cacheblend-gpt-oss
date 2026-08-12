@@ -319,6 +319,7 @@ def test_scatter_reads_target_plus_offset_corrects_only_k_and_copies_v() -> None
     assert receipt.layer_token_rows == len(TARGET) * 24
     assert receipt.span_count == 48
     assert receipt.corrected_key_rows == len(TARGET) * 24
+    assert receipt.position_correction_latency_seconds >= 0.0
     assert not receipt.sinks_touched
     assert len(corrector.calls) == 48
     assert ops.copy_count == 96

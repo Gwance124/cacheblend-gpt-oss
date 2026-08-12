@@ -390,6 +390,7 @@ class GptOssWorkerBridge:
         self._load_storage_preflight: WorkerLoadPlan | None = None
         self._load_data_preflight: WorkerLoadPlan | None = None
         self._retrieved_plan: WorkerLoadPlan | None = None
+        self._position_correction_latency_seconds = 0.0
         self._gather_preflight: WorkerStorePlan | None = None
         self._store_preflight: WorkerStorePlan | None = None
         self._gathered_plan: WorkerStorePlan | None = None
@@ -403,6 +404,12 @@ class GptOssWorkerBridge:
         """Expose lifecycle state/tensor ownership, never the transport binding."""
 
         return self._staging
+
+    @property
+    def position_correction_latency_seconds(self) -> float:
+        """Duration of the most recently completed active load correction."""
+
+        return self._position_correction_latency_seconds
 
     def open(self) -> object:
         """Open transport first, then allocate/register its exact staging tensor."""
@@ -520,6 +527,8 @@ class GptOssWorkerBridge:
 
         self._require_plan(self._retrieved_plan, plan)
         staging = self._staging.tensor
+        correction_latency_seconds = 0.0
+        self._position_correction_latency_seconds = 0.0
         try:
             for candidate in plan.candidates:
                 receipt = self._data_plane.scatter_retrieved_kv(
@@ -538,8 +547,12 @@ class GptOssWorkerBridge:
                     LMCACHE_CHUNK_SIZE,
                     len(candidate.scatter_plan.layer_spans),
                 )
+                correction_latency_seconds += (
+                    receipt.position_correction_latency_seconds
+                )
         finally:
             self._retrieved_plan = None
+        self._position_correction_latency_seconds = correction_latency_seconds
 
     def preflight_gather(self, plan: WorkerStorePlan) -> None:
         """Dry-run every complete-chunk gather before staging mutation."""

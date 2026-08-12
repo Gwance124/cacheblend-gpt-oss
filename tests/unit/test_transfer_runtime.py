@@ -338,7 +338,8 @@ def test_moved_candidate_loads_then_full_prompt_recomputes_and_stores_chunks() -
     None
 ):
     metadata, blocks = _metadata()
-    runtime, _storage, _data_plane, calls, mutations = _runtime()
+    runtime, _storage, data_plane, calls, mutations = _runtime()
+    data_plane.position_correction_latency_seconds = 0.25
 
     loaded = runtime.before_forward(metadata, blocks)
 
@@ -356,6 +357,7 @@ def test_moved_candidate_loads_then_full_prompt_recomputes_and_stores_chunks() -
     assert loaded.tokens_to_recompute == 600
     assert loaded.external_scheduler_tokens == 0
     assert loaded.prefill_tokens_avoided == 0
+    assert loaded.position_correction_latency_seconds == pytest.approx(0.25)
     receipt = loaded.to_worker_validation_receipt()
     assert receipt.loaded_match_indexes == (0,)
 

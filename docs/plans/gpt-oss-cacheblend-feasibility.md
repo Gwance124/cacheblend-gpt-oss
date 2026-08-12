@@ -12,10 +12,11 @@ gate is manual CUDA and connector/model execution on `solab-g3`; no such pass
 is claimed yet.
 
 The connector stats schema now includes separate position-correction and
-selective-recomputation latency histograms. Both are explicitly zero in the
-100%-recompute path and can become nonzero only when a future worker supplies
-measured values; this keeps the required observability surface stable without
-fabricating GPU measurements.
+selective-recomputation latency histograms. Position-correction latency is
+measured for completed 100%-recompute loads; selective-recomputation latency
+remains explicitly zero until a future worker supplies measured values. This
+keeps the required observability surface stable without fabricating GPU
+measurements.
 
 The model-config gate follows vLLM's pinned GPT-OSS source field names
 (`rope_parameters`) and is intentionally separate from weight/logit evidence.

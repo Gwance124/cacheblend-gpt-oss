@@ -416,7 +416,7 @@ artifacts. Connector metric labels are limited to vLLM's bounded engine labels:
 | `vllm:cacheblend_lookup_latency_seconds` | Scheduler-side matching/storage lookup wall time |
 | `vllm:cacheblend_transfer_latency_seconds` | Load preflight, transport, staging, correction, and scatter wall time |
 | `vllm:cacheblend_store_latency_seconds` | Post-prefill gather, LMCache store, and atomic sidecar publication wall time |
-| `vllm:cacheblend_position_correction_latency_seconds` | Position-correction duration; zero in the current 100% connector hook and populated by a future selective worker |
+| `vllm:cacheblend_position_correction_latency_seconds` | Measured YaRN position-correction duration for completed 100%-recompute loads; zero on misses/fallbacks |
 | `vllm:cacheblend_selective_recomputation_latency_seconds` | Selective model/backend duration; zero in the current 100% connector hook and required before M7 GPU claims |
 | vLLM TTFT/prefill metrics | Server-measured TTFT and total prefill latency; the non-streaming client cannot infer TTFT |
 

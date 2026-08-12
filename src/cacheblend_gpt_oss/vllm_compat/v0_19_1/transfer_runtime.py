@@ -27,6 +27,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from math import isfinite
 from typing import NoReturn, Protocol
 
 from cacheblend_gpt_oss.connector.control_plane import (
@@ -355,6 +356,7 @@ class PreForwardOutcome:
     tokens_to_recompute: int
     external_scheduler_tokens: int = FULL_RECOMPUTE_EXTERNAL_TOKENS
     prefill_tokens_avoided: int = 0
+    position_correction_latency_seconds: float = 0.0
 
     def __post_init__(self) -> None:
         if not isinstance(self.metadata, SchedulerTransferMetadata) or not isinstance(
@@ -386,6 +388,13 @@ class PreForwardOutcome:
             or self.tokens_to_recompute != self.metadata.prompt_token_count
             or self.external_scheduler_tokens != FULL_RECOMPUTE_EXTERNAL_TOKENS
             or self.prefill_tokens_avoided != 0
+        ):
+            _fail(TransferRuntimeErrorCode.INVALID_OUTCOME)
+        if (
+            isinstance(self.position_correction_latency_seconds, bool)
+            or not isinstance(self.position_correction_latency_seconds, int | float)
+            or not isfinite(self.position_correction_latency_seconds)
+            or self.position_correction_latency_seconds < 0
         ):
             _fail(TransferRuntimeErrorCode.INVALID_OUTCOME)
         expected_loaded_tokens = sum(
@@ -607,6 +616,7 @@ class TransferRuntime:
             rejected_candidate_indexes=(),
             loaded_kv_tokens=plan.expected_tokens,
             tokens_to_recompute=metadata.prompt_token_count,
+            position_correction_latency_seconds=self._read_position_correction_latency(),
         )
 
     def mark_full_prefill_complete(
@@ -837,6 +847,19 @@ class TransferRuntime:
             loaded_kv_tokens=0,
             tokens_to_recompute=metadata.prompt_token_count,
         )
+
+    def _read_position_correction_latency(self) -> float:
+        """Read optional worker timing without making telemetry a validity gate."""
+
+        value = getattr(self._data_plane, "position_correction_latency_seconds", 0.0)
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int | float)
+            or not isfinite(value)
+            or value < 0
+        ):
+            return 0.0
+        return float(value)
 
     @staticmethod
     def _store_outcome(

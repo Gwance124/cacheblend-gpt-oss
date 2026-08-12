@@ -457,6 +457,9 @@ class _FakeDataPlane:
         self.ops = ops
         self.trace = trace
         self.label = "active" if instance_index == 0 else "preflight"
+        self.position_correction_latency_seconds = (
+            0.25 if self.label == "active" else 0.0
+        )
 
     @staticmethod
     def _ranges(
@@ -516,6 +519,9 @@ class _FakeDataPlane:
             rows,
             rows,
             rows,
+            position_correction_latency_seconds=(
+                self.position_correction_latency_seconds
+            ),
         )
 
     def gather_precomputed_kv(
@@ -647,6 +653,7 @@ def test_load_preflight_is_read_only_and_preserves_offset_and_yarn_positions() -
     assert "retrieve:32:600:1" in fixture.trace
     assert "active.scatter:32:600" in fixture.trace
     assert fixture.trace.count("tensor.copy") == 1
+    assert fixture.bridge.position_correction_latency_seconds == pytest.approx(0.25)
 
 
 def test_same_staging_region_is_reused_sequentially_for_load_then_store() -> None:

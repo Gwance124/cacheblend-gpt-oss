@@ -477,6 +477,9 @@ class GptOssCacheBlendConnector(
                     outcome.state is TransferAttemptState.FULL_PREFILL_FALLBACK
                 ),
                 latency_seconds=perf_counter() - started_at,
+                position_correction_latency_seconds=(
+                    outcome.position_correction_latency_seconds
+                ),
             )
             receipt = self._control_plane.validate_worker(
                 handoff.plan.request_id,
