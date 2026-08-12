@@ -34,6 +34,7 @@ from cacheblend_gpt_oss.correctness import (
     CorrectnessCase,
     CorrectnessRunMode,
     CorrectnessRuntimeIdentity,
+    VllmPrefillWorkSnapshot,
     VllmTimingSnapshot,
     build_correctness_fixture,
     connector_evidence_from_snapshots,
@@ -324,6 +325,7 @@ def main() -> int:
     connector = None
     target_prompt_tokens_processed: int | None = None
     target_prompt_source_delta: dict[str, int] | None = None
+    target_prefill_work_delta: VllmPrefillWorkSnapshot | None = None
     target_timing_delta: VllmTimingSnapshot | None = None
     if mode is CorrectnessRunMode.CACHEBLEND_100PCT:
         initial_metrics = client.get_text("/metrics")
@@ -449,6 +451,7 @@ def main() -> int:
             target_prefill_delta,
             expected_prompt_tokens=len(fixture.target_prompt_token_ids),
         )
+        target_prefill_work_delta = target_prefill_delta
         source_timing = vllm_timing_snapshot_delta(
             initial_timing,
             parse_vllm_timing_snapshot(after_source_metrics),
@@ -530,6 +533,7 @@ def main() -> int:
             target_prefill_delta,
             expected_prompt_tokens=len(fixture.target_prompt_token_ids),
         )
+        target_prefill_work_delta = target_prefill_delta
         target_timing_delta = vllm_timing_snapshot_delta(
             initial_timing,
             parse_vllm_timing_snapshot(after_metrics),
@@ -567,6 +571,16 @@ def main() -> int:
                 ),
                 "native_prompt_tokens_processed": target_prompt_tokens_processed,
                 "native_prompt_source_delta": target_prompt_source_delta,
+                "native_prefill_work": (
+                    None
+                    if target_prefill_work_delta is None
+                    else {
+                        "observations": target_prefill_work_delta.observations,
+                        "kv_computed_tokens": (
+                            target_prefill_work_delta.kv_computed_tokens
+                        ),
+                    }
+                ),
                 "vllm_timing_delta": (
                     None
                     if target_timing_delta is None
