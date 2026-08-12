@@ -196,6 +196,10 @@ CACHEBLEND_KV_CONFIG=$(
 export CACHEBLEND_KV_CONFIG
 ```
 
+The transfer run below uses a 1024-token one-step/staging envelope because the
+required reordered-documents fixture is 536 tokens; a 512-token envelope would
+correctly fall back before lookup for that case.
+
 Start vLLM using precisely the baseline flags plus the rendered connector:
 
 ```bash
