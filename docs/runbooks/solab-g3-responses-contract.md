@@ -23,8 +23,9 @@ reasoning in
 This repository's harness is stricter about append-only behavior: it carries
 every output item, including Harmony reasoning, into the next input. It records
 only structural counts, bounded type/name data, immutable runtime identity, and
-aggregate connector counters. Response IDs, call IDs, argument values,
-reasoning text, and message text are not written into the report.
+aggregate connector counters, and bounded deltas from vLLM's pinned timing
+histograms. Response IDs, call IDs, argument values, reasoning text, and
+message text are not written into the report.
 
 ## Preconditions
 
@@ -104,8 +105,10 @@ It fails unless every response completes, every turn emits a Harmony reasoning
 item, the first emits exactly the named function call with valid JSON
 arguments, both later turns emit nonempty message text, the fixed city survives
 both continuations, exactly three connector requests are observed, all
-connector counter deltas reconcile, recomputed tokens are nonzero, and saved
-prefill is zero.
+connector counter deltas reconcile, each pinned vLLM timing histogram records
+exactly three observations, recomputed tokens are nonzero, and saved prefill is
+zero. The report stores count, sum, and mean for TTFT, end-to-end, queue,
+prefill, and decode latency; TTFT is never inferred from client wall time.
 
 ## Stop/go decision
 
@@ -116,6 +119,8 @@ Go only when:
 - the report's runtime identity exactly matches the M3 artifacts;
 - the connector delta has `requests == 3`, positive recomputation, zero saved
   prefill, and `found == loaded + rejected`; and
+- `vllm_timing_delta` has three observations for each timing family with finite
+  aggregate sums; and
 - the server log contains no fallback, parser error, transfer/correction error,
   or partial group/layer operation.
 

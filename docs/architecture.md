@@ -426,6 +426,16 @@ remain missing rather than being reported as zero. The M9 benchmark artifact
 also records peak memory and staging overhead per trial, then summarizes those
 values with the same repeated-trial confidence-interval calculation.
 
+The Responses contract harness parses the pinned vLLM histogram families
+`vllm:time_to_first_token_seconds`, `vllm:e2e_request_latency_seconds`,
+`vllm:request_queue_time_seconds`, `vllm:request_prefill_time_seconds`, and
+`vllm:request_decode_time_seconds` from their `_count`/`_sum` samples. It
+requires one observation per request and stores only aggregate count/sum/mean
+values; labels and bucket samples are discarded. These names and semantics are
+from the pinned
+[`PrometheusStatLogger`](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/v1/metrics/loggers.py#L727-L889),
+not inferred client timings.
+
 The implemented M3 correctness artifacts record the complete normalized output
 logprob vector, sampled/top token, BF16 dtype, prompt/token digests, exact
 runtime/config/plugin identity, and reconciled connector work. The evaluator
