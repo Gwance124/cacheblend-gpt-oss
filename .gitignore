@@ -6,10 +6,10 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .venv/
+uv.lock
 build/
 dist/
 
 # Local benchmark and model artifacts must not enter source control.
 artifacts/
 models/
-
