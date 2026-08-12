@@ -185,6 +185,12 @@ source, and fresh-prefill values, with exact source/loaded and target/prefill
 agreement. It remains an empty contract until a worker-side `solab-g3` probe
 supplies real tensor samples.
 
+The dependency-free `TransferEvidenceBuilder` now supplies the worker probe's
+assembly seam. It accepts only the next canonical layer, rejects duplicates or
+out-of-order samples, requires all 24 layers before finalization, and becomes
+immutable after producing the sidecar. It performs no tensor sampling itself;
+the CUDA probe still must provide real digest values.
+
 GPU correctness sequence:
 
 1. Run prompt A with document D at source position and store its reusable KV.

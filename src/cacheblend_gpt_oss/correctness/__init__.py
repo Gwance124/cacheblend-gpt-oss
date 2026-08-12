@@ -65,6 +65,12 @@ from cacheblend_gpt_oss.correctness.transfer import (
     validate_transfer_evidence_binding,
     write_transfer_evidence,
 )
+from cacheblend_gpt_oss.correctness.transfer_capture import (
+    TransferCaptureError,
+    TransferCaptureErrorCode,
+    TransferEvidenceBuilder,
+    TransferEvidenceCaptureMetadata,
+)
 
 __all__ = [
     "ARTIFACT_SCHEMA_VERSION",
@@ -85,7 +91,11 @@ __all__ = [
     "MovedDocumentFixture",
     "PromptCaseIdentity",
     "ReusableSegmentIdentity",
+    "TransferCaptureError",
+    "TransferCaptureErrorCode",
     "TransferEvidence",
+    "TransferEvidenceBuilder",
+    "TransferEvidenceCaptureMetadata",
     "TransferEvidenceError",
     "TransferEvidenceErrorCode",
     "artifact_digest",

@@ -443,6 +443,10 @@ also accepts the CacheBlend correctness artifact and then requires matching
 source/target prompt digests, target length, loaded-token count,
 recomputed-token count, and saved-prefill count. A valid sidecar from another
 request therefore cannot be substituted for the artifact's own transfer proof.
+The dependency-free `TransferEvidenceBuilder` is the intended worker-probe
+assembly seam: it accepts one canonical layer at a time and cannot finalize a
+partial or reordered 24-layer capture. It does not sample tensors or claim a
+GPU result by itself.
 
 At the request boundary, `found == loaded + rejected`, and
 `effective_saved_prefill_fraction == 0` whenever recomputation is 100%.
