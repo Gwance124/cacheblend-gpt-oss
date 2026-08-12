@@ -508,6 +508,8 @@ store timings, native serving timings, recomputed/avoided rows, and absolute/
 mean logit error. It reports `benchmark_ready=false` until both the ordinary
 full-prefill and CacheBlend-100%-recompute control arms exist and every
 recorded trial has passing correctness evidence.
+The dedicated vLLM prefix arms also reject CacheBlend counters; the moved
+prefix control must report full prompt recomputation and zero avoided rows.
 
 Run these isolated arms from identical model/runtime/config snapshots:
 

@@ -207,6 +207,49 @@ def test_full_prefill_arm_cannot_claim_avoided_work() -> None:
     assert caught.value.code is BenchmarkErrorCode.ARM_METRIC_MISMATCH
 
 
+def test_prefix_controls_cannot_claim_cacheblend_kv_or_moved_savings() -> None:
+    with pytest.raises(BenchmarkError) as caught:
+        BenchmarkTrial(
+            arm=BenchmarkArm.VLLM_PREFIX_MOVED,
+            case=CorrectnessCase.MOVED_DOCUMENT,
+            cache_state=BenchmarkCacheState.WARM,
+            trial_index=1,
+            metrics=_metrics(recomputed=100, avoided=0),
+            recompute_ratio=None,
+            peak_memory_bytes=1,
+            correctness_passed=True,
+            correctness_artifact_digest="d" * 64,
+        )
+    assert caught.value.code is BenchmarkErrorCode.ARM_METRIC_MISMATCH
+
+    with pytest.raises(BenchmarkError) as caught:
+        BenchmarkTrial(
+            arm=BenchmarkArm.VLLM_PREFIX_MOVED,
+            case=CorrectnessCase.MOVED_DOCUMENT,
+            cache_state=BenchmarkCacheState.WARM,
+            trial_index=1,
+            metrics=_metrics(recomputed=40, avoided=60, reusable=False),
+            recompute_ratio=None,
+            peak_memory_bytes=1,
+            correctness_passed=True,
+            correctness_artifact_digest="d" * 64,
+        )
+    assert caught.value.code is BenchmarkErrorCode.ARM_METRIC_MISMATCH
+
+    clean = BenchmarkTrial(
+        arm=BenchmarkArm.VLLM_PREFIX_MOVED,
+        case=CorrectnessCase.MOVED_DOCUMENT,
+        cache_state=BenchmarkCacheState.WARM,
+        trial_index=1,
+        metrics=_metrics(recomputed=100, avoided=0, reusable=False),
+        recompute_ratio=None,
+        peak_memory_bytes=1,
+        correctness_passed=True,
+        correctness_artifact_digest="d" * 64,
+    )
+    assert clean.metrics.counters.is_full_recomputation
+
+
 def test_missing_correctness_makes_report_not_ready_but_remains_recordable() -> None:
     artifact = _artifact(
         _trial(BenchmarkArm.FULL_PREFILL),

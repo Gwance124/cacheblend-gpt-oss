@@ -207,6 +207,28 @@ class BenchmarkTrial:
                 or counters.kv_tokens_rejected != 0
             ):
                 _fail(BenchmarkErrorCode.ARM_METRIC_MISMATCH)
+        elif self.arm in {
+            BenchmarkArm.VLLM_PREFIX_EXACT,
+            BenchmarkArm.VLLM_PREFIX_MOVED,
+        }:
+            counters = self.metrics.counters
+            if any(
+                value != 0
+                for value in (
+                    counters.reusable_documents_requested,
+                    counters.reusable_documents_hit,
+                    counters.reusable_document_tokens_requested,
+                    counters.kv_tokens_found,
+                    counters.kv_tokens_loaded,
+                    counters.kv_tokens_rejected,
+                )
+            ):
+                _fail(BenchmarkErrorCode.ARM_METRIC_MISMATCH)
+            if self.arm is BenchmarkArm.VLLM_PREFIX_MOVED and (
+                not counters.is_full_recomputation
+                or counters.prefill_tokens_avoided != 0
+            ):
+                _fail(BenchmarkErrorCode.ARM_METRIC_MISMATCH)
         elif self.arm is BenchmarkArm.CACHEBLEND_SELECTIVE:
             if self.recompute_ratio is None or self.recompute_ratio >= 1.0:
                 _fail(BenchmarkErrorCode.ARM_METRIC_MISMATCH)
