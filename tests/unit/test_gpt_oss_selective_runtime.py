@@ -8,6 +8,7 @@ from cacheblend_gpt_oss.gpt_oss.selective import (
     ForwardRowPlan,
     ForwardRowPlanContext,
     SelectivePlanError,
+    SelectivePlanErrorCode,
 )
 from cacheblend_gpt_oss.gpt_oss.selective_runtime import (
     SelectiveForwardBridge,
@@ -115,3 +116,19 @@ def test_non_callable_boundaries_are_rejected() -> None:
             hidden_shape=lambda output: (4, 8),
         )
     assert caught.value.code is SelectiveForwardErrorCode.INVALID_FORWARD
+
+
+def test_plan_error_raised_by_forward_is_a_forward_failure() -> None:
+    def forward() -> object:
+        raise SelectivePlanError(SelectivePlanErrorCode.MISSING_CONTEXT)
+
+    with pytest.raises(SelectiveForwardError) as caught:
+        SelectiveForwardBridge().run(
+            _plan(),
+            expected_rows=4,
+            hidden_size=8,
+            logits_indices=(),
+            forward=forward,
+            hidden_shape=lambda output: (4, 8),
+        )
+    assert caught.value.code is SelectiveForwardErrorCode.FORWARD_FAILED

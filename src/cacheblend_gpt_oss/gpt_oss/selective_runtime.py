@@ -100,7 +100,9 @@ class SelectiveForwardBridge:
         except SelectivePlanError as error:
             if error.code is SelectivePlanErrorCode.ACTIVE_CONTEXT:
                 _fail(SelectiveForwardErrorCode.ACTIVE_CONTEXT)
-            _fail(SelectiveForwardErrorCode.INVALID_PLAN)
+            raise SelectiveForwardError(
+                SelectiveForwardErrorCode.FORWARD_FAILED
+            ) from error
         except Exception as error:
             raise SelectiveForwardError(
                 SelectiveForwardErrorCode.FORWARD_FAILED
