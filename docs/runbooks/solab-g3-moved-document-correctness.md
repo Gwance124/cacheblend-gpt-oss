@@ -190,7 +190,7 @@ CACHEBLEND_KV_CONFIG=$(
     --model-config-digest "$CACHEBLEND_MODEL_CONFIG_DIGEST" \
     --kv-cache-config-digest "$CACHEBLEND_KV_CONFIG_DIGEST" \
     --adapter-revision "$CACHEBLEND_PLUGIN_COMMIT" \
-    --staging-token-capacity 512 \
+    --staging-token-capacity 1024 \
     --request-timeout-seconds 120
 )
 export CACHEBLEND_KV_CONFIG
@@ -208,7 +208,7 @@ export VLLM_USE_V2_MODEL_RUNNER=0
   --max-model-len 131072 \
   --gpu-memory-utilization 0.90 \
   --max-num-seqs 1 \
-  --max-num-batched-tokens 512 \
+  --max-num-batched-tokens 1024 \
   --long-prefill-token-threshold 0 \
   --enforce-eager \
   --no-enable-prefix-caching \
