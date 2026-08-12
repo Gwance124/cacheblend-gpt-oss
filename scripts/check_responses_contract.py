@@ -183,6 +183,8 @@ def _wait_for_requests(
     minimum: int,
     wait_seconds: float,
     *,
+    minimum_prompt_tokens: int | None = None,
+    minimum_prompt_source_local_compute: int | None = None,
     minimum_timing_count: int | None = None,
     minimum_prefill_observations: int | None = None,
 ) -> tuple[dict[str, int], str]:
@@ -192,6 +194,17 @@ def _wait_for_requests(
     while True:
         metrics = client.get_text("/metrics")
         snapshot = parse_connector_counter_snapshot(metrics)
+        prompt_ready = True
+        if minimum_prompt_tokens is not None:
+            prompt = parse_vllm_prompt_counter_snapshot(metrics)
+            prompt_ready = prompt["prompt_tokens"] >= minimum_prompt_tokens
+        prompt_source_ready = True
+        if minimum_prompt_source_local_compute is not None:
+            prompt_source_ready = (
+                has_vllm_prompt_source_metric_surface(metrics)
+                and parse_vllm_prompt_source_snapshot(metrics)["local_compute"]
+                >= minimum_prompt_source_local_compute
+            )
         timing_ready = True
         if minimum_timing_count is not None:
             timing = parse_vllm_timing_snapshot(metrics)
@@ -209,7 +222,13 @@ def _wait_for_requests(
         if minimum_prefill_observations is not None:
             prefill = parse_vllm_prefill_work_snapshot(metrics)
             prefill_ready = prefill.observations >= minimum_prefill_observations
-        if snapshot["requests"] >= minimum and timing_ready and prefill_ready:
+        if (
+            snapshot["requests"] >= minimum
+            and prompt_ready
+            and prompt_source_ready
+            and timing_ready
+            and prefill_ready
+        ):
             return parse_connector_counter_snapshot(metrics), metrics
         if time.monotonic() >= deadline:
             raise TimeoutError("connector metrics did not reach three requests")
@@ -302,6 +321,10 @@ def main() -> int:
         client,
         before["requests"] + 3,
         args.metric_wait_seconds,
+        minimum_prompt_tokens=before_prompt["prompt_tokens"] + 1,
+        minimum_prompt_source_local_compute=(
+            before_prompt_source["local_compute"] + 1
+        ),
         minimum_timing_count=before_timing.ttft_seconds.count + 3,
         minimum_prefill_observations=before_prefill_work.observations + 3,
     )

@@ -173,6 +173,8 @@ def _wait_for_request_counter(
     wait_seconds: float,
     *,
     minimum_store_tokens: int | None = None,
+    minimum_prompt_tokens: int | None = None,
+    minimum_prompt_source_local_compute: int | None = None,
     minimum_timing_count: int | None = None,
     minimum_prefill_observations: int | None = None,
 ) -> tuple[dict[str, int], dict[str, int], str]:
@@ -183,6 +185,19 @@ def _wait_for_request_counter(
         metrics = client.get_text("/metrics")
         snapshot = parse_connector_counter_snapshot(metrics)
         stores = parse_connector_store_counter_snapshot(metrics)
+        native_prompt_ready = True
+        if minimum_prompt_tokens is not None:
+            native_prompt = parse_vllm_prompt_counter_snapshot(metrics)
+            native_prompt_ready = (
+                native_prompt["prompt_tokens"] >= minimum_prompt_tokens
+            )
+        native_prompt_source_ready = True
+        if minimum_prompt_source_local_compute is not None:
+            native_prompt_source_ready = (
+                has_vllm_prompt_source_metric_surface(metrics)
+                and parse_vllm_prompt_source_snapshot(metrics)["local_compute"]
+                >= minimum_prompt_source_local_compute
+            )
         native_timing_ready = True
         if minimum_timing_count is not None:
             timing = parse_vllm_timing_snapshot(metrics)
@@ -208,6 +223,8 @@ def _wait_for_request_counter(
                 minimum_store_tokens is None
                 or stores["store_tokens_completed"] >= minimum_store_tokens
             )
+            and native_prompt_ready
+            and native_prompt_source_ready
             and native_timing_ready
             and native_prefill_ready
         ):
@@ -225,6 +242,7 @@ def _wait_for_prompt_counter(
     minimum: int,
     wait_seconds: float,
     *,
+    minimum_prompt_source_local_compute: int | None = None,
     minimum_timing_count: int | None = None,
     minimum_prefill_observations: int | None = None,
 ) -> tuple[dict[str, int], str]:
@@ -236,6 +254,13 @@ def _wait_for_prompt_counter(
     while True:
         metrics = client.get_text("/metrics")
         snapshot = parse_vllm_prompt_counter_snapshot(metrics)
+        native_prompt_source_ready = True
+        if minimum_prompt_source_local_compute is not None:
+            native_prompt_source_ready = (
+                has_vllm_prompt_source_metric_surface(metrics)
+                and parse_vllm_prompt_source_snapshot(metrics)["local_compute"]
+                >= minimum_prompt_source_local_compute
+            )
         native_timing_ready = True
         if minimum_timing_count is not None:
             timing = parse_vllm_timing_snapshot(metrics)
@@ -257,6 +282,7 @@ def _wait_for_prompt_counter(
             )
         if (
             snapshot["prompt_tokens"] >= minimum
+            and native_prompt_source_ready
             and native_timing_ready
             and native_prefill_ready
         ):
@@ -333,6 +359,14 @@ def main() -> int:
                 minimum_store_tokens=(
                     initial_store["store_tokens_completed"] + source_store_tokens
                 ),
+                minimum_prompt_tokens=(
+                    initial_prompt["prompt_tokens"]
+                    + len(fixture.source_prompt_token_ids)
+                ),
+                minimum_prompt_source_local_compute=(
+                    initial_prompt_source["local_compute"]
+                    + len(fixture.source_prompt_token_ids)
+                ),
                 minimum_timing_count=initial_timing.ttft_seconds.count + 1,
                 minimum_prefill_observations=initial_prefill_work.observations + 1,
             )
@@ -350,6 +384,16 @@ def main() -> int:
                     initial_store["store_tokens_completed"]
                     + source_store_tokens
                     + target_store_tokens
+                ),
+                minimum_prompt_tokens=(
+                    initial_prompt["prompt_tokens"]
+                    + len(fixture.source_prompt_token_ids)
+                    + len(fixture.target_prompt_token_ids)
+                ),
+                minimum_prompt_source_local_compute=(
+                    initial_prompt_source["local_compute"]
+                    + len(fixture.source_prompt_token_ids)
+                    + len(fixture.target_prompt_token_ids)
                 ),
                 minimum_timing_count=(
                     parse_vllm_timing_snapshot(after_source_metrics)
@@ -454,6 +498,10 @@ def main() -> int:
             initial_prompt["prompt_tokens"] + len(fixture.target_prompt_token_ids),
             args.metric_wait_seconds,
             minimum_timing_count=initial_timing.ttft_seconds.count + 1,
+            minimum_prompt_source_local_compute=(
+                initial_prompt_source["local_compute"]
+                + len(fixture.target_prompt_token_ids)
+            ),
             minimum_prefill_observations=initial_prefill_work.observations + 1,
         )
         target_prompt_tokens_processed = vllm_prompt_counter_delta(
