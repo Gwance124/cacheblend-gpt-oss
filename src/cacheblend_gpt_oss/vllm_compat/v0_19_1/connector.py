@@ -436,7 +436,12 @@ class GptOssCacheBlendConnector(
                     loaded_tokens=0,
                     rejected_tokens=verified_tokens,
                     recomputed_tokens=handoff.plan.prompt_tokens,
-                    fallback=False,
+                    # In transfer mode, an absent transfer metadata entry
+                    # means the request was not eligible for the one-step
+                    # staging envelope (for example, a partial scheduler
+                    # step).  Ordinary control-flow mode has no transfer
+                    # attempt and therefore is not a fallback.
+                    fallback=self._transfer_enabled,
                     latency_seconds=0.0,
                 )
                 receipt = self._control_plane.validate_worker(

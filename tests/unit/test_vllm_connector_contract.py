@@ -957,6 +957,97 @@ def test_transfer_mode_loads_verified_moved_candidate_before_full_recompute(
     assert worker_resources.close_calls == 1
 
 
+def test_transfer_mode_partial_scheduler_step_records_full_prefill_fallback(
+    loaded_connector: tuple[ModuleType, SimpleNamespace],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An ineligible one-step transfer is visible as a fallback, not a hit."""
+
+    module, fake = loaded_connector
+    kv_cache_config = _kv_cache_config()
+    scheduler_config = _config()
+    worker_config = _config()
+    _enable_transfer(scheduler_config, kv_cache_config)
+    _enable_transfer(worker_config, kv_cache_config)
+    transfer_config = module.parse_connector_extra_config(
+        scheduler_config.kv_transfer_config.kv_connector_extra_config
+    )
+    candidate = _verified_transfer_candidate(
+        tuple(range(256)), transfer_config.namespace
+    )
+    scheduler_resources = FakeSchedulerResources(candidate)
+    worker_resources = FakeWorkerResources()
+    monkeypatch.setattr(
+        module,
+        "create_scheduler_runtime_resources",
+        lambda _config: scheduler_resources,
+    )
+    monkeypatch.setattr(
+        module,
+        "create_worker_runtime_resources",
+        lambda *_args, **_kwargs: worker_resources,
+    )
+
+    scheduler = module.GptOssCacheBlendConnector(
+        scheduler_config, fake.role.SCHEDULER, kv_cache_config
+    )
+    request = SimpleNamespace(
+        request_id="partial-transfer-request",
+        prompt_token_ids=list(range(256)),
+        prompt_embeds=None,
+        num_prompt_tokens=256,
+        num_preemptions=0,
+        num_external_computed_tokens=0,
+    )
+    group_ids = (list(range(16)), list(range(16, 32)))
+    blocks = SimpleNamespace(
+        get_block_ids=lambda: group_ids,
+        blocks=tuple(
+            [SimpleNamespace(block_id=value, is_null=False) for value in group]
+            for group in group_ids
+        ),
+    )
+
+    assert scheduler.get_num_new_matched_tokens(request, 0) == (0, False)
+    scheduler.update_state_after_alloc(request, blocks, 0)
+    metadata = scheduler.build_connector_meta(
+        SimpleNamespace(num_scheduled_tokens={request.request_id: 128})
+    )
+    assert metadata.transfers == ()
+    assert metadata.lookup_observations[0].kv_tokens_verified == 256
+
+    worker = module.GptOssCacheBlendConnector(
+        worker_config, fake.role.WORKER, kv_cache_config
+    )
+    caches = {
+        f"model.layers.{index}.attn.attn": SimpleNamespace(device="cuda:0")
+        for index in range(24)
+    }
+    worker.register_kv_caches(caches)
+    worker.bind_connector_metadata(metadata)
+    worker.start_load_kv(SimpleNamespace())
+
+    stats = worker.get_kv_connector_stats()
+    assert stats is not None
+    reduced = stats.reduce()
+    assert reduced["kv_tokens_loaded"] == 0
+    assert reduced["kv_tokens_rejected"] == 256
+    assert reduced["tokens_recomputed"] == 256
+    assert reduced["load_fallbacks"] == 1
+    assert reduced["effective_saved_prefill_fraction"] == 0.0
+
+    worker_metadata = worker.build_connector_worker_meta()
+    assert worker_metadata is not None
+    scheduler.update_connector_output(
+        SimpleNamespace(kv_connector_worker_meta=worker_metadata)
+    )
+    scheduler.request_finished_all_groups(request, group_ids)
+    scheduler.shutdown()
+    worker.shutdown()
+    assert scheduler_resources.close_calls == 1
+    assert worker_resources.close_calls == 1
+
+
 def test_connector_metrics_aggregate_hits_fallbacks_and_reject_bad_data(
     loaded_connector: tuple[ModuleType, SimpleNamespace],
 ) -> None:
