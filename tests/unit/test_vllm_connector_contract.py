@@ -47,6 +47,9 @@ def _install_fake_vllm(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     class FakeKVConnectorMetadata:
         pass
 
+    class FakeKVConnectorWorkerMetadata:
+        pass
+
     class FakeSupportsHMA:
         pass
 
@@ -92,6 +95,9 @@ def _install_fake_vllm(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     base.KVConnectorBase_V1 = FakeKVConnectorBase  # type: ignore[attr-defined]
     base.KVConnectorMetadata = FakeKVConnectorMetadata  # type: ignore[attr-defined]
     base.KVConnectorRole = FakeKVConnectorRole  # type: ignore[attr-defined]
+    base.KVConnectorWorkerMetadata = (  # type: ignore[attr-defined]
+        FakeKVConnectorWorkerMetadata
+    )
     base.SupportsHMA = FakeSupportsHMA  # type: ignore[attr-defined]
     for name, module in modules.items():
         monkeypatch.setitem(sys.modules, name, module)
@@ -142,7 +148,7 @@ def _config() -> SimpleNamespace:
         rope_theta=150_000,
     )
     return SimpleNamespace(
-        kv_transfer_config=SimpleNamespace(),
+        kv_transfer_config=SimpleNamespace(kv_connector_extra_config={}),
         scheduler_config=SimpleNamespace(disable_hybrid_kv_cache_manager=False),
         model_config=SimpleNamespace(
             model="/models/gpt-oss-20b",
@@ -236,7 +242,13 @@ def test_scheduler_records_all_groups_while_recomputing_every_token(
     connector = module.GptOssCacheBlendConnector(
         _config(), fake.role.SCHEDULER, _kv_cache_config()
     )
-    request = SimpleNamespace(request_id="request-1")
+    request = SimpleNamespace(
+        request_id="request-1",
+        prompt_token_ids=[1, 2, 3, 4],
+        prompt_embeds=None,
+        num_prompt_tokens=4,
+        num_preemptions=0,
+    )
     blocks = SimpleNamespace(
         get_block_ids=lambda: ([3, 4], [11, 12]),
         blocks=(
@@ -260,10 +272,13 @@ def test_scheduler_records_all_groups_while_recomputing_every_token(
     assert len(metadata.group_layer_names) == 2
     assert metadata.group_layer_names[0][0] == "model.layers.0.attn.attn"
     assert metadata.group_layer_names[1][0] == "model.layers.1.attn.attn"
-    assert len(metadata.allocations) == 1
-    assert metadata.allocations[0].block_ids_by_group == ((3, 4), (11, 12))
-    assert metadata.allocations[0].num_external_tokens == 0
-    assert connector.build_connector_meta(SimpleNamespace()).allocations == ()
+    assert len(metadata.handoffs) == 1
+    assert metadata.handoffs[0].allocation.grouped_blocks.block_ids_by_group == (
+        (3, 4),
+        (11, 12),
+    )
+    assert metadata.handoffs[0].allocation.external_scheduler_tokens == 0
+    assert connector.build_connector_meta(SimpleNamespace()).handoffs == ()
 
     with pytest.raises(RuntimeError, match="must report zero external tokens"):
         connector.update_state_after_alloc(request, blocks, num_external_tokens=1)
@@ -290,6 +305,27 @@ def test_worker_registers_every_layer_and_rejects_transfer_claims(
     loaded_connector: tuple[ModuleType, SimpleNamespace],
 ) -> None:
     module, fake = loaded_connector
+    scheduler = module.GptOssCacheBlendConnector(
+        _config(), fake.role.SCHEDULER, _kv_cache_config()
+    )
+    request = SimpleNamespace(
+        request_id="request-1",
+        prompt_token_ids=[1, 2, 3, 4],
+        prompt_embeds=None,
+        num_prompt_tokens=4,
+        num_preemptions=0,
+    )
+    blocks = SimpleNamespace(
+        get_block_ids=lambda: ([3], [11]),
+        blocks=(
+            [SimpleNamespace(block_id=3, is_null=False)],
+            [SimpleNamespace(block_id=11, is_null=False)],
+        ),
+    )
+    assert scheduler.get_num_new_matched_tokens(request, 0) == (0, False)
+    scheduler.update_state_after_alloc(request, blocks, 0)
+    metadata = scheduler.build_connector_meta(SimpleNamespace())
+
     connector = module.GptOssCacheBlendConnector(
         _config(), fake.role.WORKER, _kv_cache_config()
     )
@@ -297,18 +333,15 @@ def test_worker_registers_every_layer_and_rejects_transfer_claims(
         f"model.layers.{index}.attn.attn": object() for index in range(24)
     }
     connector.register_kv_caches(caches)
-    group_names = tuple(
-        tuple(group.layer_names) for group in _kv_cache_config().kv_cache_groups
-    )
-    metadata = module.GptOssCacheBlendMetadata(
-        schema_version=1,
-        group_layer_names=group_names,
-        allocations=(
-            module.CacheBlendAllocation("request-1", ((3,), (11,)), 0),
-        ),
-    )
     connector.bind_connector_metadata(metadata)
     connector.start_load_kv(SimpleNamespace())
+    worker_metadata = connector.build_connector_worker_meta()
+    assert worker_metadata is not None
+    assert len(worker_metadata.receipts) == 1
+    assert worker_metadata.receipts[0].loaded_match_indexes == ()
+    scheduler.update_connector_output(
+        SimpleNamespace(kv_connector_worker_meta=worker_metadata)
+    )
     connector.wait_for_layer_load("model.layers.0.attn.attn")
     connector.save_kv_layer("model.layers.1.attn.attn", object(), object())
     connector.wait_for_save()
@@ -318,12 +351,45 @@ def test_worker_registers_every_layer_and_rejects_transfer_claims(
     bad_metadata = module.GptOssCacheBlendMetadata(
         schema_version=1,
         group_layer_names=metadata.group_layer_names,
-        allocations=metadata.allocations,
+        handoffs=metadata.handoffs,
         transfer_enabled=True,
     )
     connector.bind_connector_metadata(bad_metadata)
     with pytest.raises(RuntimeError, match="does not implement KV transfer"):
         connector.start_load_kv(SimpleNamespace())
+
+
+def test_transfer_mode_remains_startup_gated_until_runtime_is_connected(
+    loaded_connector: tuple[ModuleType, SimpleNamespace],
+) -> None:
+    module, fake = loaded_connector
+    config = _config()
+    config.kv_transfer_config.kv_connector_extra_config = {
+        "mode": "transfer_100pct",
+        "lmcache_server_url": "tcp://127.0.0.1:5555",
+        "sidecar_path": "/var/lib/cacheblend/sidecar.sqlite3",
+        "lmcache_server_attestation": {
+            "lmcache_version": "0.4.3",
+            "source_commit": "7f326118a2f1afc7801988dd02e3055bdf21ef6b",
+            "protocol": "multiprocess-blend-v2",
+            "hash_algorithm": "blake3",
+        },
+        "model_revision": "model-revision",
+        "tokenizer_revision": "tokenizer-revision",
+        "model_config_digest": "a" * 64,
+        "kv_cache_config_digest": "b" * 64,
+        "adapter_revision": "adapter-revision",
+        "staging_token_capacity": 4096,
+        "request_timeout_seconds": 10.0,
+        "transfer_failure_policy": "full_prefill",
+    }
+
+    with pytest.raises(RuntimeError, match="activation remains gated"):
+        module.GptOssCacheBlendConnector(
+            config,
+            fake.role.SCHEDULER,
+            _kv_cache_config(),
+        )
 
 
 def test_source_contains_the_pinned_loader_class_name() -> None:

@@ -715,6 +715,17 @@ class RequestControlPlane:
         self._states[request_id] = state
         return state
 
+    def discard(self, request_id: str) -> RequestLifecycleState | None:
+        """Forget one request after vLLM has released its lifecycle.
+
+        vLLM may finish or cancel a request before it reaches every normal
+        connector phase.  Removing dependency-free bookkeeping is always safe
+        at the 100%-recompute milestone because the scheduler has credited zero
+        external tokens and this control plane never owns vLLM cache blocks.
+        """
+
+        return self._states.pop(request_id, None)
+
 
 __all__ = [
     "FULL_RECOMPUTE_EXTERNAL_TOKENS",

@@ -225,6 +225,24 @@ def test_cache_miss_still_requires_worker_validation_and_full_prefill() -> None:
     assert counters.prefill_tokens_avoided == 0
 
 
+def test_discard_is_idempotent_for_completed_and_cancelled_requests() -> None:
+    query = TokenSegment.at(0, [1, 2, 3])
+    control = RequestControlPlane(_layout())
+    looked_up = control.lookup(
+        request_id="request-discard",
+        prompt_tokens=3,
+        query_segments=(query,),
+        match_plan=_plan((query,), ()),
+    )
+
+    assert control.discard("request-discard") is looked_up
+    assert control.discard("request-discard") is None
+    _assert_error(
+        ControlPlaneErrorCode.UNKNOWN_REQUEST,
+        lambda: control.state("request-discard"),
+    )
+
+
 def test_nonzero_external_scheduler_tokens_fail_closed() -> None:
     query = TokenSegment.at(0, [1, 2, 3])
     control = RequestControlPlane(_layout())
