@@ -504,6 +504,36 @@ def test_missing_layer_cache_and_missing_layer_span_fail_before_mutation() -> No
     assert ops.copy_count == 0
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("group_id", True),
+        ("block_id", True),
+        ("block_size", True),
+        ("source_range", None),
+    ],
+)
+def test_malformed_group_span_fails_before_tensor_access(
+    field: str, value: object
+) -> None:
+    ops = FakeTensorOps()
+    original = spans()
+    malformed_group = replace(original[0].group_span, **{field: value})
+    malformed = (replace(original[0], group_span=malformed_group), *original[1:])
+
+    assert_error(
+        DataPlaneErrorCode.INVALID_SPAN,
+        lambda: GptOssDataPlane(ops).gather_precomputed_kv(
+            paged_caches=paged_caches(),
+            staging=staging(),
+            layer_spans=malformed,
+            document_target_range=TARGET,
+            store_buffer_offset=STORE_OFFSET,
+        ),
+    )
+    assert ops.copy_count == 0
+
+
 def test_invalid_corrected_key_shape_fails_before_mutation() -> None:
     class BadCorrector:
         def __call__(

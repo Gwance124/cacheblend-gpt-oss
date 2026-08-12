@@ -46,6 +46,7 @@ from cacheblend_gpt_oss.gpt_oss.layout import (
     GPT_OSS_MAX_CONTEXT_TOKENS,
     GPT_OSS_NUM_LAYERS,
     AttentionKind,
+    GroupTokenScatterSpan,
     LayerTokenScatterSpan,
 )
 from cacheblend_gpt_oss.planner.models import TokenRange
@@ -767,6 +768,33 @@ def _validate_spans(
     group_kind: dict[int, AttentionKind] = {}
     group_block_size: dict[int, int] = {}
     for span in spans:
+        if not isinstance(span.group_span, GroupTokenScatterSpan):
+            _fail(DataPlaneErrorCode.INVALID_SPAN)
+        group_span = span.group_span
+        if (
+            not isinstance(span.layer_name, str)
+            or type(span.layer_index) is not int
+            or type(group_span.group_id) is not int
+            or group_span.group_id not in (0, 1)
+            or type(group_span.logical_block_index) is not int
+            or group_span.logical_block_index < 0
+            or type(group_span.block_id) is not int
+            or group_span.block_id < 0
+            or type(group_span.block_size) is not int
+            or group_span.block_size <= 0
+            or type(group_span.block_offset) is not int
+            or group_span.block_offset < 0
+            or type(group_span.physical_slot_start) is not int
+            or group_span.physical_slot_start < 0
+            or not isinstance(group_span.attention_kind, AttentionKind)
+            or not isinstance(group_span.source_range, TokenRange)
+            or not isinstance(group_span.target_range, TokenRange)
+            or len(group_span.source_range) == 0
+            or len(group_span.source_range) != len(group_span.target_range)
+            or group_span.source_range.end > GPT_OSS_MAX_CONTEXT_TOKENS
+            or group_span.target_range.end > GPT_OSS_MAX_CONTEXT_TOKENS
+        ):
+            _fail(DataPlaneErrorCode.INVALID_SPAN)
         expected_name = f"model.layers.{span.layer_index}.attn.attn"
         if (
             span.layer_name != expected_name
@@ -780,25 +808,20 @@ def _validate_spans(
         )
         if span.attention_kind is not expected_kind:
             _fail(DataPlaneErrorCode.INVALID_ATTENTION_PATTERN)
-        previous_kind = group_kind.setdefault(span.group_id, span.attention_kind)
+        previous_kind = group_kind.setdefault(group_span.group_id, span.attention_kind)
         if previous_kind is not span.attention_kind:
             _fail(DataPlaneErrorCode.INVALID_GROUP_LAYOUT)
         previous_block_size = group_block_size.setdefault(
-            span.group_id, span.group_span.block_size
+            group_span.group_id, group_span.block_size
         )
-        if previous_block_size != span.group_span.block_size:
+        if previous_block_size != group_span.block_size:
             _fail(DataPlaneErrorCode.INVALID_GROUP_LAYOUT)
         if (
             span.token_count <= 0
             or len(span.source_range) != span.token_count
-            or span.group_span.block_size <= 0
-            or span.group_span.block_id < 0
-            or span.group_span.block_offset < 0
-            or span.group_span.block_offset + span.token_count
-            > span.group_span.block_size
+            or group_span.block_offset + span.token_count > group_span.block_size
             or span.physical_slot_start
-            != span.group_span.block_id * span.group_span.block_size
-            + span.group_span.block_offset
+            != group_span.block_id * group_span.block_size + group_span.block_offset
         ):
             _fail(DataPlaneErrorCode.INVALID_SPAN)
         by_layer.setdefault(span.layer_index, []).append(span)
