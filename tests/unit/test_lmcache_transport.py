@@ -34,6 +34,7 @@ from cacheblend_gpt_oss.storage import (
     LmcacheOperationError,
     LmcacheProtocolError,
     LmcacheRequest,
+    LmcacheRetrieveReceipt,
     LmcacheServerAttestation,
     LmcacheStagingLayout,
     LmcacheStagingRegistration,
@@ -357,6 +358,58 @@ def test_config_rejects_unaudited_protocol_values(
 ) -> None:
     with pytest.raises(LmcacheConfigurationError, match=message):
         config(**changes)
+
+
+def test_lmcache_value_objects_reject_untyped_descriptors() -> None:
+    with pytest.raises(LmcacheConfigurationError):
+        LmcacheServerAttestation(
+            lmcache_version=True,  # type: ignore[arg-type]
+            source_commit=LMCACHE_SOURCE_COMMIT,
+            protocol=LMCACHE_BLEND_PROTOCOL,
+            hash_algorithm=LMCACHE_HASH_ALGORITHM,
+        )
+    with pytest.raises(LmcacheConfigurationError):
+        LmcacheBlendTransportConfig(
+            namespace=object(),  # type: ignore[arg-type]
+            server_attestation=attestation(),
+        )
+    with pytest.raises(LmcacheConfigurationError):
+        LmcacheStagingLayout(
+            layer_count=24,
+            token_capacity=1024,
+            kv_width=512,
+            dtype_name=True,  # type: ignore[arg-type]
+        )
+    layout = LmcacheStagingLayout(
+        layer_count=24,
+        token_capacity=1024,
+        kv_width=512,
+        dtype_name="torch.bfloat16",
+    )
+    with pytest.raises(LmcacheConfigurationError):
+        LmcacheStagingRegistration(
+            instance_id=1,
+            kv_cache_payload=[],  # type: ignore[arg-type]
+            layout=layout,
+        )
+    with pytest.raises(LmcacheProtocolError):
+        LmcacheCandidate(
+            source_relative_range=object(),  # type: ignore[arg-type]
+            target_range=TokenRange(0, LMCACHE_CHUNK_SIZE),
+            storage_hash=b"h" * 32,
+            storage_model_name="model",
+            query_digest=b"q" * 32,
+        )
+    with pytest.raises(LmcacheProtocolError):
+        LmcacheRetrieveReceipt(True, 1)  # type: ignore[arg-type]
+
+    with pytest.raises(LmcacheConfigurationError):
+        runtime_module.validate_buffer_range(
+            start=0,
+            length=1,
+            capacity=True,  # type: ignore[arg-type]
+            field_name="buffer",
+        )
 
 
 def test_storage_model_name_is_stable_and_covers_namespace() -> None:

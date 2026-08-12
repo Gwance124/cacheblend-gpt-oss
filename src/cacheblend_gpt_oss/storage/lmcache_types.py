@@ -91,6 +91,18 @@ class LmcacheServerAttestation:
     protocol: str
     hash_algorithm: str
 
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("lmcache_version", self.lmcache_version),
+            ("source_commit", self.source_commit),
+            ("protocol", self.protocol),
+            ("hash_algorithm", self.hash_algorithm),
+        ):
+            if not isinstance(value, str) or not value or "\x00" in value:
+                raise LmcacheConfigurationError(
+                    f"LMCache server {name} must be a non-empty string"
+                )
+
     def validate(self) -> None:
         expected = (
             ("lmcache_version", LMCACHE_VERSION, self.lmcache_version),
@@ -124,6 +136,14 @@ class LmcacheBlendTransportConfig:
     request_timeout_seconds: float = 10.0
 
     def __post_init__(self) -> None:
+        if not isinstance(self.namespace, CacheNamespace):
+            raise LmcacheConfigurationError(
+                "transport namespace must be a CacheNamespace"
+            )
+        if not isinstance(self.server_attestation, LmcacheServerAttestation):
+            raise LmcacheConfigurationError(
+                "transport server attestation has an invalid type"
+            )
         self.server_attestation.validate()
         _validate_namespace(self.namespace)
         _require_plain_int("world_size", self.world_size, minimum=1)
@@ -187,7 +207,12 @@ class LmcacheStagingLayout:
         _require_plain_int("layer_count", self.layer_count, minimum=1)
         _require_plain_int("token_capacity", self.token_capacity, minimum=1)
         _require_plain_int("kv_width", self.kv_width, minimum=1)
-        if not self.dtype_name or len(self.dtype_name.encode("utf-8")) > 128:
+        if (
+            not isinstance(self.dtype_name, str)
+            or not self.dtype_name
+            or "\x00" in self.dtype_name
+            or len(self.dtype_name.encode("utf-8")) > 128
+        ):
             raise LmcacheConfigurationError("dtype_name must be a bounded string")
         if self.token_capacity < LMCACHE_CHUNK_SIZE:
             raise LmcacheConfigurationError(
@@ -211,6 +236,12 @@ class LmcacheStagingRegistration:
 
     def __post_init__(self) -> None:
         _require_plain_int("instance_id", self.instance_id, minimum=0)
+        if not isinstance(self.kv_cache_payload, tuple):
+            raise LmcacheConfigurationError(
+                "kv_cache_payload must be a tuple of CUDA-IPC payloads"
+            )
+        if not isinstance(self.layout, LmcacheStagingLayout):
+            raise LmcacheConfigurationError("staging registration layout is invalid")
         if len(self.kv_cache_payload) != 1:
             raise LmcacheConfigurationError(
                 "Blend V2 requires exactly one CUDA-IPC staging tensor"
@@ -233,6 +264,10 @@ class LmcacheCandidate:
     query_digest: bytes
 
     def __post_init__(self) -> None:
+        if not isinstance(self.source_relative_range, TokenRange) or not isinstance(
+            self.target_range, TokenRange
+        ):
+            raise LmcacheProtocolError("LMCache candidate ranges are invalid")
         if len(self.source_relative_range) == 0 or len(self.target_range) == 0:
             raise LmcacheProtocolError("LMCache candidate ranges must not be empty")
         if len(self.source_relative_range) != len(self.target_range):
@@ -241,7 +276,11 @@ class LmcacheCandidate:
             raise LmcacheProtocolError(
                 "LMCache candidate hash must be a 32-byte BLAKE3 digest"
             )
-        if not self.storage_model_name:
+        if (
+            not isinstance(self.storage_model_name, str)
+            or not self.storage_model_name
+            or "\x00" in self.storage_model_name
+        ):
             raise LmcacheProtocolError("LMCache candidate model namespace is empty")
         if not isinstance(self.query_digest, bytes) or len(self.query_digest) != 32:
             raise LmcacheProtocolError("LMCache candidate query digest is invalid")
@@ -370,6 +409,15 @@ class LmcacheRetrieveReceipt:
     retrieved_tokens: int
     retrieved_chunks: int
 
+    def __post_init__(self) -> None:
+        _require_receipt_int("retrieved_tokens", self.retrieved_tokens)
+        _require_receipt_int("retrieved_chunks", self.retrieved_chunks)
+        # Keep cross-field accounting for the transfer runtime's explicit
+        # ``RETRIEVE_RECEIPT_INVALID`` fallback gate.  An injected transport
+        # may intentionally return a well-typed but inconsistent receipt so
+        # that the worker can classify it without mistaking it for an RPC
+        # exception.
+
 
 def query_digest(token_ids: tuple[int, ...]) -> bytes:
     """Bind a candidate to the exact full query used for LMCache lookup."""
@@ -408,6 +456,7 @@ def validate_buffer_range(
 
     _require_plain_int(field_name, start, minimum=0)
     _require_plain_int("token length", length, minimum=0)
+    _require_plain_int("staging capacity", capacity, minimum=0)
     if start + length > capacity:
         raise LmcacheConfigurationError(
             f"{field_name} range exceeds the registered staging capacity"
@@ -415,6 +464,10 @@ def validate_buffer_range(
 
 
 def _validate_namespace(namespace: CacheNamespace) -> None:
+    if not isinstance(namespace, CacheNamespace):
+        raise LmcacheConfigurationError(
+            "cache namespace must be a CacheNamespace"
+        )
     if namespace.schema_version != 1:
         raise LmcacheConfigurationError("cache namespace schema_version must be 1")
     expected = (
