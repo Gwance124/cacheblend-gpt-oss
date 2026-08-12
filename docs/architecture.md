@@ -119,6 +119,11 @@ reviewed files rather than operator-entered hex strings. The helper rejects
 missing, symlinked, empty, oversized, or changing files and emits a strict
 schema-1 handoff. Hashing does not approve the artifacts or enable the dormant
 registrar; semantic review and all prerequisite results remain mandatory.
+`SelectiveGateEvidence.verify_artifact_paths` and
+`scripts/verify_selective_gate_artifacts.py` provide the corresponding
+freshness check before a copied handoff is consumed. They compare the current
+regular-file bytes against the bundle and reject drift, but still do not assess
+GPU-result semantics.
 
 `gpt_oss.selective_kv` is the tensor-free companion for the backend boundary:
 it splits complete 24-layer hybrid spans by recompute ranges, preserves old

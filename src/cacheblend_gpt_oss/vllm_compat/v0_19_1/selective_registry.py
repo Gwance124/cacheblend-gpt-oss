@@ -194,6 +194,34 @@ class SelectiveGateEvidence:
             _fail(SelectiveRegistrationErrorCode.INVALID_EVIDENCE)
         return cls(*digests)
 
+    def verify_artifact_paths(
+        self,
+        *,
+        runtime: Path,
+        full_prefill: Path,
+        transfer: Path,
+        yarn: Path,
+        hybrid_sink: Path,
+    ) -> None:
+        """Require that the current handoff files still match this bundle.
+
+        Digest JSON is intentionally portable, but the files it names may be
+        copied, replaced, or edited after hashing.  Re-running the bounded
+        regular-file reader closes that freshness gap before a reviewer uses
+        the bundle as an identity input.  This still does not assess whether
+        the files contain valid GPU results; semantic review remains separate.
+        """
+
+        current = type(self).from_artifact_paths(
+            runtime=runtime,
+            full_prefill=full_prefill,
+            transfer=transfer,
+            yarn=yarn,
+            hybrid_sink=hybrid_sink,
+        )
+        if current != self:
+            _fail(SelectiveRegistrationErrorCode.INVALID_EVIDENCE)
+
     def __post_init__(self) -> None:
         if not all(
             _is_digest(value)

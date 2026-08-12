@@ -62,6 +62,23 @@ registration remains disabled until reviewers verify the contents and set all
 four prerequisite results from the corresponding M3--M5 gates. The digest
 JSON contains no prompt text, token IDs, request IDs, or document identifiers.
 
+Before consuming a copied bundle, re-check that none of the five reviewed files
+has changed since hashing:
+
+```bash
+uv run python scripts/verify_selective_gate_artifacts.py \
+  --evidence "$CACHEBLEND_GATE_DIR/selective-gate-evidence.json" \
+  --runtime "$CACHEBLEND_GATE_DIR/runtime.txt" \
+  --full-prefill "$CACHEBLEND_GATE_DIR/frozen-bf16-tolerance.json" \
+  --transfer "$CACHEBLEND_GATE_DIR/transfer-evidence.json" \
+  --yarn "$CACHEBLEND_GATE_DIR/yarn-correction.txt" \
+  --hybrid-sink "$CACHEBLEND_GATE_DIR/hybrid-sink.txt" \
+  | tee "$CACHEBLEND_GATE_DIR/selective-gate-verify.txt"
+```
+
+This command verifies identity/freshness only; it does not approve artifact
+semantics or enable selective registration.
+
 ## M6 model/backend command (not yet enabled)
 
 Do not run a `CUSTOM` server command yet. This repository intentionally has no

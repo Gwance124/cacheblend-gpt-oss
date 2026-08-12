@@ -358,6 +358,24 @@ def test_gate_evidence_can_be_derived_from_regular_artifacts(tmp_path: Path) -> 
     assert evidence.yarn_digest == sha256(b"artifact-3").hexdigest()
     assert evidence.hybrid_sink_digest == sha256(b"artifact-4").hexdigest()
     assert SelectiveGateEvidence.from_dict(evidence.to_dict()) == evidence
+    evidence.verify_artifact_paths(
+        runtime=paths[0],
+        full_prefill=paths[1],
+        transfer=paths[2],
+        yarn=paths[3],
+        hybrid_sink=paths[4],
+    )
+
+    paths[2].write_bytes(b"changed")
+    with pytest.raises(SelectiveRegistrationError) as error:
+        evidence.verify_artifact_paths(
+            runtime=paths[0],
+            full_prefill=paths[1],
+            transfer=paths[2],
+            yarn=paths[3],
+            hybrid_sink=paths[4],
+        )
+    assert error.value.code is SelectiveRegistrationErrorCode.INVALID_EVIDENCE
 
 
 def test_gate_evidence_decoder_rejects_schema_and_extra_keys() -> None:

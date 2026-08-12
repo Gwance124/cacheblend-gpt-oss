@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import json
 import runpy
+import sys
+from pathlib import Path
 
 import pytest
 
 from cacheblend_gpt_oss.targets import PINNED_TARGET
+from cacheblend_gpt_oss.vllm_compat.v0_19_1.selective_registry import (
+    SelectiveGateEvidence,
+)
 
 _capture = runpy.run_path(
     "scripts/capture_moved_document.py",
@@ -20,6 +25,10 @@ _responses = runpy.run_path(
 _gate_hash = runpy.run_path(
     "scripts/hash_selective_gate_artifacts.py",
     run_name="cacheblend_gate_hash_script_test",
+)
+_gate_verify = runpy.run_path(
+    "scripts/verify_selective_gate_artifacts.py",
+    run_name="cacheblend_gate_verify_script_test",
 )
 
 
@@ -95,3 +104,55 @@ def test_capture_payload_is_json_serializable_without_nonfinite_values() -> None
 
 def test_gate_hash_script_exposes_a_callable_main() -> None:
     assert callable(_gate_hash["main"])
+
+
+def test_gate_verify_script_exposes_a_callable_main() -> None:
+    assert callable(_gate_verify["main"])
+
+
+def test_gate_verify_script_checks_current_artifact_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    paths = []
+    for index in range(5):
+        path = tmp_path / f"artifact-{index}.txt"
+        path.write_bytes(f"artifact-{index}".encode("ascii"))
+        paths.append(path)
+    evidence = SelectiveGateEvidence.from_artifact_paths(
+        runtime=paths[0],
+        full_prefill=paths[1],
+        transfer=paths[2],
+        yarn=paths[3],
+        hybrid_sink=paths[4],
+    )
+    evidence_path = tmp_path / "selective-gate-evidence.json"
+    evidence_path.write_text(
+        json.dumps(evidence.to_dict()),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "verify_selective_gate_artifacts.py",
+            "--evidence",
+            str(evidence_path),
+            "--runtime",
+            str(paths[0]),
+            "--full-prefill",
+            str(paths[1]),
+            "--transfer",
+            str(paths[2]),
+            "--yarn",
+            str(paths[3]),
+            "--hybrid-sink",
+            str(paths[4]),
+        ],
+    )
+
+    assert _gate_verify["main"]() == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["verified"] is True
+    assert report["evidence"] == evidence.to_dict()
