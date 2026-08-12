@@ -2,14 +2,17 @@
 
 ## Status
 
-This document describes a design, not a completed connector. The source audit
-establishes this boundary:
+The pinned audit and CPU-side implementation are complete through the
+instrumented 100%-recomputation data plane. No `solab-g3` result has been
+provided, so this is not yet a validated GPT-OSS endpoint. The current boundary
+is:
 
 - Connector discovery/loading: **public vLLM API, out of tree, no patch**.
 - Position-independent matching and fingerprints: **out of tree**.
-- The synchronous transfer proof with 100% recomputation: **out of tree, no
-  patch**.
-- GPT-OSS YaRN key correction and group-aware staging/scatter: **out of tree**.
+- The synchronous 100%-recompute path: **implemented out of tree, no patch;
+  GPU correctness pending**.
+- GPT-OSS YaRN correction and group-aware staging/scatter: **implemented and
+  CPU-fake tested; real CUDA tests pending on `solab-g3`**.
 - Selective non-prefix recomputation: **not expressible by the connector API
   alone**. First exhaust a registered GPT-OSS model override and custom
   sink-aware attention backend. A pinned vLLM patch is only a gated fallback.
@@ -49,7 +52,7 @@ flowchart LR
     W --> T[Contiguous staging buffers]
     T --> G[GPT-OSS YaRN and hybrid-layout adapter]
     G --> K[Grouped paged KV caches]
-    K <--> A[GPT-OSS model override and sink-aware attention backend]
+    K <--> A[Stock GPT-OSS and sink-aware Triton attention]
     A --> V
     SC --> M[Metrics sink]
     W --> M
@@ -65,8 +68,8 @@ the generic planner.
 
 ### Generic planner layer
 
-The planner operates on token IDs and injected interfaces, with no vLLM tensor
-imports. Its responsibilities are:
+The implemented planner operates on token IDs and injected interfaces, with no
+vLLM tensor imports. Its responsibilities are:
 
 - deterministic segmentation and position-independent candidate lookup;
 - strong candidate verification;
@@ -76,14 +79,15 @@ imports. Its responsibilities are:
 - a recomputation policy that initially selects every scheduled token;
 - immutable plan metadata consumed by the worker.
 
-Planned interfaces are conceptually `Segmenter`, `CacheIndex`, `CacheTransport`,
-`BlendPlanner`, `RecomputePolicy`, and `MetricsSink`. CPU tests use fakes for
-each boundary.
+The package provides immutable segment/range/record types, fixed and delimiter
+segmentation, SHA-256 fingerprints, exact-token verification, weighted
+non-overlap matching, and injected storage boundaries. CPU tests use fakes for
+each boundary. A lower-than-100% `RecomputePolicy` remains future work.
 
 ### Version-scoped connector layer
 
-`cacheblend_gpt_oss.vllm_compat.v0_19_1` will contain the only imports of vLLM
-internals. `GptOssCacheBlendConnector` will derive from both
+`cacheblend_gpt_oss.vllm_compat.v0_19_1` contains the only imports of vLLM
+internals. `GptOssCacheBlendConnector` derives from both
 `KVConnectorBase_V1` and `SupportsHMA` and will have the current constructor:
 
 ```python
@@ -96,7 +100,10 @@ group/layer scatter-gather, transfer synchronization, error reporting, and
 writeback. The two roles communicate only through vLLM's opaque
 `KVConnectorMetadata` and worker output contracts.
 
-The module-path loader is sufficient for this connector. A
+The connector now composes the scheduler lookup runtime, worker bridge, CUDA
+staging owner, YaRN corrector, grouped data plane, and atomic sidecar publisher.
+It still returns zero externally computed tokens and therefore cannot provide
+speedup. The module-path loader is sufficient for this connector. A
 `vllm.general_plugins` entry point is needed later only to register the custom
 GPT-OSS model/backend used by selective recomputation.
 
@@ -119,8 +126,8 @@ and MXFP4 expert path for every row selected for recomputation.
 
 ### LMCache transport adapter
 
-LMCache 0.4.3 `BlendEngineV2` can provide candidate subsequence matching,
-storage, CUDA IPC registration, and contiguous transfer. The adapter wraps its
+LMCache 0.4.3 `BlendEngineV2` provides candidate subsequence matching, storage,
+CUDA IPC registration, and contiguous transfer. The implemented adapter wraps its
 `MessageQueueClient`, `IPCCacheEngineKey`, `CBMatchResult`, and CUDA IPC types
 behind this project's transport protocol.
 
@@ -152,27 +159,29 @@ The connector follows the pinned vLLM path without mutating scheduler output:
    identity, expected digests, and metrics correlation into opaque metadata.
 6. The worker model runner prepares ordinary contiguous input IDs, positions,
    slot mappings, and attention metadata, then binds connector metadata.
-7. `start_load_kv` performs lookup/transfer. For the 100% milestone it must
-   finish synchronously before the first model layer because stock Triton writes
-   cache slots before the decorated per-layer wait.
-8. The worker verifies full tokens/digests and layout, optionally corrects
-   shifted post-RoPE keys once that milestone is enabled, and scatters accepted
-   K/V into destination groups. A failed check rejects the range; it never
-   becomes usable cache state.
+7. `start_load_kv` performs the already-planned transfer. Lookup happened on
+   the scheduler. Transfer finishes synchronously before the first model layer
+   because stock Triton writes cache slots before the decorated per-layer wait.
+8. The worker verifies full tokens/digests and layout, corrects shifted
+   post-RoPE keys, and scatters accepted K/V into destination groups. A failed
+   check rejects the range; it never becomes usable cache state.
 9. Stock GPT-OSS processes the full prompt. At 100% recomputation every loaded
    slot is overwritten with newly computed K/V before it can affect output.
-10. `save_kv_layer` captures newly computed reusable ranges. Sliding-layer KV is
-    saved during each prefill step because old window blocks can be reclaimed
-    before request completion.
+10. `save_kv_layer` proves that all 24 registered cache tensors were visited.
+    After the one-step full prompt completes, `wait_for_save` gathers every
+    complete 256-token prompt chunk while its full/sliding blocks are live and
+    atomically publishes verified sidecar records. Chunked prefill is currently
+    transfer-ineligible rather than being captured across steps.
 11. Worker completion, load errors, and connector metrics return in
     `KVConnectorOutput`; scheduler state is advanced normally.
 12. On completion, `request_finished_all_groups` receives every hybrid block
     table and releases connector state. vLLM produces an ordinary Harmony
     response.
 
-This first path demonstrates transport, not acceleration. Its required metrics
-show positive found/loaded counts, full recomputed count, and zero effective
-saved-prefill fraction.
+This first path demonstrates transport, not acceleration. Immutable request
+accounting enforces positive found/loaded counts when a hit exists, full
+recomputed count, and zero effective saved-prefill fraction. Exporting the full
+metric set to Prometheus is still pending.
 
 ## Position-independent segmentation and identity
 
@@ -181,10 +190,10 @@ saved-prefill fraction.
 The API cannot rely on a client-provided document ID or segment annotation.
 Segmentation is server-side and injected:
 
-- The first moved-document integration fixture uses deterministic configured
-  delimiter token sequences. Moving the delimited document changes absolute
-  positions but not its segment identity.
-- The transparent workload path uses fixed-size complete chunks indexed at
+- The generic planner includes deterministic delimiter segmentation for
+  explicit fixtures. It is not yet connected to the transparent live request
+  path.
+- The current transparent connector path uses 256-token complete chunks indexed at
   storage time and a rolling query window at every token offset. This preserves
   matches when a document moves by a non-chunk-aligned amount.
 - Content-defined chunking may be evaluated later, but is not needed for the

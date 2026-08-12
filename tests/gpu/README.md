@@ -1,7 +1,9 @@
 # Manual GPU checks
 
 These checks are authored locally but must be run by the user on `solab-g3`.
-They do not load model weights yet.
+They validate the pinned environment, production BF16 YaRN correction, and the
+real Torch/CUDA full/sliding gather-scatter path. They do not load model weights
+yet.
 
 After synchronizing this repository to a chosen path on `solab-g3`:
 

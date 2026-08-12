@@ -2,11 +2,12 @@
 
 ## Current decision and next action
 
-The exact pinned source audit is complete. The result is a **go** for an
-out-of-tree connector-loading milestone and a **no-patch** decision for the
-100%-recomputation transfer proof. The next action is a minimal
-`GptOssCacheBlendConnector` that vLLM imports through
-`kv_connector_module_path`; it must do no reuse yet.
+The exact pinned source audit is complete. The result remains a **go** for an
+out-of-tree connector and a **no-patch** decision for the 100%-recomputation
+transfer proof. The connector, scheduler lookup, LMCache transport, persistent
+sidecar, worker staging bridge, YaRN corrector, and full/sliding scatter-gather
+path are now implemented and CPU-tested. The next gate is manual CUDA and
+connector/model execution on `solab-g3`; no such pass is claimed yet.
 
 Selective non-prefix computation remains conditional. The V1 connector API can
 carry an opaque plan but can only credit a contiguous cached prefix to the
@@ -18,11 +19,11 @@ be tested before deciding whether a pinned vLLM patch is necessary.
 | Milestone | State | Primary result | Patch policy |
 |---|---|---|---|
 | M0. Pinned audit and scaffold | Complete | Exact integration boundary and CPU/GPU test scaffold | No patch |
-| M1. Connector-load smoke test | Next | Scheduler and worker load an external no-reuse connector | No patch |
-| M2. Segmentation and verified lookup | Planned | One document is found after moving positions | No patch |
-| M3. 100% recomputation transfer proof | Planned | Candidate KV is transferred, verified, then fully overwritten; logits match full prefill | No patch |
-| M4. GPT-OSS YaRN correction | Planned | Shifted cached K matches direct target-position K | No patch |
-| M5. Hybrid groups and sinks | Planned | Full/sliding layers map correctly and sink behavior is unchanged | No patch |
+| M1. Connector-load smoke test | Implemented; GPU pending | Scheduler and worker load an external connector | No patch |
+| M2. Segmentation and verified lookup | CPU complete | One document is found after moving positions with exact verification | No patch |
+| M3. 100% recomputation transfer proof | Implemented; GPU/logit gate pending | Candidate KV is transferred, verified, then fully overwritten | No patch |
+| M4. GPT-OSS YaRN correction | Implemented; CUDA gate pending | Shifted cached K matches direct target-position K | No patch |
+| M5. Hybrid groups and sinks | CPU layout/data-plane complete; model gate pending | Full/sliding layers map correctly and sink behavior is unchanged | No patch |
 | M6. Out-of-tree selective-data-plane spike | Planned | Registered model/backend skips selected rows while preserving runner output shape | Decide at gate |
 | M7. Reduced recomputation correctness | Planned | Error curves at successively lower ratios | No optimization yet |
 | M8. Responses/Harmony/multi-turn validation | Planned | Transparent validated endpoint | Patch only for proven API blocker |
@@ -43,12 +44,18 @@ Completed work:
   hybrid-group, GPT-OSS, LMCache, and completion symbols in
   [the source audit](../source-audit.md).
 - Created a dependency-light package/test scaffold with exact optional runtime
-  pins and no connector implementation.
+  pins. Subsequent commits added the implementation without vendoring either
+  upstream repository.
 
 Stop/go result: **GO**. Dynamic loading is an explicit and tested vLLM 0.19.1
 path. No patch is justified.
 
 ## M1: connector-load smoke test
+
+Implementation status: the external three-argument `SupportsHMA` connector and
+all pinned startup guards are complete. CPU contract tests simulate both vLLM
+roles. The actual import/construction and `/v1/responses` checks remain manual
+on `solab-g3`.
 
 Deliverables:
 
@@ -85,6 +92,12 @@ Stop criteria:
   allocator.
 
 ## M2: position-independent segmentation and verified lookup
+
+Implementation status: complete for CPU. The live transparent connector uses
+LMCache's 256-token store chunks plus rolling query windows; delimiter and
+generic segmentation remain planner-level APIs. Candidates require namespace,
+cache-key, SHA-256, and exact-token verification. A token-hash object associated
+with multiple absolute K source positions is rejected as ambiguous.
 
 Deliverables:
 
@@ -130,6 +143,10 @@ Stop criteria:
   any approximate reuse.
 
 ## M3: 100% recomputation transfer proof
+
+Implementation status: the complete control/data path is wired into the
+connector. GPU evidence that transfer occurred, was overwritten, and preserved
+deterministic logits is still required.
 
 Deliverables:
 
@@ -180,6 +197,9 @@ Stop criteria:
 
 ## M4: GPT-OSS YaRN/RoPE correction
 
+Implementation status: the production BF16 CUDA corrector and CPU arithmetic
+tests are complete. The opt-in CUDA test has been authored but not run here.
+
 Deliverables:
 
 - Implement the GPT-OSS-only delta rotation using the exact loaded YaRN inverse
@@ -217,6 +237,11 @@ Stop criteria:
 - Any unexplained position-dependent drift blocks selective recomputation.
 
 ## M5: hybrid full/sliding groups and attention sinks
+
+Implementation status: exact 24-layer layouts, grouped physical spans,
+scatter/gather, null-block rejection, and the rule that sinks never enter the
+data plane are CPU-tested. Real Triton/sink parity and reclamation behavior are
+still GPU/model gates.
 
 Deliverables:
 
@@ -449,8 +474,8 @@ python -m pytest -m "not gpu"
 ```
 
 The user runs GPU checks manually on `solab-g3` after synchronizing the
-repository. The current scaffold contains only an environment-contract GPU
-test:
+repository. The non-model GPU suite contains the environment contract, BF16
+YaRN shift comparison, and hybrid gather/scatter round trip:
 
 ```bash
 CACHEBLEND_REPO=/path/to/cacheblend-gpt-oss

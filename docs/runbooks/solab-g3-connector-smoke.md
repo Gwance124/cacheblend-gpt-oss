@@ -1,9 +1,10 @@
 # solab-g3 connector-loading smoke test
 
-This is a manual M1 runbook for the GPU host. The current connector is a
-control-flow skeleton: it loads out of tree, validates hybrid groups, reports
-zero external tokens, transfers no KV, and performs ordinary full prefill.
-Passing this runbook does **not** demonstrate CacheBlend reuse or speedup.
+This is the manual GPU-host runbook for connector loading and real CUDA
+primitive readiness. The connector also implements `transfer_100pct`, but the
+first section deliberately uses `control_flow`: it validates external loading,
+hybrid groups, and the unchanged Responses path without starting LMCache.
+Passing only this section does **not** demonstrate CacheBlend reuse or speedup.
 
 No command in this runbook was executed during local development.
 
@@ -42,7 +43,7 @@ Run the environment and connector contract tests:
 .venv/bin/python -c "from cacheblend_gpt_oss.vllm_compat.v0_19_1.connector import GptOssCacheBlendConnector; print(GptOssCacheBlendConnector.__module__)"
 ```
 
-## Start the no-transfer connector
+## Start the control-flow connector
 
 Use separate variables rather than copying model paths into the repository:
 
@@ -77,6 +78,43 @@ Expected startup evidence:
 - Startup does not request `--disable-hybrid-kv-cache-manager`.
 - No log claims a cache lookup, KV load, or saved prefill.
 
+## Prepare the live-transfer services
+
+Do this only after the control-flow smoke passes. The live mode still
+recomputes the complete prompt and must not be described as acceleration.
+
+Start the exact public LMCache Blend V2 server in a separate shell on
+`solab-g3`:
+
+```bash
+export CUDA_VISIBLE_DEVICES=0
+.venv/bin/python -m lmcache.v1.multiprocess.blend_server_v2 \
+  --host 127.0.0.1 \
+  --port 5555 \
+  --chunk-size 256 \
+  --hash-algorithm blake3 \
+  --l1-size-gb 4 \
+  --l1-init-size-gb 4 \
+  --eviction-policy LRU \
+  --max-workers 1
+```
+
+Precreate the SQLite sidecar before vLLM constructs its scheduler-role
+read-only handle:
+
+```bash
+CACHEBLEND_SIDECAR=/absolute/path/to/cacheblend-sidecar.sqlite3
+export CACHEBLEND_SIDECAR
+.venv/bin/python -c "import os; from cacheblend_gpt_oss.storage.sidecar import SidecarMode, open_sidecar_index; index = open_sidecar_index(os.environ['CACHEBLEND_SIDECAR'], SidecarMode.WORKER_READ_WRITE); index.close()"
+```
+
+The live connector also requires the exact model and KV compatibility digests
+derived from the finalized `VllmConfig` and `KVCacheConfig`. Do not substitute
+arbitrary 64-hex values: startup intentionally rejects them, and a mislabeled
+persistent namespace would make KV reuse unsafe. A deployment config-probe
+command is the remaining runbook tooling task before the end-to-end
+`transfer_100pct` launch is enabled here.
+
 ## Exercise `/v1/responses`
 
 From a second shell on `solab-g3`:
@@ -106,8 +144,9 @@ back to a single/uniform cache group or claim CacheBlend operation.
 
 ## Current boundary after a pass
 
-A pass proves only external loading, scheduler/worker construction, hybrid
-group metadata propagation, no-transfer hook execution, request completion, and
-the unchanged Responses path. M2/M3 still need planner integration, LMCache
-transfer, proof that KV was loaded and overwritten at 100% recomputation, and
+A control-flow/model pass plus the non-model CUDA suite proves external loading,
+scheduler/worker construction, hybrid metadata propagation, the unchanged
+Responses path, production YaRN arithmetic, and real Torch scatter-gather. The
+planner and `transfer_100pct` path are implemented, but M3 is not passed until a
+moved-document run independently proves a nonzero load, full overwrite, and
 deterministic logit/hidden-state equivalence.
