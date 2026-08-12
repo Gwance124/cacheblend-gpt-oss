@@ -234,11 +234,16 @@ observation, all 256 reusable tokens were loaded, all 280 prompt tokens were
 recomputed, and saved prefill remained zero. This store-counter wait prevents request
 completion from racing the source sidecar/LMCache publication; the capture also
 reconciles each request's eligible/completed chunk count and requires zero store
-fallbacks. Native prompt/timing names are taken from the pinned
+fallbacks. Each source/target interval must additionally report all prompt
+tokens as `local_compute`, with zero `local_cache_hit` and
+`external_kv_transfer`; this proves the connector's loaded KV receives no
+scheduler credit during the 100% recomputation milestone. Native prompt/source/
+timing names are taken from the pinned
 [`PrometheusStatLogger`](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/v1/metrics/loggers.py#L580-L903),
 and TTFT is never estimated from client wall time. The wait also requires the
-native histogram observation milestones before taking each interval snapshot,
-so asynchronous exporter lag cannot produce a false mismatch.
+native prompt, prompt-source, and histogram observation milestones before taking
+each interval snapshot, so asynchronous exporter lag cannot produce a false
+mismatch.
 
 ```bash
 .venv/bin/python scripts/capture_moved_document.py \
