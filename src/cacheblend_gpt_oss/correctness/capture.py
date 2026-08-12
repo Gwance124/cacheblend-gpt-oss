@@ -6,6 +6,9 @@ The timing metric names are taken from the pinned vLLM 0.19.1
 
 https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/v1/metrics/loggers.py#L727-L889
 
+The native prefill-work histogram is defined in the same logger at lines
+893--903.
+
 Only histogram ``_count`` and ``_sum`` samples are retained.  Labels and bucket
 boundaries are deliberately discarded so a scrape cannot create unbounded
 request- or document-level state in the client-side artifact.
@@ -43,6 +46,9 @@ _STORE_COUNTER_METRICS = {
 }
 _VLLM_PROMPT_COUNTER_METRICS = {
     "prompt_tokens": "vllm:prompt_tokens",
+}
+_VLLM_PREFILL_WORK_METRICS = {
+    "kv_computed_tokens": "vllm:request_prefill_kv_computed_tokens",
 }
 _VLLM_TIMING_METRICS = {
     "ttft_seconds": "vllm:time_to_first_token_seconds",
@@ -111,6 +117,25 @@ class VllmTimingSnapshot:
                 ("decode_latency_seconds", self.decode_latency_seconds),
             )
         }
+
+
+@dataclass(frozen=True, slots=True)
+class VllmPrefillWorkSnapshot:
+    """Native vLLM prefill-KV observation count and token sum."""
+
+    observations: int
+    kv_computed_tokens: int
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.observations, bool)
+            or not isinstance(self.observations, int)
+            or self.observations < 0
+            or isinstance(self.kv_computed_tokens, bool)
+            or not isinstance(self.kv_computed_tokens, int)
+            or self.kv_computed_tokens < 0
+        ):
+            raise ValueError("invalid native vLLM prefill-work snapshot")
 
 
 def has_connector_metric_surface(text: str) -> bool:
@@ -226,6 +251,109 @@ def vllm_prompt_counter_delta(
     ):
         raise ValueError("vLLM prompt counter is invalid or moved backwards")
     return new_value - old_value
+
+
+def has_vllm_prefill_work_metric_surface(text: str) -> bool:
+    """Return whether the native prefill-KV histogram is advertised."""
+
+    if not isinstance(text, str):
+        raise TypeError("Prometheus snapshot must be text")
+    names: set[str] = set()
+    for line in text.splitlines():
+        parts = line.strip().split()
+        if not parts or parts[0].startswith("#"):
+            continue
+        names.add(parts[0].split("{", 1)[0])
+    metric = _VLLM_PREFILL_WORK_METRICS["kv_computed_tokens"]
+    return f"{metric}_count" in names and f"{metric}_sum" in names
+
+
+def parse_vllm_prefill_work_snapshot(text: str) -> VllmPrefillWorkSnapshot:
+    """Parse native vLLM prefill-KV observations without retaining labels."""
+
+    if not isinstance(text, str):
+        raise TypeError("Prometheus snapshot must be text")
+    metric = _VLLM_PREFILL_WORK_METRICS["kv_computed_tokens"]
+    raw: dict[str, float] = {"count": 0.0, "sum": 0.0}
+    seen = {"count": False, "sum": False}
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        parts = stripped.split()
+        if len(parts) < 2:
+            raise ValueError("invalid Prometheus sample")
+        sample_name = parts[0].split("{", 1)[0]
+        suffix: str | None = None
+        if sample_name == f"{metric}_count":
+            suffix = "count"
+        elif sample_name == f"{metric}_sum":
+            suffix = "sum"
+        if suffix is None:
+            continue
+        try:
+            value = float(parts[1])
+        except ValueError as exc:
+            raise ValueError("invalid vLLM prefill-work metric value") from exc
+        if not math.isfinite(value) or value < 0.0:
+            raise ValueError("invalid vLLM prefill-work metric value")
+        raw[suffix] += value
+        seen[suffix] = True
+    if seen["count"] != seen["sum"]:
+        raise ValueError("vLLM prefill-work metric family is incomplete")
+    if not raw["count"].is_integer() or not raw["sum"].is_integer():
+        raise ValueError("vLLM prefill-work histogram is not integer-valued")
+    return VllmPrefillWorkSnapshot(
+        observations=int(raw["count"]),
+        kv_computed_tokens=int(raw["sum"]),
+    )
+
+
+def vllm_prefill_work_snapshot_delta(
+    before: VllmPrefillWorkSnapshot,
+    after: VllmPrefillWorkSnapshot,
+) -> VllmPrefillWorkSnapshot:
+    """Return a monotonic native prefill-work interval."""
+
+    if not isinstance(before, VllmPrefillWorkSnapshot) or not isinstance(
+        after, VllmPrefillWorkSnapshot
+    ):
+        raise TypeError("vLLM prefill-work snapshots have an invalid type")
+    if (
+        after.observations < before.observations
+        or after.kv_computed_tokens < before.kv_computed_tokens
+    ):
+        raise ValueError("vLLM prefill-work histogram moved backwards")
+    return VllmPrefillWorkSnapshot(
+        observations=after.observations - before.observations,
+        kv_computed_tokens=after.kv_computed_tokens - before.kv_computed_tokens,
+    )
+
+
+def require_vllm_prefill_work_delta(
+    delta: VllmPrefillWorkSnapshot,
+    *,
+    expected_prompt_tokens: int,
+    expected_requests: int = 1,
+) -> None:
+    """Require native prefill work to equal the requested prompt length."""
+
+    if (
+        isinstance(expected_prompt_tokens, bool)
+        or not isinstance(expected_prompt_tokens, int)
+        or expected_prompt_tokens <= 0
+        or isinstance(expected_requests, bool)
+        or not isinstance(expected_requests, int)
+        or expected_requests <= 0
+    ):
+        raise ValueError("native prefill-work expectations are invalid")
+    if not isinstance(delta, VllmPrefillWorkSnapshot):
+        raise TypeError("vLLM prefill-work delta has an invalid type")
+    if (
+        delta.observations != expected_requests
+        or delta.kv_computed_tokens != expected_prompt_tokens * expected_requests
+    ):
+        raise ValueError("native vLLM prefill work does not match the prompt")
 
 
 def has_vllm_timing_metric_surface(text: str) -> bool:
@@ -454,20 +582,25 @@ def connector_store_counter_delta(
 
 
 __all__ = [
+    "VllmPrefillWorkSnapshot",
     "VllmTimingSnapshot",
     "VllmTimingSummary",
     "connector_counter_delta",
     "connector_evidence_from_snapshots",
     "connector_store_counter_delta",
     "has_connector_metric_surface",
+    "has_vllm_prefill_work_metric_surface",
     "has_vllm_prompt_metric_surface",
     "has_vllm_timing_metric_surface",
     "parse_completion_distribution",
     "parse_connector_counter_snapshot",
     "parse_connector_store_counter_snapshot",
+    "parse_vllm_prefill_work_snapshot",
     "parse_vllm_prompt_counter_snapshot",
     "parse_vllm_timing_snapshot",
+    "require_vllm_prefill_work_delta",
     "require_vllm_timing_delta",
+    "vllm_prefill_work_snapshot_delta",
     "vllm_prompt_counter_delta",
     "vllm_timing_snapshot_delta",
 ]

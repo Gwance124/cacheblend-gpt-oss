@@ -3,13 +3,18 @@ from __future__ import annotations
 import pytest
 
 from cacheblend_gpt_oss.correctness import (
+    VllmPrefillWorkSnapshot,
     VllmTimingSnapshot,
     VllmTimingSummary,
+    has_vllm_prefill_work_metric_surface,
     has_vllm_prompt_metric_surface,
     has_vllm_timing_metric_surface,
+    parse_vllm_prefill_work_snapshot,
     parse_vllm_prompt_counter_snapshot,
     parse_vllm_timing_snapshot,
+    require_vllm_prefill_work_delta,
     require_vllm_timing_delta,
+    vllm_prefill_work_snapshot_delta,
     vllm_prompt_counter_delta,
     vllm_timing_snapshot_delta,
 )
@@ -82,6 +87,39 @@ def test_native_prompt_counter_rejects_missing_or_backwards_intervals() -> None:
         vllm_prompt_counter_delta(
             {"prompt_tokens": 10},
             {"prompt_tokens": 9},
+        )
+
+
+def test_native_prefill_work_histogram_reconciles_exact_prompt_rows() -> None:
+    before = parse_vllm_prefill_work_snapshot(
+        'vllm:request_prefill_kv_computed_tokens_count{engine="0"} 2\n'
+        'vllm:request_prefill_kv_computed_tokens_sum{engine="0"} 20\n'
+    )
+    after = parse_vllm_prefill_work_snapshot(
+        'vllm:request_prefill_kv_computed_tokens_count{engine="0"} 3\n'
+        'vllm:request_prefill_kv_computed_tokens_sum{engine="0"} 300\n'
+    )
+
+    assert has_vllm_prefill_work_metric_surface(
+        'vllm:request_prefill_kv_computed_tokens_count{engine="0"} 0\n'
+        'vllm:request_prefill_kv_computed_tokens_sum{engine="0"} 0\n'
+    )
+    delta = vllm_prefill_work_snapshot_delta(before, after)
+    require_vllm_prefill_work_delta(delta, expected_prompt_tokens=280)
+    assert delta == VllmPrefillWorkSnapshot(1, 280)
+
+
+def test_native_prefill_work_rejects_partial_or_mismatched_histograms() -> None:
+    partial = (
+        'vllm:request_prefill_kv_computed_tokens_count{engine="0"} 1\n'
+    )
+    assert not has_vllm_prefill_work_metric_surface(partial)
+    with pytest.raises(ValueError, match="family is incomplete"):
+        parse_vllm_prefill_work_snapshot(partial)
+    with pytest.raises(ValueError, match="does not match"):
+        require_vllm_prefill_work_delta(
+            VllmPrefillWorkSnapshot(1, 279),
+            expected_prompt_tokens=280,
         )
 
 

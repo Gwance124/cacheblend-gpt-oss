@@ -447,8 +447,10 @@ additional live-debug surface, not a claimed artifact field.
 The moved-document capture harness also cross-checks each source/target
 interval against native `vllm:prompt_tokens` accounting and requires one
 observation in every pinned TTFT, queue, prefill, decode, and end-to-end
-histogram. A connector counter alone cannot satisfy this gate: if native prompt
-work or timing observations do not reconcile, the artifact is not written.
+histogram. It independently requires
+`vllm:request_prefill_kv_computed_tokens_sum` to equal the exact prompt length.
+A connector counter alone cannot satisfy this gate: if native prompt work or
+timing observations do not reconcile, the artifact is not written.
 
 The separate `correctness.transfer` sidecar contract is the planned bridge for
 that live-debug evidence. It requires source/loaded/target digest agreement and

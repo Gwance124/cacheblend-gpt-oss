@@ -228,9 +228,10 @@ complete store counter before issuing the target. It then sends a 280-token
 target where the exact document starts at position 17. It refuses to write a
 CacheBlend artifact unless the target interval contains exactly one connector
 request, the native vLLM prompt-token counter advances by exactly the expected
-source and target lengths, each target timing histogram records one observation,
-all 256 reusable tokens were loaded, all 280 prompt tokens were recomputed, and
-saved prefill remained zero. This store-counter wait prevents request
+source and target lengths, the native prefill-KV histogram reports exactly the
+expected source/target rows, each target timing histogram records one
+observation, all 256 reusable tokens were loaded, all 280 prompt tokens were
+recomputed, and saved prefill remained zero. This store-counter wait prevents request
 completion from racing the source sidecar/LMCache publication; the capture also
 reconciles each request's eligible/completed chunk count and requires zero store
 fallbacks. Native prompt/timing names are taken from the pinned
