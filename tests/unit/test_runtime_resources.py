@@ -27,6 +27,7 @@ from cacheblend_gpt_oss.storage.lmcache_types import (
 )
 from cacheblend_gpt_oss.storage.sidecar import SidecarMode
 from cacheblend_gpt_oss.vllm_compat.v0_19_1.runtime_resources import (
+    CudaRuntimeIdentity,
     OpenWorkerBridge,
     RuntimeResourceError,
     RuntimeResourceErrorCode,
@@ -95,6 +96,16 @@ def _layout() -> GptOssHybridCacheLayout:
                 128,
             ),
         )
+    )
+
+
+def _cuda_identity(device: str) -> CudaRuntimeIdentity:
+    return CudaRuntimeIdentity(
+        device_index=int(device.rsplit(":", 1)[1]),
+        torch_version="2.10.0+cu128",
+        cuda_runtime="12.8",
+        gpu_name="NVIDIA A100-SXM4-80GB",
+        compute_capability="8.0",
     )
 
 
@@ -267,6 +278,7 @@ def test_worker_resources_bind_one_device_and_open_bridge(tmp_path: object) -> N
         staging_backend_factory=lambda: cast(object, backend),
         tensor_ops_factory=lambda: cast(object, tensor_ops),
         key_corrector_factory=lambda: cast(object, corrector),
+        cuda_runtime_factory=_cuda_identity,
         bridge_factory=bridge_factory,
     )
 
@@ -324,6 +336,7 @@ def test_worker_open_failure_closes_bridge_and_sidecar(tmp_path: object) -> None
             staging_backend_factory=lambda: cast(object, object()),
             tensor_ops_factory=lambda: cast(object, object()),
             key_corrector_factory=lambda: cast(object, lambda *args: object()),
+            cuda_runtime_factory=_cuda_identity,
             bridge_factory=lambda **_kwargs: cast(OpenWorkerBridge, bridge),
         )
 
@@ -331,6 +344,35 @@ def test_worker_open_failure_closes_bridge_and_sidecar(tmp_path: object) -> None
     assert bridge.open_calls == 1
     assert bridge.close_calls == 1
     assert sidecar.close_calls == 1
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["torch_version", "cuda_runtime", "gpu_name", "compute_capability"],
+)
+def test_worker_rejects_unpinned_cuda_runtime_identity(
+    tmp_path: object, field: str
+) -> None:
+    identity = _cuda_identity("cuda:0")
+    values = {
+        "device_index": identity.device_index,
+        "torch_version": identity.torch_version,
+        "cuda_runtime": identity.cuda_runtime,
+        "gpu_name": identity.gpu_name,
+        "compute_capability": identity.compute_capability,
+    }
+    values[field] = "unsupported"
+    invalid = CudaRuntimeIdentity(**values)
+
+    with pytest.raises(RuntimeResourceError) as error:
+        create_worker_runtime_resources(
+            _config(tmp_path),
+            _layout(),
+            {},
+            device="cuda:0",
+            cuda_runtime_factory=lambda _device: invalid,
+        )
+    assert error.value.code is RuntimeResourceErrorCode.INVALID_DEVICE
 
 
 class FakeClosableRuntime:

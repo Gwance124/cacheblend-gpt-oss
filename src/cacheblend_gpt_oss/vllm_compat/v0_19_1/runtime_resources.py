@@ -40,6 +40,7 @@ from cacheblend_gpt_oss.storage.lmcache_v0_4_3 import (
 )
 from cacheblend_gpt_oss.storage.lookup import LmcacheCandidateLookupCoordinator
 from cacheblend_gpt_oss.storage.sidecar import SidecarMode, open_sidecar_index
+from cacheblend_gpt_oss.targets import PINNED_TARGET
 from cacheblend_gpt_oss.vllm_compat.v0_19_1.data_plane import (
     KeyPositionCorrector,
     TensorOps,
@@ -88,6 +89,65 @@ class RuntimeResourceError(RuntimeError):
 
 def _fail(code: RuntimeResourceErrorCode) -> NoReturn:
     raise RuntimeResourceError(code)
+
+
+@dataclass(frozen=True, slots=True)
+class CudaRuntimeIdentity:
+    """Hardware/runtime facts collected from one worker-local CUDA device."""
+
+    device_index: int
+    torch_version: str
+    cuda_runtime: str
+    gpu_name: str
+    compute_capability: str
+
+
+class CudaRuntimeFactory(Protocol):
+    """Injected CUDA identity boundary for CPU tests and the real worker."""
+
+    def __call__(self, device: str) -> CudaRuntimeIdentity: ...
+
+
+def _load_cuda_runtime_identity(device: str) -> CudaRuntimeIdentity:
+    """Collect exact pinned hardware facts without a package-level Torch import."""
+
+    try:
+        import torch  # type: ignore[import-not-found]
+
+        device_index = int(device.rsplit(":", 1)[1])
+        if not torch.cuda.is_available():
+            _fail(RuntimeResourceErrorCode.INVALID_DEVICE)
+        capability = torch.cuda.get_device_capability(device_index)
+        if len(capability) != 2:
+            _fail(RuntimeResourceErrorCode.INVALID_DEVICE)
+        return CudaRuntimeIdentity(
+            device_index=device_index,
+            torch_version=str(torch.__version__),
+            cuda_runtime=str(torch.version.cuda),
+            gpu_name=str(torch.cuda.get_device_name(device_index)),
+            compute_capability=f"{capability[0]}.{capability[1]}",
+        )
+    except RuntimeResourceError:
+        raise
+    except Exception as exc:
+        raise RuntimeResourceError(RuntimeResourceErrorCode.INVALID_DEVICE) from exc
+
+
+def _require_pinned_cuda_runtime(
+    device: str,
+    identity: CudaRuntimeIdentity,
+) -> None:
+    """Reject a worker before it can register or transfer incompatible KV."""
+
+    if (
+        not isinstance(identity, CudaRuntimeIdentity)
+        or identity.device_index != int(device.rsplit(":", 1)[1])
+        or identity.torch_version != PINNED_TARGET.torch_version
+        or identity.cuda_runtime != PINNED_TARGET.cuda_runtime
+        or identity.gpu_name != PINNED_TARGET.gpu_name
+        or identity.compute_capability != "8.0"
+    ):
+        _fail(RuntimeResourceErrorCode.INVALID_DEVICE)
 
 
 class RuntimeTransport(WorkerLmcacheTransport, Protocol):
@@ -298,6 +358,7 @@ def create_worker_runtime_resources(
     key_corrector_factory: Callable[[], KeyPositionCorrector] = (
         load_torch_yarn_corrector
     ),
+    cuda_runtime_factory: CudaRuntimeFactory = _load_cuda_runtime_identity,
     bridge_factory: WorkerBridgeFactory = _worker_bridge_factory,
 ) -> WorkerRuntimeResources:
     """Create and open one worker's exact CUDA/LMCache ownership graph."""
@@ -313,6 +374,12 @@ def create_worker_runtime_resources(
             config.staging_token_capacity,
             device,
         )
+    except Exception as exc:
+        raise RuntimeResourceError(RuntimeResourceErrorCode.INVALID_DEVICE) from exc
+    try:
+        _require_pinned_cuda_runtime(device, cuda_runtime_factory(device))
+    except RuntimeResourceError:
+        raise
     except Exception as exc:
         raise RuntimeResourceError(RuntimeResourceErrorCode.INVALID_DEVICE) from exc
 
@@ -351,6 +418,8 @@ def create_worker_runtime_resources(
 
 
 __all__ = [
+    "CudaRuntimeFactory",
+    "CudaRuntimeIdentity",
     "OpenWorkerBridge",
     "RuntimeResourceError",
     "RuntimeResourceErrorCode",
