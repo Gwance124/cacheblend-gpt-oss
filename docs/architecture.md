@@ -111,6 +111,13 @@ adds the same all-preflight-before-mutation guarantee for model-produced K/V
 rows and rejects non-CUDA, wrong-shape, wrong-dtype, wrong-device, or partial
 cache updates. It is a CPU-tested contract, not a live attention backend.
 
+`gpt_oss.forward_output` guards the other half of that future M6 seam. A model
+override must return the same two-dimensional hidden-state row count that
+ordinary forward would produce, including runner padding, and preserve the
+runner's strictly increasing logits indices. Returning only recomputed rows is
+rejected before logits gathering. This contract is metadata-only and does not
+enable selective execution.
+
 ### Version-scoped connector layer
 
 `cacheblend_gpt_oss.vllm_compat.v0_19_1` contains the only imports of vLLM

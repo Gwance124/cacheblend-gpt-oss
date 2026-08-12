@@ -1,5 +1,10 @@
 """GPT-OSS-20B-specific KV layout, correction, and model-adapter boundary."""
 
+from cacheblend_gpt_oss.gpt_oss.forward_output import (
+    ForwardOutputContract,
+    ForwardOutputError,
+    ForwardOutputErrorCode,
+)
 from cacheblend_gpt_oss.gpt_oss.layout import (
     GPT_OSS_MAX_CONTEXT_TOKENS,
     GPT_OSS_NUM_CACHE_GROUPS,
@@ -67,6 +72,9 @@ __all__ = [
     "AttentionKind",
     "AttentionLayerLayout",
     "CacheGroupLayout",
+    "ForwardOutputContract",
+    "ForwardOutputError",
+    "ForwardOutputErrorCode",
     "ForwardRowPlan",
     "ForwardRowPlanContext",
     "GptOssHybridCacheLayout",

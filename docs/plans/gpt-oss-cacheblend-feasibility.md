@@ -324,6 +324,11 @@ live attention path. The pinned stock method still calls
 adapt this contract and pass the M6 GPU ordering/shape gate before it can claim
 selective execution or correctness.
 
+The companion `gpt_oss.forward_output` contract guards the model-runner side:
+a future model override must preserve the full hidden-state row shape and the
+pinned runner's logits-index ordering. It is CPU-tested and dormant until
+M3--M5 GPU evidence permits registering a concrete model/backend.
+
 This milestone decides the patch boundary.
 
 Deliverables:
