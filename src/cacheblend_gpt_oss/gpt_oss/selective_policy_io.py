@@ -215,6 +215,9 @@ def _point_to_dict(point: SelectionSweepPoint) -> dict[str, object]:
             }
         ),
         "prompt_tokens": result.prompt_tokens,
+        "layer_recompute_ranges": [
+            _range_list(layer.recompute_ranges) for layer in result.row_plan.layers
+        ],
         "recompute_ranges": _range_list(result.recompute_ranges),
         "recompute_ratio": result.recompute_ratio,
         "selected_cached_rows": list(result.selected_cached_rows),
@@ -287,6 +290,7 @@ def selection_sweep_from_dict(data: object) -> SelectionSweep:
                 "check_layer",
                 "measurement",
                 "prompt_tokens",
+                "layer_recompute_ranges",
                 "recompute_ranges",
                 "recompute_ratio",
                 "selected_cached_rows",
@@ -304,6 +308,18 @@ def selection_sweep_from_dict(data: object) -> SelectionSweep:
         suffix = _bounded_int(point["suffix_tokens"], maximum=prompt)
         candidates = _ranges(point["candidate_cached_ranges"], prompt)
         recompute = _ranges(point["recompute_ranges"], prompt)
+        raw_layer_ranges = point["layer_recompute_ranges"]
+        if (
+            not isinstance(raw_layer_ranges, list)
+            or len(raw_layer_ranges) != GPT_OSS_NUM_LAYERS
+        ):
+            _fail(SelectionSweepIoErrorCode.INVALID_POINT)
+        layer_ranges = tuple(
+            _ranges(layer_ranges_value, prompt)
+            for layer_ranges_value in raw_layer_ranges
+        )
+        if any(layer_ranges_value != recompute for layer_ranges_value in layer_ranges):
+            _fail(SelectionSweepIoErrorCode.POINT_MISMATCH)
         selected = _selected_rows(
             point["selected_cached_rows"], prompt, candidates, suffix
         )
@@ -330,7 +346,7 @@ def selection_sweep_from_dict(data: object) -> SelectionSweep:
             _fail(SelectionSweepIoErrorCode.POINT_MISMATCH)
         try:
             row_plan = ForwardRowPlan.from_recompute_ranges(
-                prompt, tuple(recompute for _ in range(GPT_OSS_NUM_LAYERS))
+                prompt, layer_ranges
             )
             result = SelectionPolicyResult(
                 check_layer=check_layer,

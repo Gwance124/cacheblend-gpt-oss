@@ -47,7 +47,9 @@ def _sweep(*, measured: bool = False):
 
 def test_round_trip_preserves_work_only_artifact() -> None:
     sweep = _sweep()
-    parsed = selection_sweep_from_dict(selection_sweep_to_dict(sweep))
+    payload = selection_sweep_to_dict(sweep)
+    assert len(payload["points"][0]["layer_recompute_ranges"]) == 24  # type: ignore[index]
+    parsed = selection_sweep_from_dict(payload)
     assert parsed == sweep
     assert parsed.work_curve == sweep.work_curve
     with pytest.raises(SelectionPolicyError) as caught:
@@ -120,6 +122,12 @@ def test_unknown_point_field_and_range_tampering_fail_closed() -> None:
 
     payload = selection_sweep_to_dict(_sweep())
     payload["points"][1]["selected_cached_rows"] = []  # type: ignore[index]
+    with pytest.raises(SelectionSweepIoError) as caught:
+        selection_sweep_from_dict(payload)
+    assert caught.value.code is SelectionSweepIoErrorCode.POINT_MISMATCH
+
+    payload = selection_sweep_to_dict(_sweep())
+    payload["points"][0]["layer_recompute_ranges"][1] = [[0, 1]]  # type: ignore[index]
     with pytest.raises(SelectionSweepIoError) as caught:
         selection_sweep_from_dict(payload)
     assert caught.value.code is SelectionSweepIoErrorCode.POINT_MISMATCH
