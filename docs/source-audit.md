@@ -241,6 +241,11 @@ This evidence changes the M6 boundary as follows:
    invariant after these public registries are exhausted, record that failure
    and design a version-scoped patch before writing one.
 
+The CPU-side guard for this boundary is
+`cacheblend_gpt_oss.vllm_compat.v0_19_1.selective_registry`. It is deliberately
+not an entry point: it accepts only a proof object and project-owned lazy class
+paths, and it treats a partial registry mutation as terminal for that process.
+
 ## LMCache 0.4.3 integration audit
 
 ### Ordinary V1 connector and engine

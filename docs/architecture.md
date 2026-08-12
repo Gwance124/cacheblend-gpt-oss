@@ -94,6 +94,14 @@ each boundary. The dormant CPU-only `ForwardRowPlan` and
 the future M6 spike; they are not wired into vLLM. A lower-than-100%
 `RecomputePolicy` remains future work.
 
+`vllm_compat.v0_19_1.selective_registry` adds the corresponding guarded
+registration seam. It requires explicit proof of all M3--M5 prerequisites,
+accepts only project-owned lazy model/backend paths, registers `CUSTOM` before
+the model override, is idempotent within a process, and permanently fails
+closed after a partial registration. It is intentionally not exposed as a
+`vllm.general_plugins` entry point until the pinned model/backend classes and
+GPU evidence exist.
+
 ### Version-scoped connector layer
 
 `cacheblend_gpt_oss.vllm_compat.v0_19_1` contains the only imports of vLLM

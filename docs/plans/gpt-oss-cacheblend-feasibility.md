@@ -308,6 +308,12 @@ recompute/cached complements, and nested-context/lifetime failures without
 importing vLLM or Torch. The current connector does not consume it and remains
 100% recompute.
 
+`vllm_compat.v0_19_1.selective_registry` now guards the public registration
+calls with the same boundary: all M3--M5 proof flags must be true, class paths
+must remain inside this project, `CUSTOM` is bound before the model override,
+and a partial registration fails closed for the process lifetime. It is a
+library seam only; no plugin entry point is enabled.
+
 This milestone decides the patch boundary.
 
 Deliverables:
