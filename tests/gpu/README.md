@@ -55,3 +55,15 @@ The check must report the exact 24-layer alternating sliding/full layout,
 factor/original context, 32 experts with 4 active, and 201,088-token
 vocabulary. This is a configuration gate only; it is not logits, transfer, or
 `/v1/responses` evidence.
+
+The external connector import smoke check is separate and does not construct a
+server or load weights:
+
+```bash
+uv run pytest tests/gpu/test_connector_loading.py \
+  -m "gpu and integration and not model" -vv
+```
+
+It must import vLLM `0.19.1`, dynamically import
+`cacheblend_gpt_oss.vllm_compat.v0_19_1.connector`, verify `KVConnectorBase_V1`
+and `SupportsHMA`, and inspect the current three-argument constructor.

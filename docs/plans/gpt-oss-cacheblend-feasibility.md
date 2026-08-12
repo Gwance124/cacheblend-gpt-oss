@@ -99,6 +99,12 @@ Stop criteria:
 - Do not proceed if the connector only works after disabling the hybrid
   allocator.
 
+The opt-in `tests/gpu/test_connector_loading.py` now covers the runtime import
+half of this gate. It verifies vLLM `0.19.1`, the dynamic module path,
+`KVConnectorBase_V1`/`SupportsHMA` inheritance, and the exact constructor
+signature without constructing a server. The full startup and Responses smoke
+still require `solab-g3` output.
+
 ## M2: position-independent segmentation and verified lookup
 
 Implementation status: complete for CPU. The live transparent connector uses
