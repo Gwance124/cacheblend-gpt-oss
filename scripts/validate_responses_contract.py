@@ -44,6 +44,7 @@ def main() -> int:
         },
         "turn_count": len(evidence.turns),
         "native_prompt_tokens_processed": evidence.native_prompt_tokens_processed,
+        "native_prompt_source_delta": evidence.native_prompt_source_delta,
         "native_prefill_work": {
             "observations": evidence.native_prefill_work.observations,
             "kv_computed_tokens": evidence.native_prefill_work.kv_computed_tokens,

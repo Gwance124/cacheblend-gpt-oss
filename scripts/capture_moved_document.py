@@ -41,17 +41,21 @@ from cacheblend_gpt_oss.correctness import (
     has_connector_metric_surface,
     has_vllm_prefill_work_metric_surface,
     has_vllm_prompt_metric_surface,
+    has_vllm_prompt_source_metric_surface,
     has_vllm_timing_metric_surface,
     parse_completion_distribution,
     parse_connector_counter_snapshot,
     parse_connector_store_counter_snapshot,
     parse_vllm_prefill_work_snapshot,
     parse_vllm_prompt_counter_snapshot,
+    parse_vllm_prompt_source_snapshot,
     parse_vllm_timing_snapshot,
+    require_full_prefill_prompt_source_delta,
     require_vllm_prefill_work_delta,
     require_vllm_timing_delta,
     vllm_prefill_work_snapshot_delta,
     vllm_prompt_counter_delta,
+    vllm_prompt_source_delta,
     vllm_timing_snapshot_delta,
     write_artifact,
 )
@@ -303,9 +307,12 @@ def main() -> int:
             raise ValueError("pinned vLLM timing metrics are not present")
         if not has_vllm_prefill_work_metric_surface(initial_metrics):
             raise ValueError("pinned vLLM prefill-work metrics are not present")
+        if not has_vllm_prompt_source_metric_surface(initial_metrics):
+            raise ValueError("pinned vLLM prompt-source metrics are not present")
         initial = parse_connector_counter_snapshot(initial_metrics)
         initial_store = parse_connector_store_counter_snapshot(initial_metrics)
         initial_prompt = parse_vllm_prompt_counter_snapshot(initial_metrics)
+        initial_prompt_source = parse_vllm_prompt_source_snapshot(initial_metrics)
         initial_prefill_work = parse_vllm_prefill_work_snapshot(initial_metrics)
         initial_timing = parse_vllm_timing_snapshot(initial_metrics)
         source_store_tokens = (
@@ -358,6 +365,8 @@ def main() -> int:
         )
         source_prompt = parse_vllm_prompt_counter_snapshot(after_source_metrics)
         target_prompt = parse_vllm_prompt_counter_snapshot(after_target_metrics)
+        source_prompt_source = parse_vllm_prompt_source_snapshot(after_source_metrics)
+        target_prompt_source = parse_vllm_prompt_source_snapshot(after_target_metrics)
         source_prefill_work = parse_vllm_prefill_work_snapshot(after_source_metrics)
         target_prefill_work = parse_vllm_prefill_work_snapshot(after_target_metrics)
         source_prompt_delta = vllm_prompt_counter_delta(initial_prompt, source_prompt)
@@ -368,6 +377,14 @@ def main() -> int:
             raise ValueError("source native prompt-token delta does not match fixture")
         if target_prompt_tokens_processed != len(fixture.target_prompt_token_ids):
             raise ValueError("target native prompt-token delta does not match fixture")
+        require_full_prefill_prompt_source_delta(
+            vllm_prompt_source_delta(initial_prompt_source, source_prompt_source),
+            expected_prompt_tokens=len(fixture.source_prompt_token_ids),
+        )
+        require_full_prefill_prompt_source_delta(
+            vllm_prompt_source_delta(source_prompt_source, target_prompt_source),
+            expected_prompt_tokens=len(fixture.target_prompt_token_ids),
+        )
         source_prefill_delta = vllm_prefill_work_snapshot_delta(
             initial_prefill_work,
             source_prefill_work,
@@ -422,7 +439,10 @@ def main() -> int:
             raise ValueError("pinned vLLM timing metrics are not present")
         if not has_vllm_prefill_work_metric_surface(initial_metrics):
             raise ValueError("pinned vLLM prefill-work metrics are not present")
+        if not has_vllm_prompt_source_metric_surface(initial_metrics):
+            raise ValueError("pinned vLLM prompt-source metrics are not present")
         initial_prompt = parse_vllm_prompt_counter_snapshot(initial_metrics)
+        initial_prompt_source = parse_vllm_prompt_source_snapshot(initial_metrics)
         initial_prefill_work = parse_vllm_prefill_work_snapshot(initial_metrics)
         initial_timing = parse_vllm_timing_snapshot(initial_metrics)
         target_response = client.post_json(
@@ -441,6 +461,11 @@ def main() -> int:
         )
         if target_prompt_tokens_processed != len(fixture.target_prompt_token_ids):
             raise ValueError("target native prompt-token delta does not match fixture")
+        after_prompt_source = parse_vllm_prompt_source_snapshot(after_metrics)
+        require_full_prefill_prompt_source_delta(
+            vllm_prompt_source_delta(initial_prompt_source, after_prompt_source),
+            expected_prompt_tokens=len(fixture.target_prompt_token_ids),
+        )
         target_prefill_work = parse_vllm_prefill_work_snapshot(after_metrics)
         target_prefill_delta = vllm_prefill_work_snapshot_delta(
             initial_prefill_work,

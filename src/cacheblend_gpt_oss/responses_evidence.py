@@ -22,10 +22,11 @@ from cacheblend_gpt_oss.correctness.capture import (
     VllmPrefillWorkSnapshot,
     VllmTimingSnapshot,
     VllmTimingSummary,
+    require_full_prefill_prompt_source_delta,
 )
 from cacheblend_gpt_oss.correctness.models import CorrectnessRuntimeIdentity
 
-RESPONSES_EVIDENCE_SCHEMA_VERSION = 1
+RESPONSES_EVIDENCE_SCHEMA_VERSION = 2
 RESPONSES_EVIDENCE_CONTRACT = "gpt_oss_responses_harmony_tool_append_only_multiturn"
 _CONNECTOR_KEYS = frozenset(
     {
@@ -46,6 +47,9 @@ _TIMING_KEYS = frozenset(
         "prefill_latency_seconds",
         "decode_latency_seconds",
     }
+)
+_PROMPT_SOURCE_KEYS = frozenset(
+    {"local_compute", "local_cache_hit", "external_kv_transfer"}
 )
 _RUNTIME_KEYS = frozenset(
     {
@@ -77,6 +81,7 @@ class ResponsesEvidenceErrorCode(str, Enum):
     INVALID_APPEND_ONLY = "invalid_append_only"
     INVALID_CONNECTOR_METRICS = "invalid_connector_metrics"
     INVALID_PROMPT_METRICS = "invalid_prompt_metrics"
+    INVALID_PROMPT_SOURCE_METRICS = "invalid_prompt_source_metrics"
     INVALID_PREFILL_WORK = "invalid_prefill_work"
     INVALID_TIMINGS = "invalid_timings"
     FILE_ERROR = "file_error"
@@ -168,6 +173,7 @@ class ResponsesContractEvidence:
     append_only_item_counts: ResponsesAppendOnlyEvidence
     connector_counter_delta: dict[str, int]
     native_prompt_tokens_processed: int
+    native_prompt_source_delta: dict[str, int]
     native_prefill_work: VllmPrefillWorkSnapshot
     vllm_timing_delta: VllmTimingSnapshot
 
@@ -332,6 +338,32 @@ def _parse_timings(value: object) -> VllmTimingSnapshot:
     return VllmTimingSnapshot(**summaries)
 
 
+def _parse_prompt_source(
+    value: object,
+    *,
+    expected_prompt_tokens: int,
+) -> dict[str, int]:
+    mapping = _exact_mapping(
+        value,
+        _PROMPT_SOURCE_KEYS,
+        ResponsesEvidenceErrorCode.INVALID_PROMPT_SOURCE_METRICS,
+    )
+    delta = {
+        key: _bounded_count(
+            mapping[key], ResponsesEvidenceErrorCode.INVALID_PROMPT_SOURCE_METRICS
+        )
+        for key in _PROMPT_SOURCE_KEYS
+    }
+    try:
+        require_full_prefill_prompt_source_delta(
+            delta,
+            expected_prompt_tokens=expected_prompt_tokens,
+        )
+    except ValueError:
+        _fail(ResponsesEvidenceErrorCode.INVALID_PROMPT_SOURCE_METRICS)
+    return delta
+
+
 def responses_contract_evidence_from_dict(data: object) -> ResponsesContractEvidence:
     """Validate and decode one generated report."""
 
@@ -348,6 +380,7 @@ def responses_contract_evidence_from_dict(data: object) -> ResponsesContractEvid
                 "append_only_item_counts",
                 "connector_counter_delta",
                 "native_prompt_tokens_processed",
+                "native_prompt_source_delta",
                 "native_prefill_work",
                 "vllm_timing_delta",
             }
@@ -371,6 +404,10 @@ def responses_contract_evidence_from_dict(data: object) -> ResponsesContractEvid
     )
     if native_prompt <= 0:
         _fail(ResponsesEvidenceErrorCode.INVALID_PROMPT_METRICS)
+    native_prompt_source = _parse_prompt_source(
+        root["native_prompt_source_delta"],
+        expected_prompt_tokens=native_prompt,
+    )
     native_prefill = _exact_mapping(
         root["native_prefill_work"],
         frozenset({"observations", "kv_computed_tokens"}),
@@ -395,6 +432,7 @@ def responses_contract_evidence_from_dict(data: object) -> ResponsesContractEvid
         append_only_item_counts=append_only,
         connector_counter_delta=connector,
         native_prompt_tokens_processed=native_prompt,
+        native_prompt_source_delta=native_prompt_source,
         native_prefill_work=prefill,
         vllm_timing_delta=_parse_timings(root["vllm_timing_delta"]),
     )
@@ -447,6 +485,7 @@ def canonical_responses_contract_bytes(
         },
         "connector_counter_delta": evidence.connector_counter_delta,
         "native_prompt_tokens_processed": evidence.native_prompt_tokens_processed,
+        "native_prompt_source_delta": evidence.native_prompt_source_delta,
         "native_prefill_work": {
             "observations": evidence.native_prefill_work.observations,
             "kv_computed_tokens": evidence.native_prefill_work.kv_computed_tokens,

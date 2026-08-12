@@ -112,8 +112,11 @@ arguments, both later turns emit nonempty message text, the fixed city survives
 both continuations, exactly three connector requests are observed, all
 connector counter deltas reconcile, each pinned vLLM timing histogram records
 exactly three observations, and the native prefill-KV histogram sum equals the
-native prompt-token counter delta. Recomputed tokens must be nonzero and saved
-prefill must be zero. The report stores native prompt/prefill work plus count,
+native prompt-token counter delta. The prompt-source interval must also report
+all prompt tokens as `local_compute`, with zero `local_cache_hit` and zero
+`external_kv_transfer`; this proves that the first milestone gives vLLM no
+external scheduler credit. Recomputed tokens must be nonzero and saved
+prefill must be zero. The report stores native prompt/source/prefill work plus count,
 sum, and mean for TTFT, end-to-end, queue, prefill, and decode latency; TTFT is
 never inferred from client wall time. The request wait requires those native
 observation milestones before taking its final interval scrape, preventing
@@ -133,6 +136,9 @@ Go only when:
   aggregate sums; and
 - `native_prefill_work.observations == 3` and its computed-token sum equals
   `native_prompt_tokens_processed`; and
+- `native_prompt_source_delta` has local compute equal to
+  `native_prompt_tokens_processed` and zero local-cache-hit and external
+  transfer counts; and
 - the server log contains no fallback, parser error, transfer/correction error,
   or partial group/layer operation.
 

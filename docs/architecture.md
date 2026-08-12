@@ -433,9 +433,13 @@ The Responses contract harness parses the pinned vLLM histogram families
 requires one observation per request and stores only aggregate count/sum/mean
 values; labels and bucket samples are discarded. The three-turn Responses gate
 also reconciles the native `vllm:prompt_tokens` delta with
-`vllm:request_prefill_kv_computed_tokens_sum`. These names and semantics are
-from the pinned
-[`PrometheusStatLogger`](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/v1/metrics/loggers.py#L727-L889),
+`vllm:request_prefill_kv_computed_tokens_sum` and requires the
+`vllm:prompt_tokens_by_source` interval to be exactly
+`local_compute == prompt_tokens`, `local_cache_hit == 0`, and
+`external_kv_transfer == 0`. The latter is the scheduler-credit proof that the
+100% milestone did not silently claim prefix or external KV work. These names
+and semantics are from the pinned
+[`PrometheusStatLogger`](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/v1/metrics/loggers.py#L580-L903),
 not inferred client timings.
 
 The implemented M3 correctness artifacts record the complete normalized output
@@ -451,8 +455,11 @@ interval against native `vllm:prompt_tokens` accounting and requires one
 observation in every pinned TTFT, queue, prefill, decode, and end-to-end
 histogram. It independently requires
 `vllm:request_prefill_kv_computed_tokens_sum` to equal the exact prompt length.
-A connector counter alone cannot satisfy this gate: if native prompt work or
-timing observations do not reconcile, the artifact is not written.
+It also requires every interval's prompt-source counters to show full local
+recomputation with zero local-cache-hit and external-transfer credit. A
+connector counter alone cannot satisfy this gate: if native prompt work,
+source credit, or timing observations do not reconcile, the artifact is not
+written.
 
 The separate `correctness.transfer` sidecar contract is the planned bridge for
 that live-debug evidence. It requires source/loaded/target digest agreement and

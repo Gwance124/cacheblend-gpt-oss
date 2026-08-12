@@ -34,7 +34,7 @@ be tested before deciding whether a pinned vLLM patch is necessary.
 | M5. Hybrid groups and sinks | CPU layout/data-plane complete; model gate pending | Full/sliding layers map correctly and sink behavior is unchanged | No patch |
 | M6. Out-of-tree selective-data-plane spike | Pinned boundary audited; implementation waits for M3--M5 GPU evidence | Registered model/backend must skip selected rows while preserving runner output shape | Decide at gate |
 | M7. Reduced recomputation correctness | CPU policy contract; GPU pending | Deterministic check-layer row plans; error/work curves still require model runs | No optimization yet |
-| M8. Responses/Harmony/multi-turn validation | CPU harness complete; GPU/API run pending | Transparent validated endpoint | Patch only for proven API blocker |
+| M8. Responses/Harmony/multi-turn validation | CPU harness and offline evidence validator complete; GPU/API run pending | Transparent validated endpoint with native source-credit proof | Patch only for proven API blocker |
 | M9. Controlled benchmark | CPU evidence contract; GPU pending | Full-prefill and prefix-cache comparisons with complete metrics and confidence intervals | Optimize only after correctness |
 
 ## M0: pinned audit and repository scaffold

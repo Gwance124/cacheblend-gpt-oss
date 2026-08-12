@@ -8,15 +8,19 @@ from cacheblend_gpt_oss.correctness import (
     VllmTimingSummary,
     has_vllm_prefill_work_metric_surface,
     has_vllm_prompt_metric_surface,
+    has_vllm_prompt_source_metric_surface,
     has_vllm_timing_metric_surface,
     parse_vllm_prefill_work_snapshot,
     parse_vllm_prompt_counter_snapshot,
+    parse_vllm_prompt_source_snapshot,
     parse_vllm_timing_snapshot,
+    require_full_prefill_prompt_source_delta,
     require_vllm_prefill_work_delta,
     require_vllm_prefill_work_total,
     require_vllm_timing_delta,
     vllm_prefill_work_snapshot_delta,
     vllm_prompt_counter_delta,
+    vllm_prompt_source_delta,
     vllm_timing_snapshot_delta,
 )
 
@@ -44,6 +48,23 @@ def _snapshot_text(
         if include_buckets:
             lines.append(f'{metric}_bucket{{engine="0",le="+Inf"}} {count}')
     return "\n".join(lines) + "\n"
+
+
+def _prompt_source_text(
+    local_compute: int,
+    local_cache_hit: int,
+    external_kv_transfer: int,
+) -> str:
+    return "\n".join(
+        (
+            "vllm:prompt_tokens_by_source{model_name=\"m\",engine=\"0\","
+            f"source=\"local_compute\"}} {local_compute}",
+            "vllm:prompt_tokens_by_source{model_name=\"m\",engine=\"0\","
+            f"source=\"local_cache_hit\"}} {local_cache_hit}",
+            "vllm:prompt_tokens_by_source{model_name=\"m\",engine=\"0\","
+            f"source=\"external_kv_transfer\"}} {external_kv_transfer}",
+        )
+    ) + "\n"
 
 
 def test_pinned_timing_histograms_are_aggregated_without_labels() -> None:
@@ -132,6 +153,35 @@ def test_native_prefill_work_rejects_partial_or_mismatched_histograms() -> None:
             VllmPrefillWorkSnapshot(3, 810),
             expected_prompt_tokens=811,
             expected_requests=3,
+        )
+
+
+def test_prompt_source_counters_require_zero_external_credit() -> None:
+    before = parse_vllm_prompt_source_snapshot(_prompt_source_text(2, 1, 0))
+    after = parse_vllm_prompt_source_snapshot(_prompt_source_text(282, 1, 0))
+    assert has_vllm_prompt_source_metric_surface(_prompt_source_text(0, 0, 0))
+    delta = vllm_prompt_source_delta(before, after)
+    require_full_prefill_prompt_source_delta(delta, expected_prompt_tokens=280)
+    assert delta == {
+        "local_compute": 280,
+        "local_cache_hit": 0,
+        "external_kv_transfer": 0,
+    }
+
+
+def test_prompt_source_external_or_unknown_labels_fail_closed() -> None:
+    with pytest.raises(ValueError, match="prompt-source label"):
+        parse_vllm_prompt_source_snapshot(
+            'vllm:prompt_tokens_by_source{source="unknown"} 1\n'
+        )
+    with pytest.raises(ValueError, match="not full-prefill"):
+        require_full_prefill_prompt_source_delta(
+            {
+                "local_compute": 279,
+                "local_cache_hit": 1,
+                "external_kv_transfer": 0,
+            },
+            expected_prompt_tokens=280,
         )
 
 

@@ -47,6 +47,13 @@ _STORE_COUNTER_METRICS = {
 _VLLM_PROMPT_COUNTER_METRICS = {
     "prompt_tokens": "vllm:prompt_tokens",
 }
+_VLLM_PROMPT_SOURCE_METRIC = "vllm:prompt_tokens_by_source"
+_VLLM_PROMPT_SOURCES = (
+    "local_compute",
+    "local_cache_hit",
+    "external_kv_transfer",
+)
+_SOURCE_LABEL = re.compile(r'(?:^|,)source="([^"]+)"(?:,|$)')
 _VLLM_PREFILL_WORK_METRICS = {
     "kv_computed_tokens": "vllm:request_prefill_kv_computed_tokens",
 }
@@ -251,6 +258,115 @@ def vllm_prompt_counter_delta(
     ):
         raise ValueError("vLLM prompt counter is invalid or moved backwards")
     return new_value - old_value
+
+
+def has_vllm_prompt_source_metric_surface(text: str) -> bool:
+    """Return whether all pinned prompt-source children are advertised."""
+
+    if not isinstance(text, str):
+        raise TypeError("Prometheus snapshot must be text")
+    found: set[str] = set()
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        parts = stripped.split()
+        if len(parts) < 2 or not parts[0].startswith(_VLLM_PROMPT_SOURCE_METRIC):
+            continue
+        sample_name, _, labels = parts[0].partition("{")
+        if sample_name != _VLLM_PROMPT_SOURCE_METRIC or not labels.endswith("}"):
+            continue
+        match = _SOURCE_LABEL.search(labels[1:-1])
+        if match is not None:
+            found.add(match.group(1))
+    return found == set(_VLLM_PROMPT_SOURCES)
+
+
+def parse_vllm_prompt_source_snapshot(text: str) -> dict[str, int]:
+    """Parse the three native prompt-token source counters."""
+
+    if not isinstance(text, str):
+        raise TypeError("Prometheus snapshot must be text")
+    values = {source: 0.0 for source in _VLLM_PROMPT_SOURCES}
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        parts = stripped.split()
+        if len(parts) < 2:
+            raise ValueError("invalid Prometheus sample")
+        sample_name, _, labels = parts[0].partition("{")
+        if sample_name != _VLLM_PROMPT_SOURCE_METRIC:
+            continue
+        if not labels.endswith("}"):
+            raise ValueError("invalid vLLM prompt-source labels")
+        match = _SOURCE_LABEL.search(labels[1:-1])
+        if match is None or match.group(1) not in values:
+            raise ValueError("invalid vLLM prompt-source label")
+        try:
+            value = float(parts[1])
+        except ValueError as exc:
+            raise ValueError("invalid vLLM prompt-source metric value") from exc
+        if not math.isfinite(value) or value < 0.0 or not value.is_integer():
+            raise ValueError("invalid vLLM prompt-source metric value")
+        values[match.group(1)] += value
+    return {source: int(values[source]) for source in _VLLM_PROMPT_SOURCES}
+
+
+def vllm_prompt_source_delta(
+    before: Mapping[str, int],
+    after: Mapping[str, int],
+) -> dict[str, int]:
+    """Return monotonic deltas for native prompt-token source counters."""
+
+    expected = set(_VLLM_PROMPT_SOURCES)
+    if set(before) != expected or set(after) != expected:
+        raise ValueError("vLLM prompt-source snapshot schema mismatch")
+    delta: dict[str, int] = {}
+    for source in _VLLM_PROMPT_SOURCES:
+        old_value = before[source]
+        new_value = after[source]
+        if (
+            isinstance(old_value, bool)
+            or not isinstance(old_value, int)
+            or isinstance(new_value, bool)
+            or not isinstance(new_value, int)
+            or old_value < 0
+            or new_value < old_value
+        ):
+            raise ValueError("vLLM prompt-source counter moved backwards")
+        delta[source] = new_value - old_value
+    return delta
+
+
+def require_full_prefill_prompt_source_delta(
+    delta: Mapping[str, int],
+    *,
+    expected_prompt_tokens: int,
+) -> None:
+    """Require all prompt work to be local compute with zero transfer credit."""
+
+    if (
+        isinstance(expected_prompt_tokens, bool)
+        or not isinstance(expected_prompt_tokens, int)
+        or expected_prompt_tokens <= 0
+    ):
+        raise ValueError("full-prefill prompt expectation is invalid")
+    expected = set(_VLLM_PROMPT_SOURCES)
+    if set(delta) != expected:
+        raise ValueError("vLLM prompt-source delta schema mismatch")
+    values = {source: delta[source] for source in _VLLM_PROMPT_SOURCES}
+    if any(
+        isinstance(value, bool) or not isinstance(value, int) or value < 0
+        for value in values.values()
+    ):
+        raise ValueError("vLLM prompt-source delta is invalid")
+    if (
+        values["local_compute"] != expected_prompt_tokens
+        or values["local_cache_hit"] != 0
+        or values["external_kv_transfer"] != 0
+    ):
+        raise ValueError("vLLM prompt-source delta is not full-prefill local work")
 
 
 def has_vllm_prefill_work_metric_surface(text: str) -> bool:
@@ -617,17 +733,21 @@ __all__ = [
     "has_connector_metric_surface",
     "has_vllm_prefill_work_metric_surface",
     "has_vllm_prompt_metric_surface",
+    "has_vllm_prompt_source_metric_surface",
     "has_vllm_timing_metric_surface",
     "parse_completion_distribution",
     "parse_connector_counter_snapshot",
     "parse_connector_store_counter_snapshot",
     "parse_vllm_prefill_work_snapshot",
     "parse_vllm_prompt_counter_snapshot",
+    "parse_vllm_prompt_source_snapshot",
     "parse_vllm_timing_snapshot",
+    "require_full_prefill_prompt_source_delta",
     "require_vllm_prefill_work_delta",
     "require_vllm_prefill_work_total",
     "require_vllm_timing_delta",
     "vllm_prefill_work_snapshot_delta",
     "vllm_prompt_counter_delta",
+    "vllm_prompt_source_delta",
     "vllm_timing_snapshot_delta",
 ]

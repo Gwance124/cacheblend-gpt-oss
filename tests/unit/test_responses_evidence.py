@@ -41,7 +41,7 @@ def _report() -> dict[str, object]:
         )
     }
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "contract": RESPONSES_EVIDENCE_CONTRACT,
         "runtime": _runtime(),
         "passed": True,
@@ -78,6 +78,11 @@ def _report() -> dict[str, object]:
             "prefill_tokens_avoided": 0,
         },
         "native_prompt_tokens_processed": 811,
+        "native_prompt_source_delta": {
+            "local_compute": 811,
+            "local_cache_hit": 0,
+            "external_kv_transfer": 0,
+        },
         "native_prefill_work": {"observations": 3, "kv_computed_tokens": 811},
         "vllm_timing_delta": timing,
     }
@@ -86,6 +91,7 @@ def _report() -> dict[str, object]:
 def test_valid_report_is_decoded_and_digest_is_stable() -> None:
     evidence = responses_contract_evidence_from_dict(_report())
     assert len(evidence.turns) == 3
+    assert evidence.native_prompt_source_delta["local_compute"] == 811
     assert evidence.native_prefill_work.kv_computed_tokens == 811
     assert len(responses_contract_evidence_digest(evidence)) == 64
     assert responses_contract_evidence_digest(evidence) == (
@@ -98,7 +104,7 @@ def test_valid_report_is_decoded_and_digest_is_stable() -> None:
     [
         ("passed", False, "not_passed"),
         ("contract", "other", "invalid_schema"),
-        ("native_prompt_tokens_processed", 810, "invalid_prefill_work"),
+        ("native_prompt_tokens_processed", 810, "invalid_prompt_source_metrics"),
     ],
 )
 def test_report_tampering_fails_closed(
@@ -125,6 +131,23 @@ def test_nested_counter_and_timing_tampering_is_rejected() -> None:
     assert isinstance(timing, dict)
     timing["ttft_seconds"]["count"] = 2  # type: ignore[index]
     with pytest.raises(ResponsesEvidenceError, match="invalid_timings"):
+        responses_contract_evidence_from_dict(report)
+
+    report = _report()
+    source = report["native_prompt_source_delta"]
+    assert isinstance(source, dict)
+    source["external_kv_transfer"] = 1
+    with pytest.raises(
+        ResponsesEvidenceError,
+        match="invalid_prompt_source_metrics",
+    ):
+        responses_contract_evidence_from_dict(report)
+
+    report = _report()
+    prefill = report["native_prefill_work"]
+    assert isinstance(prefill, dict)
+    prefill["kv_computed_tokens"] = 810
+    with pytest.raises(ResponsesEvidenceError, match="invalid_prefill_work"):
         responses_contract_evidence_from_dict(report)
 
 

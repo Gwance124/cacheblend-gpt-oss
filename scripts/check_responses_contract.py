@@ -29,15 +29,19 @@ from cacheblend_gpt_oss.correctness import (
     has_connector_metric_surface,
     has_vllm_prefill_work_metric_surface,
     has_vllm_prompt_metric_surface,
+    has_vllm_prompt_source_metric_surface,
     has_vllm_timing_metric_surface,
     parse_connector_counter_snapshot,
     parse_vllm_prefill_work_snapshot,
     parse_vllm_prompt_counter_snapshot,
+    parse_vllm_prompt_source_snapshot,
     parse_vllm_timing_snapshot,
+    require_full_prefill_prompt_source_delta,
     require_vllm_prefill_work_total,
     require_vllm_timing_delta,
     vllm_prefill_work_snapshot_delta,
     vllm_prompt_counter_delta,
+    vllm_prompt_source_delta,
     vllm_timing_snapshot_delta,
 )
 from cacheblend_gpt_oss.responses_contract import (
@@ -239,8 +243,11 @@ def main() -> int:
         raise ValueError("pinned vLLM prompt metrics are not present")
     if not has_vllm_prefill_work_metric_surface(initial_metrics):
         raise ValueError("pinned vLLM prefill-work metrics are not present")
+    if not has_vllm_prompt_source_metric_surface(initial_metrics):
+        raise ValueError("pinned vLLM prompt-source metrics are not present")
     before = parse_connector_counter_snapshot(initial_metrics)
     before_prompt = parse_vllm_prompt_counter_snapshot(initial_metrics)
+    before_prompt_source = parse_vllm_prompt_source_snapshot(initial_metrics)
     before_prefill_work = parse_vllm_prefill_work_snapshot(initial_metrics)
     before_timing = parse_vllm_timing_snapshot(initial_metrics)
 
@@ -308,6 +315,11 @@ def main() -> int:
     after_prompt = parse_vllm_prompt_counter_snapshot(after_metrics)
     after_prefill_work = parse_vllm_prefill_work_snapshot(after_metrics)
     native_prompt_tokens = vllm_prompt_counter_delta(before_prompt, after_prompt)
+    after_prompt_source = parse_vllm_prompt_source_snapshot(after_metrics)
+    require_full_prefill_prompt_source_delta(
+        vllm_prompt_source_delta(before_prompt_source, after_prompt_source),
+        expected_prompt_tokens=native_prompt_tokens,
+    )
     native_prefill_work = vllm_prefill_work_snapshot_delta(
         before_prefill_work,
         after_prefill_work,
@@ -351,6 +363,10 @@ def main() -> int:
         },
         "connector_counter_delta": delta,
         "native_prompt_tokens_processed": native_prompt_tokens,
+        "native_prompt_source_delta": vllm_prompt_source_delta(
+            before_prompt_source,
+            after_prompt_source,
+        ),
         "native_prefill_work": {
             "observations": native_prefill_work.observations,
             "kv_computed_tokens": native_prefill_work.kv_computed_tokens,
