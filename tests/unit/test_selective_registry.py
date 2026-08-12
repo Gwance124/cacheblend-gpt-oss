@@ -62,8 +62,11 @@ class FakeRegistries:
         self.backends.append((token, class_path))
 
 
-class FakeBackendEnum(str, Enum):
-    CUSTOM = CUSTOM_ATTENTION_BACKEND_NAME
+FakeBackendEnum = Enum(
+    "AttentionBackendEnum",
+    {CUSTOM_ATTENTION_BACKEND_NAME: CUSTOM_ATTENTION_BACKEND_NAME},
+    module="vllm.v1.attention.backends.registry",
+)
 
 
 def test_valid_registration_is_idempotent_and_binds_custom_backend() -> None:
@@ -261,6 +264,36 @@ def test_enum_shaped_custom_token_is_accepted(token: object) -> None:
     assert fakes.models == [(GPT_OSS_MODEL_ARCHITECTURE, _spec().model_class_path)]
 
 
+def test_unrelated_enum_with_custom_value_is_rejected() -> None:
+    class UnrelatedBackendEnum(str, Enum):
+        CUSTOM = CUSTOM_ATTENTION_BACKEND_NAME
+
+    with pytest.raises(SelectiveRegistrationError) as error:
+        SelectiveExtensionRegistrar().register(
+            _spec(),
+            model_register=FakeRegistries().model,
+            backend_register=FakeRegistries().backend,
+            backend_token=UnrelatedBackendEnum.CUSTOM,
+        )
+    assert error.value.code is SelectiveRegistrationErrorCode.INVALID_BACKEND_TOKEN
+
+
+def test_nested_model_class_name_is_rejected() -> None:
+    with pytest.raises(SelectiveRegistrationError) as error:
+        SelectiveRegistrationSpec(
+            prerequisites=_ready(),
+            model_class_path=(
+                "cacheblend_gpt_oss.vllm_compat.v0_19_1.selective_model:"
+                "Outer.Inner"
+            ),
+            attention_backend_class_path=(
+                "cacheblend_gpt_oss.vllm_compat.v0_19_1.selective_backend."
+                "GptOssSelectiveBackend"
+            ),
+        )
+    assert error.value.code is SelectiveRegistrationErrorCode.INVALID_MODEL_CLASS_PATH
+
+
 def test_arbitrary_object_with_custom_attributes_is_rejected() -> None:
     token = type("FakeObject", (), {"name": CUSTOM_ATTENTION_BACKEND_NAME})()
     with pytest.raises(SelectiveRegistrationError) as error:
@@ -366,6 +399,24 @@ def test_gate_evidence_artifact_failures_are_bounded(
     with pytest.raises(SelectiveRegistrationError) as error:
         SelectiveGateEvidence.from_artifact_paths(
             runtime=paths[0],
+            full_prefill=paths[1],
+            transfer=paths[2],
+            yarn=paths[3],
+            hybrid_sink=paths[4],
+        )
+    assert error.value.code is SelectiveRegistrationErrorCode.INVALID_EVIDENCE
+
+
+def test_gate_evidence_rejects_relative_artifact_paths(tmp_path: Path) -> None:
+    paths = []
+    for index in range(5):
+        path = tmp_path / f"artifact-{index}"
+        path.write_bytes(b"ok")
+        paths.append(path)
+
+    with pytest.raises(SelectiveRegistrationError) as error:
+        SelectiveGateEvidence.from_artifact_paths(
+            runtime=Path("relative-runtime.txt"),
             full_prefill=paths[1],
             transfer=paths[2],
             yarn=paths[3],

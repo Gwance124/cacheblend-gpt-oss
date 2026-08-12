@@ -157,7 +157,11 @@ class SelectiveGateEvidence:
         digests: list[str] = []
         try:
             for path in paths:
-                if not isinstance(path, Path) or path.is_symlink():
+                if (
+                    not isinstance(path, Path)
+                    or not path.is_absolute()
+                    or path.is_symlink()
+                ):
                     _fail(SelectiveRegistrationErrorCode.INVALID_EVIDENCE)
                 stat = path.stat()
                 if (
@@ -251,7 +255,7 @@ def _valid_model_class_path(value: object) -> bool:
         and class_name
         and ":" not in class_name
         and all(part.isidentifier() for part in module_name.split("."))
-        and all(part.isidentifier() for part in class_name.split("."))
+        and class_name.isidentifier()
     )
 
 
@@ -270,11 +274,22 @@ def _is_custom_backend_token(value: object) -> bool:
     allowing an arbitrary backend selector to reach ``register_backend``.
     """
 
-    if isinstance(value, str) and value == CUSTOM_ATTENTION_BACKEND_NAME:
+    if type(value) is str and value == CUSTOM_ATTENTION_BACKEND_NAME:
         return True
-    return isinstance(value, Enum) and (
-        value.name == CUSTOM_ATTENTION_BACKEND_NAME
-        or value.value == CUSTOM_ATTENTION_BACKEND_NAME
+    if not isinstance(value, Enum):
+        return False
+    enum_type = type(value)
+    # The pinned token is defined by vLLM's registry, rather than by a generic
+    # enum protocol.  Accepting any unrelated enum with a coincidental
+    # ``CUSTOM`` value would let dependency-injected callers select a backend
+    # that the registry does not understand.
+    return (
+        enum_type.__module__ == "vllm.v1.attention.backends.registry"
+        and enum_type.__name__ == "AttentionBackendEnum"
+        and (
+            value.name == CUSTOM_ATTENTION_BACKEND_NAME
+            or value.value == CUSTOM_ATTENTION_BACKEND_NAME
+        )
     )
 
 
