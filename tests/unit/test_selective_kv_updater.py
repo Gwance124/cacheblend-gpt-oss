@@ -15,6 +15,7 @@ from cacheblend_gpt_oss.gpt_oss import (
 )
 from cacheblend_gpt_oss.gpt_oss.selective import ForwardRowPlan
 from cacheblend_gpt_oss.gpt_oss.selective_kv import (
+    GptOssSelectiveKvSession,
     GptOssSelectiveKvUpdater,
     SelectiveUpdateError,
     SelectiveUpdateErrorCode,
@@ -338,3 +339,134 @@ def test_slot_mapping_failure_is_preflighted_before_any_copy() -> None:
     assert error.value.code is SelectiveUpdateErrorCode.SLOT_MAPPING_VALUE_MISMATCH
     assert ops.copy_count == 0
     assert ops.sync_count == 0
+
+
+def test_per_layer_session_matches_atomic_updater_accounting() -> None:
+    ops = FakeSelectiveOps()
+    keys, values, caches = _tensors()
+    plan = _selective_plan()
+    mappings = _slot_mappings(plan)
+    session = GptOssSelectiveKvSession(
+        GptOssSelectiveKvUpdater(ops),
+        plan=plan,
+    )
+
+    for layer_index in range(24):
+        name = _layer_name(layer_index)
+        session.update_layer(
+            layer_index=layer_index,
+            key=keys[name],
+            value=values[name],
+            paged_cache=caches[name],
+            slot_mapping=mappings[name],
+        )
+
+    receipt = session.finish()
+    assert receipt.recomputed_token_rows == plan.recompute_tokens
+    assert receipt.cached_token_rows == plan.cached_tokens
+    assert receipt.write_span_count == len(plan.recompute_layer_spans)
+    assert receipt.copied_key_rows == plan.recompute_tokens
+    assert receipt.copied_value_rows == plan.recompute_tokens
+    assert ops.copy_count == receipt.write_span_count * 2
+    assert ops.sync_count == 24
+
+
+def test_per_layer_session_rejects_order_and_becomes_terminal() -> None:
+    ops = FakeSelectiveOps()
+    keys, values, caches = _tensors()
+    plan = _selective_plan()
+    mappings = _slot_mappings(plan)
+    session = GptOssSelectiveKvSession(
+        GptOssSelectiveKvUpdater(ops),
+        plan=plan,
+    )
+
+    with pytest.raises(SelectiveUpdateError) as error:
+        session.update_layer(
+            layer_index=1,
+            key=keys[_layer_name(1)],
+            value=values[_layer_name(1)],
+            paged_cache=caches[_layer_name(1)],
+            slot_mapping=mappings[_layer_name(1)],
+        )
+    assert error.value.code is SelectiveUpdateErrorCode.SESSION_LAYER_ORDER_MISMATCH
+
+    with pytest.raises(SelectiveUpdateError) as error:
+        session.update_layer(
+            layer_index=0,
+            key=keys[_layer_name(0)],
+            value=values[_layer_name(0)],
+            paged_cache=caches[_layer_name(0)],
+            slot_mapping=mappings[_layer_name(0)],
+        )
+    assert error.value.code is SelectiveUpdateErrorCode.SESSION_INVALID_STATE
+    assert ops.copy_count == 0
+
+
+def test_per_layer_session_incomplete_finish_is_terminal() -> None:
+    ops = FakeSelectiveOps()
+    keys, values, caches = _tensors()
+    plan = _selective_plan()
+    mappings = _slot_mappings(plan)
+    session = GptOssSelectiveKvSession(
+        GptOssSelectiveKvUpdater(ops),
+        plan=plan,
+    )
+    name = _layer_name(0)
+    session.update_layer(
+        layer_index=0,
+        key=keys[name],
+        value=values[name],
+        paged_cache=caches[name],
+        slot_mapping=mappings[name],
+    )
+
+    with pytest.raises(SelectiveUpdateError) as error:
+        session.finish()
+    assert error.value.code is SelectiveUpdateErrorCode.SESSION_INCOMPLETE
+
+    with pytest.raises(SelectiveUpdateError) as error:
+        session.finish()
+    assert error.value.code is SelectiveUpdateErrorCode.SESSION_INVALID_STATE
+
+
+def test_per_layer_session_late_failure_requires_request_discard() -> None:
+    ops = FakeSelectiveOps()
+    keys, values, caches = _tensors()
+    plan = _selective_plan()
+    mappings = _slot_mappings(plan)
+    session = GptOssSelectiveKvSession(
+        GptOssSelectiveKvUpdater(ops),
+        plan=plan,
+    )
+    first = _layer_name(0)
+    session.update_layer(
+        layer_index=0,
+        key=keys[first],
+        value=values[first],
+        paged_cache=caches[first],
+        slot_mapping=mappings[first],
+    )
+    bad = _layer_name(1)
+    caches[bad] = FakeTensor((4, 2, BLOCK_SIZE, 8, 32))
+
+    with pytest.raises(SelectiveUpdateError) as error:
+        session.update_layer(
+            layer_index=1,
+            key=keys[bad],
+            value=values[bad],
+            paged_cache=caches[bad],
+            slot_mapping=mappings[bad],
+        )
+    assert error.value.code is SelectiveUpdateErrorCode.INVALID_CACHE_SHAPE
+    assert ops.copy_count > 0
+
+    with pytest.raises(SelectiveUpdateError) as error:
+        session.update_layer(
+            layer_index=1,
+            key=keys[bad],
+            value=values[bad],
+            paged_cache=caches[bad],
+            slot_mapping=mappings[bad],
+        )
+    assert error.value.code is SelectiveUpdateErrorCode.SESSION_INVALID_STATE

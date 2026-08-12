@@ -136,6 +136,18 @@ the full-shaped hidden output and runner logits indices before returning. It is
 still dormant: no vLLM model/backend is registered, and it does not import
 Torch or mutate KV tensors.
 
+`gpt_oss.selective_kv.GptOssSelectiveKvSession` mirrors the pinned vLLM
+0.19.1 callback granularity. The stock Triton implementation invokes
+`AttentionImpl.do_kv_cache_update` once for each layer immediately before that
+layer's attention call, so a future custom backend cannot call the existing
+all-layer writer from one callback. The session accepts layers only in
+canonical order, validates each layer's `[tokens, 8, 64]` K/V rows, paged
+`[blocks, 2, block, 8, 64]` cache, and physical slot mapping, and writes only
+the plan's recomputed spans. It is terminal after an error or incomplete
+forward; any earlier writes require discarding the request KV. This is a
+CPU-tested adapter contract, not selective-serving support, and it is not
+registered until the M3--M5 GPU correctness gates pass.
+
 `gpt_oss.selective_policy` is the dormant M7 check-layer planner. Given
 verified candidate ranges and injected per-row importance scores, it chooses a
 deterministic top fraction of eligible cached rows, always keeps uncached rows

@@ -77,6 +77,10 @@ class SelectiveUpdateErrorCode(str, Enum):
     INVALID_SLOT_MAPPING = "invalid_slot_mapping"
     SLOT_MAPPING_LENGTH_MISMATCH = "slot_mapping_length_mismatch"
     SLOT_MAPPING_VALUE_MISMATCH = "slot_mapping_value_mismatch"
+    SESSION_INVALID_STATE = "session_invalid_state"
+    SESSION_LAYER_ORDER_MISMATCH = "session_layer_order_mismatch"
+    SESSION_DUPLICATE_LAYER = "session_duplicate_layer"
+    SESSION_INCOMPLETE = "session_incomplete"
     MUTATION_FAILED = "mutation_failed"
 
 
@@ -389,11 +393,173 @@ class _PreparedUpdate:
     source: object
 
 
+@dataclass(frozen=True, slots=True)
+class _PreparedLayer:
+    """Read-only work prepared for one vLLM layer callback."""
+
+    operations: tuple[_PreparedUpdate, ...]
+    recomputed_token_rows: int
+    write_span_count: int
+    dtype: str
+    device: str
+
+
 class GptOssSelectiveKvUpdater:
     """Apply recompute-only K/V rows after a complete read-only preflight."""
 
     def __init__(self, tensor_ops: SelectiveCacheOps) -> None:
         self._ops = tensor_ops
+
+    def _prepare_layer(
+        self,
+        *,
+        plan: SelectiveWritePlan,
+        layer_index: int,
+        key: object,
+        value: object,
+        cache: object,
+        slot_mapping: Sequence[object],
+        expected_dtype: str | None = None,
+        expected_device: str | None = None,
+    ) -> _PreparedLayer:
+        """Validate and prepare one layer without mutating the cache.
+
+        vLLM 0.19.1 invokes ``AttentionImpl.do_kv_cache_update`` once per
+        layer, immediately before that layer's attention call.  Keeping this
+        preflight separate from the copy operation lets the normal all-layer
+        updater retain its atomic preflight while a future backend can bind a
+        worker-local session to those per-layer callbacks.
+        """
+
+        try:
+            validate_slot_mapping(
+                plan,
+                layer_index=layer_index,
+                slot_mapping=slot_mapping,
+            )
+        except SelectiveWriteError as error:
+            update_code = {
+                SelectiveWriteErrorCode.INVALID_SLOT_MAPPING: (
+                    SelectiveUpdateErrorCode.INVALID_SLOT_MAPPING
+                ),
+                SelectiveWriteErrorCode.SLOT_MAPPING_LENGTH_MISMATCH: (
+                    SelectiveUpdateErrorCode.SLOT_MAPPING_LENGTH_MISMATCH
+                ),
+                SelectiveWriteErrorCode.SLOT_MAPPING_VALUE_MISMATCH: (
+                    SelectiveUpdateErrorCode.SLOT_MAPPING_VALUE_MISMATCH
+                ),
+            }.get(
+                error.code,
+                SelectiveUpdateErrorCode.INVALID_SLOT_MAPPING,
+            )
+            raise SelectiveUpdateError(update_code) from error
+
+        key_shape = self._safe_shape(key)
+        value_shape = self._safe_shape(value)
+        expected_source_shape = (
+            plan.row_plan.prompt_tokens,
+            GPT_OSS_NUM_KV_HEADS,
+            GPT_OSS_HEAD_DIM,
+        )
+        if key_shape != expected_source_shape or value_shape != key_shape:
+            _fail_update(SelectiveUpdateErrorCode.INVALID_SOURCE_SHAPE)
+
+        cache_shape = self._safe_shape(cache)
+        full_layer_spans = tuple(
+            span
+            for span in plan.full_layer_spans
+            if span.layer_index == layer_index
+        )
+        layer_spans = plan.spans_for_layer(layer_index)
+        block_sizes = {
+            span.group_span.block_size for span in full_layer_spans
+        }
+        if (
+            len(block_sizes) != 1
+            or len(cache_shape) != 5
+            or cache_shape[0] <= 0
+            or cache_shape[1] != 2
+            or cache_shape[2] != next(iter(block_sizes), -1)
+            or cache_shape[3:] != (GPT_OSS_NUM_KV_HEADS, GPT_OSS_HEAD_DIM)
+        ):
+            _fail_update(SelectiveUpdateErrorCode.INVALID_CACHE_SHAPE)
+
+        key_dtype = self._safe_dtype(key)
+        value_dtype = self._safe_dtype(value)
+        cache_dtype = self._safe_dtype(cache)
+        if key_dtype != value_dtype or key_dtype != cache_dtype:
+            _fail_update(SelectiveUpdateErrorCode.DTYPE_MISMATCH)
+        key_device = self._safe_device(key)
+        value_device = self._safe_device(value)
+        cache_device = self._safe_device(cache)
+        if key_device != value_device or key_device != cache_device:
+            _fail_update(SelectiveUpdateErrorCode.DEVICE_MISMATCH)
+        if not key_device.startswith("cuda:"):
+            _fail_update(SelectiveUpdateErrorCode.INVALID_DEVICE)
+        if expected_dtype is not None and key_dtype != expected_dtype:
+            _fail_update(SelectiveUpdateErrorCode.DTYPE_MISMATCH)
+        if expected_device is not None and key_device != expected_device:
+            _fail_update(SelectiveUpdateErrorCode.DEVICE_MISMATCH)
+
+        prepared: list[_PreparedUpdate] = []
+        for span in layer_spans:
+            count = span.token_count
+            try:
+                key_source = self._ops.prompt_rows(
+                    key,
+                    start=span.target_range.start,
+                    count=count,
+                )
+                value_source = self._ops.prompt_rows(
+                    value,
+                    start=span.target_range.start,
+                    count=count,
+                )
+                key_destination = self._ops.paged_rows(
+                    cache,
+                    component=0,
+                    block_id=span.group_span.block_id,
+                    block_offset=span.group_span.block_offset,
+                    count=count,
+                )
+                value_destination = self._ops.paged_rows(
+                    cache,
+                    component=1,
+                    block_id=span.group_span.block_id,
+                    block_offset=span.group_span.block_offset,
+                    count=count,
+                )
+            except Exception as error:
+                raise SelectiveUpdateError(
+                    SelectiveUpdateErrorCode.INVALID_VIEW
+                ) from error
+            expected_shape = (count, GPT_OSS_NUM_KV_HEADS, GPT_OSS_HEAD_DIM)
+            for view in (
+                key_source,
+                value_source,
+                key_destination,
+                value_destination,
+            ):
+                if self._safe_shape(view) != expected_shape:
+                    _fail_update(SelectiveUpdateErrorCode.INVALID_VIEW)
+                if self._safe_dtype(view) != key_dtype:
+                    _fail_update(SelectiveUpdateErrorCode.DTYPE_MISMATCH)
+                if self._safe_device(view) != key_device:
+                    _fail_update(SelectiveUpdateErrorCode.DEVICE_MISMATCH)
+            prepared.extend(
+                (
+                    _PreparedUpdate(key_destination, key_source),
+                    _PreparedUpdate(value_destination, value_source),
+                )
+            )
+
+        return _PreparedLayer(
+            operations=tuple(prepared),
+            recomputed_token_rows=plan.row_plan.layer(layer_index).recompute_tokens,
+            write_span_count=len(layer_spans),
+            dtype=key_dtype,
+            device=key_device,
+        )
 
     def update(
         self,
@@ -435,125 +601,20 @@ class GptOssSelectiveKvUpdater:
             key = key_by_layer[layer_name]
             value = value_by_layer[layer_name]
             cache = paged_caches[layer_name]
-            try:
-                validate_slot_mapping(
-                    plan,
-                    layer_index=layer_index,
-                    slot_mapping=slot_mapping_by_layer[layer_name],
-                )
-            except SelectiveWriteError as error:
-                update_code = {
-                    SelectiveWriteErrorCode.INVALID_SLOT_MAPPING: (
-                        SelectiveUpdateErrorCode.INVALID_SLOT_MAPPING
-                    ),
-                    SelectiveWriteErrorCode.SLOT_MAPPING_LENGTH_MISMATCH: (
-                        SelectiveUpdateErrorCode.SLOT_MAPPING_LENGTH_MISMATCH
-                    ),
-                    SelectiveWriteErrorCode.SLOT_MAPPING_VALUE_MISMATCH: (
-                        SelectiveUpdateErrorCode.SLOT_MAPPING_VALUE_MISMATCH
-                    ),
-                }.get(
-                    error.code,
-                    SelectiveUpdateErrorCode.INVALID_SLOT_MAPPING,
-                )
-                raise SelectiveUpdateError(update_code) from error
-            key_shape = self._safe_shape(key)
-            value_shape = self._safe_shape(value)
-            if key_shape != (
-                plan.row_plan.prompt_tokens,
-                GPT_OSS_NUM_KV_HEADS,
-                GPT_OSS_HEAD_DIM,
-            ) or value_shape != key_shape:
-                _fail_update(SelectiveUpdateErrorCode.INVALID_SOURCE_SHAPE)
-
-            cache_shape = self._safe_shape(cache)
-            full_layer_spans = tuple(
-                span
-                for span in plan.full_layer_spans
-                if span.layer_index == layer_index
+            layer = self._prepare_layer(
+                plan=plan,
+                layer_index=layer_index,
+                key=key,
+                value=value,
+                cache=cache,
+                slot_mapping=slot_mapping_by_layer[layer_name],
+                expected_dtype=dtype,
+                expected_device=device,
             )
-            layer_spans = plan.spans_for_layer(layer_index)
-            block_sizes = {
-                span.group_span.block_size for span in full_layer_spans
-            }
-            if (
-                len(block_sizes) != 1
-                or len(cache_shape) != 5
-                or cache_shape[0] <= 0
-                or cache_shape[1] != 2
-                or cache_shape[2] != next(iter(block_sizes), -1)
-                or cache_shape[3:] != (GPT_OSS_NUM_KV_HEADS, GPT_OSS_HEAD_DIM)
-            ):
-                _fail_update(SelectiveUpdateErrorCode.INVALID_CACHE_SHAPE)
-
-            key_dtype = self._safe_dtype(key)
-            value_dtype = self._safe_dtype(value)
-            cache_dtype = self._safe_dtype(cache)
-            if key_dtype != value_dtype or key_dtype != cache_dtype:
-                _fail_update(SelectiveUpdateErrorCode.DTYPE_MISMATCH)
-            key_device = self._safe_device(key)
-            value_device = self._safe_device(value)
-            cache_device = self._safe_device(cache)
-            if key_device != value_device or key_device != cache_device:
-                _fail_update(SelectiveUpdateErrorCode.DEVICE_MISMATCH)
-            if not key_device.startswith("cuda:"):
-                _fail_update(SelectiveUpdateErrorCode.INVALID_DEVICE)
             if dtype is None:
-                dtype = key_dtype
-                device = key_device
-            elif dtype != key_dtype or device != key_device:
-                _fail_update(SelectiveUpdateErrorCode.DTYPE_MISMATCH)
-
-            for span in layer_spans:
-                count = span.token_count
-                try:
-                    key_source = self._ops.prompt_rows(
-                        key,
-                        start=span.target_range.start,
-                        count=count,
-                    )
-                    value_source = self._ops.prompt_rows(
-                        value,
-                        start=span.target_range.start,
-                        count=count,
-                    )
-                    key_destination = self._ops.paged_rows(
-                        cache,
-                        component=0,
-                        block_id=span.group_span.block_id,
-                        block_offset=span.group_span.block_offset,
-                        count=count,
-                    )
-                    value_destination = self._ops.paged_rows(
-                        cache,
-                        component=1,
-                        block_id=span.group_span.block_id,
-                        block_offset=span.group_span.block_offset,
-                        count=count,
-                    )
-                except Exception as error:
-                    raise SelectiveUpdateError(
-                        SelectiveUpdateErrorCode.INVALID_VIEW
-                    ) from error
-                expected_shape = (count, GPT_OSS_NUM_KV_HEADS, GPT_OSS_HEAD_DIM)
-                for view in (
-                    key_source,
-                    value_source,
-                    key_destination,
-                    value_destination,
-                ):
-                    if self._safe_shape(view) != expected_shape:
-                        _fail_update(SelectiveUpdateErrorCode.INVALID_VIEW)
-                    if self._safe_dtype(view) != dtype:
-                        _fail_update(SelectiveUpdateErrorCode.DTYPE_MISMATCH)
-                    if self._safe_device(view) != device:
-                        _fail_update(SelectiveUpdateErrorCode.DEVICE_MISMATCH)
-                prepared.extend(
-                    (
-                        _PreparedUpdate(key_destination, key_source),
-                        _PreparedUpdate(value_destination, value_source),
-                    )
-                )
+                dtype = layer.dtype
+                device = layer.device
+            prepared.extend(layer.operations)
 
         try:
             for operation in prepared:
@@ -612,7 +673,123 @@ class GptOssSelectiveKvUpdater:
         return device
 
 
+class GptOssSelectiveKvSession:
+    """Bind the updater to vLLM's ordered, per-layer cache-update callbacks.
+
+    The pinned Triton implementation calls ``do_kv_cache_update`` for one
+    layer at a time immediately before attention.  This session validates and
+    writes that layer, then requires all 24 canonical layers before it can
+    produce a receipt.  A later validation or copy failure makes the session
+    terminal: callers must discard the request's KV cache rather than reuse a
+    partially updated request.  This is a dormant adapter contract; the live
+    connector remains full-prefill/100%-recompute.
+    """
+
+    def __init__(
+        self,
+        updater: GptOssSelectiveKvUpdater,
+        *,
+        plan: SelectiveWritePlan,
+    ) -> None:
+        if not isinstance(updater, GptOssSelectiveKvUpdater):
+            _fail_update(SelectiveUpdateErrorCode.INVALID_PLAN)
+        if not isinstance(plan, SelectiveWritePlan):
+            _fail_update(SelectiveUpdateErrorCode.INVALID_PLAN)
+        self._updater = updater
+        self._plan = plan
+        self._next_layer = 0
+        self._failed = False
+        self._finished = False
+        self._recomputed_token_rows = 0
+        self._write_span_count = 0
+        self._copied_key_rows = 0
+        self._copied_value_rows = 0
+        self._session_dtype: str | None = None
+        self._session_device: str | None = None
+
+    def update_layer(
+        self,
+        *,
+        layer_index: int,
+        key: object,
+        value: object,
+        paged_cache: object,
+        slot_mapping: Sequence[object],
+    ) -> None:
+        """Validate and update one layer in the pinned forward order."""
+
+        self._ensure_active()
+        if not _is_int(layer_index) or not 0 <= layer_index < GPT_OSS_NUM_LAYERS:
+            self._terminal(SelectiveUpdateErrorCode.INVALID_PLAN)
+        if layer_index < self._next_layer:
+            self._terminal(SelectiveUpdateErrorCode.SESSION_DUPLICATE_LAYER)
+        if layer_index != self._next_layer:
+            self._terminal(SelectiveUpdateErrorCode.SESSION_LAYER_ORDER_MISMATCH)
+
+        try:
+            prepared = self._updater._prepare_layer(
+                plan=self._plan,
+                layer_index=layer_index,
+                key=key,
+                value=value,
+                cache=paged_cache,
+                slot_mapping=slot_mapping,
+                expected_dtype=self._session_dtype,
+                expected_device=self._session_device,
+            )
+            for operation in prepared.operations:
+                self._updater._ops.copy(
+                    operation.destination,
+                    operation.source,
+                )
+            if prepared.operations:
+                self._updater._ops.synchronize(
+                    paged_cache
+                )
+        except SelectiveUpdateError:
+            self._failed = True
+            raise
+        except Exception as error:
+            self._failed = True
+            raise SelectiveUpdateError(
+                SelectiveUpdateErrorCode.MUTATION_FAILED
+            ) from error
+
+        if self._session_dtype is None:
+            self._session_dtype = prepared.dtype
+            self._session_device = prepared.device
+        self._recomputed_token_rows += prepared.recomputed_token_rows
+        self._write_span_count += prepared.write_span_count
+        self._copied_key_rows += prepared.recomputed_token_rows
+        self._copied_value_rows += prepared.recomputed_token_rows
+        self._next_layer += 1
+
+    def finish(self) -> SelectiveUpdateReceipt:
+        """Return aggregate counters only after every layer completed."""
+
+        self._ensure_active()
+        if self._next_layer != GPT_OSS_NUM_LAYERS:
+            self._failed = True
+            _fail_update(SelectiveUpdateErrorCode.SESSION_INCOMPLETE)
+        self._finished = True
+        return SelectiveUpdateReceipt(
+            recomputed_token_rows=self._recomputed_token_rows,
+            cached_token_rows=self._plan.cached_tokens,
+            write_span_count=self._write_span_count,
+            copied_key_rows=self._copied_key_rows,
+            copied_value_rows=self._copied_value_rows,
+        )
+
+    def _ensure_active(self) -> None:
+        if self._failed or self._finished:
+            _fail_update(SelectiveUpdateErrorCode.SESSION_INVALID_STATE)
+
+    def _terminal(self, code: SelectiveUpdateErrorCode) -> NoReturn:
+        self._failed = True
+        _fail_update(code)
+
 __all__ = [
+    "GptOssSelectiveKvSession",
     "GptOssSelectiveKvUpdater",
     "SelectiveCacheOps",
     "SelectiveUpdateError",

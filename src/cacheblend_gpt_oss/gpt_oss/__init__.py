@@ -32,6 +32,7 @@ from cacheblend_gpt_oss.gpt_oss.selective import (
     SelectivePlanErrorCode,
 )
 from cacheblend_gpt_oss.gpt_oss.selective_kv import (
+    GptOssSelectiveKvSession,
     GptOssSelectiveKvUpdater,
     SelectiveCacheOps,
     SelectiveUpdateError,
@@ -110,6 +111,7 @@ __all__ = [
     "ForwardRowPlan",
     "ForwardRowPlanContext",
     "GptOssHybridCacheLayout",
+    "GptOssSelectiveKvSession",
     "GptOssSelectiveKvUpdater",
     "GptOssTorchYarnCorrector",
     "GroupBlockTable",
