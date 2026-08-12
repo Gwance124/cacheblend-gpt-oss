@@ -113,6 +113,13 @@ def _trial(
         correctness_artifact_digest=("d" * 64 if passed else None),
         failure=None if passed else BenchmarkFailureCode.CORRECTNESS_FAILED,
         staging_overhead_bytes=4_096,
+        transfer_evidence_digest=(
+            "e" * 64
+            if arm
+            in {BenchmarkArm.CACHEBLEND_100PCT, BenchmarkArm.CACHEBLEND_SELECTIVE}
+            and passed
+            else None
+        ),
     )
 
 
@@ -122,6 +129,7 @@ def _artifact(*trials: BenchmarkTrial) -> BenchmarkArtifact:
         runtime=_runtime(),
         case=CorrectnessCase.MOVED_DOCUMENT,
         prompt_tokens=100,
+        prompt_fixture_digest="f" * 64,
         host_id="solab-g3",
         attention_backend="TRITON_ATTN",
         hybrid_kv_cache_enabled=True,
@@ -199,6 +207,7 @@ def test_missing_latency_is_not_reported_as_zero_or_ready() -> None:
         peak_memory_bytes=1,
         correctness_passed=True,
         correctness_artifact_digest="d" * 64,
+        transfer_evidence_digest=None,
     )
     control = _trial(BenchmarkArm.CACHEBLEND_100PCT)
     artifact = _artifact(full, control)
@@ -267,6 +276,20 @@ def test_invalid_arm_ratio_case_and_duplicate_trials_fail_closed() -> None:
             correctness_artifact_digest="d" * 64,
         )
     assert caught.value.code is BenchmarkErrorCode.ARM_METRIC_MISMATCH
+
+    with pytest.raises(BenchmarkError) as caught:
+        BenchmarkTrial(
+            arm=BenchmarkArm.CACHEBLEND_100PCT,
+            case=CorrectnessCase.MOVED_DOCUMENT,
+            cache_state=BenchmarkCacheState.WARM,
+            trial_index=1,
+            metrics=_metrics(),
+            recompute_ratio=1.0,
+            peak_memory_bytes=1,
+            correctness_passed=True,
+            correctness_artifact_digest="d" * 64,
+        )
+    assert caught.value.code is BenchmarkErrorCode.TRANSFER_EVIDENCE_MISSING
 
     with pytest.raises(BenchmarkError) as caught:
         _artifact(

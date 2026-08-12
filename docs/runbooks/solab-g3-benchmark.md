@@ -44,7 +44,9 @@ digests:
 
 Repeat each arm enough to report confidence intervals. Keep lookup/transfer/
 correction/selective/prefill/TTFT/end-to-end timings separate and preserve the
-full correctness artifact and transfer sidecar for every trial. Do not put
+full correctness artifact and, for CacheBlend arms, the validated transfer
+evidence sidecar for every trial. Use one exact prompt-fixture digest across all
+arms in a case. Do not put
 request IDs, prompt text, token IDs, fingerprints, or document IDs into the
 benchmark JSON.
 

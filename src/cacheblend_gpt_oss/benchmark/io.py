@@ -234,6 +234,7 @@ def _trial_to_dict(trial: BenchmarkTrial) -> dict[str, object]:
         "peak_memory_bytes": trial.peak_memory_bytes,
         "recompute_ratio": trial.recompute_ratio,
         "staging_overhead_bytes": trial.staging_overhead_bytes,
+        "transfer_evidence_digest": trial.transfer_evidence_digest,
         "trial_index": trial.trial_index,
     }
 
@@ -252,6 +253,7 @@ def _trial_from_dict(value: object) -> BenchmarkTrial:
             "peak_memory_bytes",
             "recompute_ratio",
             "staging_overhead_bytes",
+            "transfer_evidence_digest",
             "trial_index",
         },
         BenchmarkErrorCode.INVALID_SCHEMA,
@@ -281,6 +283,9 @@ def _trial_from_dict(value: object) -> BenchmarkTrial:
             staging_overhead_bytes=cast(
                 int, mapping["staging_overhead_bytes"]
             ),
+            transfer_evidence_digest=cast(
+                str | None, mapping["transfer_evidence_digest"]
+            ),
             trial_index=cast(int, mapping["trial_index"]),
         )
     except (TypeError, ValueError, BenchmarkError) as exc:
@@ -303,6 +308,7 @@ def benchmark_artifact_to_dict(artifact: BenchmarkArtifact) -> dict[str, object]
         "max_model_len": artifact.max_model_len,
         "pipeline_parallel_size": artifact.pipeline_parallel_size,
         "prompt_tokens": artifact.prompt_tokens,
+        "prompt_fixture_digest": artifact.prompt_fixture_digest,
         "runtime": _runtime_to_dict(artifact.runtime),
         "sampling_seed": artifact.sampling_seed,
         "schema_version": artifact.schema_version,
@@ -329,6 +335,7 @@ def benchmark_artifact_from_dict(data: object) -> BenchmarkArtifact:
             "max_model_len",
             "pipeline_parallel_size",
             "prompt_tokens",
+            "prompt_fixture_digest",
             "runtime",
             "sampling_seed",
             "schema_version",
@@ -356,6 +363,9 @@ def benchmark_artifact_from_dict(data: object) -> BenchmarkArtifact:
             max_model_len=cast(int, root["max_model_len"]),
             pipeline_parallel_size=cast(int, root["pipeline_parallel_size"]),
             prompt_tokens=cast(int, root["prompt_tokens"]),
+            prompt_fixture_digest=cast(
+                str, root["prompt_fixture_digest"]
+            ),
             runtime=_runtime_from_dict(root["runtime"]),
             sampling_seed=cast(int, root["sampling_seed"]),
             schema_version=cast(int, root["schema_version"]),

@@ -473,8 +473,10 @@ Stop criteria:
 The dependency-free `cacheblend_gpt_oss.benchmark` package now defines the
 controlled-trial evidence boundary. A trial records one arm, cache state,
 reconciled request counters/timers, peak memory, recomputation ratio, and a
-digest of its independent correctness artifact. Artifacts pin the model and
-software identity, Triton attention backend, hybrid-cache requirement, block
+digest of its independent correctness artifact. CacheBlend arms also require a
+transfer-evidence digest, while one prompt-fixture digest binds all arms in a
+case. Artifacts pin the model and software identity, Triton attention backend,
+hybrid-cache requirement, block
 size, context limit, deterministic sampling settings, and TP/PP=1. The host
 validator computes per-arm means, medians, and 95% confidence intervals from
 repeated raw trials. It reports `benchmark_ready=false` until both the ordinary

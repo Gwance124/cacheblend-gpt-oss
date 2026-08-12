@@ -84,6 +84,7 @@ class BenchmarkErrorCode(str, Enum):
     ARM_CASE_MISMATCH = "arm_case_mismatch"
     ARM_METRIC_MISMATCH = "arm_metric_mismatch"
     CORRECTNESS_MISSING = "correctness_missing"
+    TRANSFER_EVIDENCE_MISSING = "transfer_evidence_missing"
     DUPLICATE_TRIAL = "duplicate_trial"
     INCONSISTENT_TRIAL = "inconsistent_trial"
     EMPTY_TRIALS = "empty_trials"
@@ -153,6 +154,7 @@ class BenchmarkTrial:
     correctness_artifact_digest: str | None = None
     failure: BenchmarkFailureCode | None = None
     staging_overhead_bytes: int = 0
+    transfer_evidence_digest: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.arm, BenchmarkArm):
@@ -206,6 +208,18 @@ class BenchmarkTrial:
             _fail(BenchmarkErrorCode.INVALID_DIGEST)
         if self.correctness_passed and self.correctness_artifact_digest is None:
             _fail(BenchmarkErrorCode.CORRECTNESS_MISSING)
+        if self.transfer_evidence_digest is not None and (
+            not isinstance(self.transfer_evidence_digest, str)
+            or _HEX_64.fullmatch(self.transfer_evidence_digest) is None
+        ):
+            _fail(BenchmarkErrorCode.INVALID_DIGEST)
+        if (
+            self.arm
+            in {BenchmarkArm.CACHEBLEND_100PCT, BenchmarkArm.CACHEBLEND_SELECTIVE}
+            and self.correctness_passed
+            and self.transfer_evidence_digest is None
+        ):
+            _fail(BenchmarkErrorCode.TRANSFER_EVIDENCE_MISSING)
         if self.failure is not None and not isinstance(
             self.failure, BenchmarkFailureCode
         ):
@@ -228,6 +242,7 @@ class BenchmarkArtifact:
     runtime: CorrectnessRuntimeIdentity
     case: CorrectnessCase
     prompt_tokens: int
+    prompt_fixture_digest: str
     host_id: str
     attention_backend: str
     hybrid_kv_cache_enabled: bool
@@ -258,6 +273,11 @@ class BenchmarkArtifact:
             or self.prompt_tokens > BENCHMARK_MAX_MODEL_LEN
         ):
             _fail(BenchmarkErrorCode.INVALID_PROMPT_TOKENS)
+        if (
+            not isinstance(self.prompt_fixture_digest, str)
+            or _HEX_64.fullmatch(self.prompt_fixture_digest) is None
+        ):
+            _fail(BenchmarkErrorCode.INVALID_DIGEST)
         _require_id(self.host_id, BenchmarkErrorCode.INVALID_IDENTITY)
         if self.attention_backend != BENCHMARK_ATTENTION_BACKEND:
             _fail(BenchmarkErrorCode.INVALID_IDENTITY)
