@@ -175,6 +175,24 @@ def _display(value: object) -> str:
     return str(value)
 
 
+def _strict_equal(expected: object, observed: object) -> bool:
+    """Compare runtime fields without Python's bool/int equality trap."""
+
+    if isinstance(expected, bool):
+        return isinstance(observed, bool) and observed is expected
+    if isinstance(expected, int):
+        return (
+            isinstance(observed, int)
+            and not isinstance(observed, bool)
+            and observed == expected
+        )
+    if isinstance(expected, tuple):
+        return isinstance(observed, tuple) and observed == expected
+    if isinstance(expected, frozenset):
+        return isinstance(observed, frozenset) and observed == expected
+    return type(observed) is type(expected) and observed == expected
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeValidator:
     """Pure validator with injected expectations and mismatch policy."""
@@ -193,7 +211,7 @@ class RuntimeValidator:
             expected_value: object,
             observed_value: object,
         ) -> None:
-            if observed_value != expected_value:
+            if not _strict_equal(expected_value, observed_value):
                 issues.append(
                     RuntimeValidationIssue(
                         code=code,
@@ -293,7 +311,7 @@ class RuntimeValidator:
 
         if (
             self.policy.mismatch_action is MismatchAction.FALL_BACK_TO_FULL_PREFILL
-            and observation.full_prefill_fallback_available
+            and observation.full_prefill_fallback_available is True
         ):
             return RuntimeValidationResult(
                 mode=RuntimeMode.FULL_PREFILL,
@@ -302,7 +320,7 @@ class RuntimeValidator:
 
         if (
             self.policy.mismatch_action is MismatchAction.FALL_BACK_TO_FULL_PREFILL
-            and not observation.full_prefill_fallback_available
+            and observation.full_prefill_fallback_available is not True
         ):
             issues.append(
                 RuntimeValidationIssue(

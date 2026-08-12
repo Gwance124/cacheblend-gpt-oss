@@ -174,6 +174,59 @@ def test_missing_full_prefill_path_escalates_fallback_policy_to_rejection() -> N
     ]
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "expected_code"),
+    [
+        (
+            "tensor_parallel_size",
+            True,
+            ValidationFailureCode.TENSOR_PARALLEL_SIZE_MISMATCH,
+        ),
+        (
+            "num_hidden_layers",
+            True,
+            ValidationFailureCode.LAYER_COUNT_MISMATCH,
+        ),
+        (
+            "hybrid_kv_manager_enabled",
+            1,
+            ValidationFailureCode.HYBRID_KV_MANAGER_DISABLED,
+        ),
+    ],
+)
+def test_bool_integer_coercion_cannot_pass_runtime_validation(
+    field: str,
+    value: object,
+    expected_code: ValidationFailureCode,
+) -> None:
+    result = RuntimeValidator().validate(
+        replace(_valid_observation(), **{field: value})
+    )
+
+    assert result.mode is RuntimeMode.REJECTED
+    assert expected_code in {issue.code for issue in result.issues}
+
+
+def test_truthy_non_boolean_fallback_flag_cannot_enable_fallback() -> None:
+    validator = RuntimeValidator(
+        policy=RuntimeValidationPolicy(
+            mismatch_action=MismatchAction.FALL_BACK_TO_FULL_PREFILL
+        )
+    )
+    observation = replace(
+        _valid_observation(),
+        attention_backend="FLASH_ATTN",
+        full_prefill_fallback_available=1,  # type: ignore[arg-type]
+    )
+
+    result = validator.validate(observation)
+
+    assert result.mode is RuntimeMode.REJECTED
+    assert ValidationFailureCode.FULL_PREFILL_FALLBACK_UNAVAILABLE in {
+        issue.code for issue in result.issues
+    }
+
+
 def test_observations_are_immutable() -> None:
     observation = _valid_observation()
 
