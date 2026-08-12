@@ -385,7 +385,11 @@ class GptOssCacheBlendConnector(
         metadata = self._get_connector_metadata()
         if not isinstance(metadata, GptOssCacheBlendMetadata):
             raise RuntimeError("Received metadata from an incompatible connector.")
-        if metadata.schema_version != _METADATA_SCHEMA_VERSION:
+        if (
+            isinstance(metadata.schema_version, bool)
+            or not isinstance(metadata.schema_version, int)
+            or metadata.schema_version != _METADATA_SCHEMA_VERSION
+        ):
             raise RuntimeError(
                 f"Unsupported connector metadata schema {metadata.schema_version}."
             )

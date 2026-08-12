@@ -267,6 +267,15 @@ def test_moved_document_hit_retains_compact_exact_handoff_metadata() -> None:
         metadata.status = SchedulerLookupStatus.FULL_PREFILL_MISS  # type: ignore[misc]
 
 
+def test_lookup_metadata_rejects_boolean_schema_version() -> None:
+    runtime, _, prompt = _hit_runtime()
+    metadata = runtime.lookup(_request(prompt))
+
+    with pytest.raises(SchedulerRuntimeError) as caught:
+        replace(metadata, schema_version=True)
+    assert caught.value.code is SchedulerRuntimeErrorCode.INVALID_METADATA
+
+
 def test_empty_transport_result_is_explicit_full_prefill_miss() -> None:
     config = _transfer_config()
     transport = FakeCandidateTransport(_transport_config(config))

@@ -253,7 +253,10 @@ class SchedulerLookupMetadata:
     load_kv_async: bool = False
 
     def __post_init__(self) -> None:
-        if self.schema_version != METADATA_SCHEMA_VERSION:
+        if (
+            not _is_int(self.schema_version)
+            or self.schema_version != METADATA_SCHEMA_VERSION
+        ):
             _fail(SchedulerRuntimeErrorCode.INVALID_METADATA)
         if not isinstance(self.request_plan, RequestPlan):
             _fail(SchedulerRuntimeErrorCode.INVALID_METADATA)

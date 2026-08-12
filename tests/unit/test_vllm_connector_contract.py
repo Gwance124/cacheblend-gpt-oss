@@ -526,6 +526,15 @@ def test_worker_registers_every_layer_and_rejects_transfer_claims(
     with pytest.raises(RuntimeError, match="transfer modes do not match"):
         connector.start_load_kv(SimpleNamespace())
 
+    bad_schema_metadata = module.GptOssCacheBlendMetadata(
+        schema_version=True,
+        group_layer_names=metadata.group_layer_names,
+        handoffs=metadata.handoffs,
+    )
+    connector.bind_connector_metadata(bad_schema_metadata)
+    with pytest.raises(RuntimeError, match="Unsupported connector metadata schema"):
+        connector.start_load_kv(SimpleNamespace())
+
 
 def _enable_transfer(
     config: SimpleNamespace, kv_cache_config: SimpleNamespace
