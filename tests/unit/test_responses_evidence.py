@@ -6,6 +6,7 @@ import pytest
 
 from cacheblend_gpt_oss.responses_evidence import (
     RESPONSES_EVIDENCE_CONTRACT,
+    RESPONSES_EVIDENCE_SCHEMA_VERSION,
     ResponsesEvidenceError,
     responses_contract_evidence_digest,
     responses_contract_evidence_from_dict,
@@ -41,7 +42,7 @@ def _report() -> dict[str, object]:
         )
     }
     return {
-        "schema_version": 2,
+        "schema_version": RESPONSES_EVIDENCE_SCHEMA_VERSION,
         "contract": RESPONSES_EVIDENCE_CONTRACT,
         "runtime": _runtime(),
         "passed": True,
@@ -104,6 +105,7 @@ def test_valid_report_is_decoded_and_digest_is_stable() -> None:
     [
         ("passed", False, "not_passed"),
         ("contract", "other", "invalid_schema"),
+        ("schema_version", 1, "invalid_schema"),
         ("native_prompt_tokens_processed", 810, "invalid_prompt_source_metrics"),
     ],
 )
