@@ -603,6 +603,21 @@ def test_lookup_transport_failure_is_not_silently_converted_to_miss() -> None:
     assert transport.state is LmcacheTransportState.FAILED
 
 
+def test_already_wrapped_operation_failure_still_poison_transport() -> None:
+    transport, queue, _ = opened_transport()
+    queue.enqueue(
+        LmcacheRequest.LOOKUP,
+        error=LmcacheOperationError("already wrapped operation failure"),
+    )
+
+    with pytest.raises(LmcacheOperationError, match="already wrapped"):
+        transport.lookup_candidates(range(512), request_id="wrapped-error")
+
+    assert transport.state is LmcacheTransportState.FAILED
+    with pytest.raises(LmcacheLifecycleError):
+        transport.lookup_candidates(range(512), request_id="after-wrapped")
+
+
 def verified_candidate(
     transport: LmcacheBlendTransport,
     queue: FakeMessageQueue,

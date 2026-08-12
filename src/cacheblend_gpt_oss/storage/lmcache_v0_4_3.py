@@ -845,6 +845,11 @@ class LmcacheBlendTransport:
                 return self._bindings.wait_cuda(future, timeout)
             return self._bindings.wait(future, timeout)
         except LmcacheOperationError:
+            # The pinned MQ future may surface an already-wrapped operation
+            # error.  Preserve its bounded type/message, but still make the
+            # transport terminal so a caller cannot reuse a possibly
+            # half-completed request on the same socket.
+            self._state = LmcacheTransportState.FAILED
             raise
         except Exception as exc:
             self._state = LmcacheTransportState.FAILED
