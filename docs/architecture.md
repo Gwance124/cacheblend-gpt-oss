@@ -148,6 +148,14 @@ forward; any earlier writes require discarding the request KV. This is a
 CPU-tested adapter contract, not selective-serving support, and it is not
 registered until the M3--M5 GPU correctness gates pass.
 
+`gpt_oss.selective_attention.SelectiveAttentionBridge` adds the next
+dependency-injected ordering contract. It invokes the per-layer KV session
+before the attention callback, requires the canonical 24-layer order, passes
+the exact learned sink object through unchanged, and turns either an update or
+attention failure into a terminal request-discard condition. It has no vLLM or
+Torch dependency and is not a custom backend implementation; the concrete
+Triton subclass remains gated on real GPT-OSS GPU evidence.
+
 `gpt_oss.selective_policy` is the dormant M7 check-layer planner. Given
 verified candidate ranges and injected per-row importance scores, it chooses a
 deterministic top fraction of eligible cached rows, always keeps uncached rows

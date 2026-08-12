@@ -31,6 +31,13 @@ from cacheblend_gpt_oss.gpt_oss.selective import (
     SelectivePlanError,
     SelectivePlanErrorCode,
 )
+from cacheblend_gpt_oss.gpt_oss.selective_attention import (
+    SelectiveAttentionBridge,
+    SelectiveAttentionCall,
+    SelectiveAttentionError,
+    SelectiveAttentionErrorCode,
+    SelectiveLayerSession,
+)
 from cacheblend_gpt_oss.gpt_oss.selective_kv import (
     GptOssSelectiveKvSession,
     GptOssSelectiveKvUpdater,
@@ -129,11 +136,16 @@ __all__ = [
     "SelectionSweepIoError",
     "SelectionSweepIoErrorCode",
     "SelectionSweepPoint",
+    "SelectiveAttentionBridge",
+    "SelectiveAttentionCall",
+    "SelectiveAttentionError",
+    "SelectiveAttentionErrorCode",
     "SelectiveCacheOps",
     "SelectiveForwardBridge",
     "SelectiveForwardError",
     "SelectiveForwardErrorCode",
     "SelectiveForwardResult",
+    "SelectiveLayerSession",
     "SelectivePlanError",
     "SelectivePlanErrorCode",
     "SelectiveUpdateError",

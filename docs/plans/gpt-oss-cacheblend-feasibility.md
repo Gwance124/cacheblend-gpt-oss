@@ -387,6 +387,14 @@ converted into reusable cache state. This remains a CPU-tested contract only;
 the live connector still recomputes 100% and the session is not registered as a
 custom backend.
 
+`gpt_oss.selective_attention.SelectiveAttentionBridge` composes that session
+with the attention-call ordering required by the pinned split-update path. It
+updates selected rows before invoking attention, forwards the same learned
+sink object, and makes update/attention failures terminal. This is still a
+dependency-injected CPU contract rather than a vLLM class; the concrete
+sink-aware Triton subclass and model override remain gated on M3--M5 GPU
+evidence.
+
 The companion `gpt_oss.forward_output` contract guards the model-runner side:
 a future model override must preserve the full hidden-state row shape and the
 pinned runner's logits-index ordering. It is CPU-tested and dormant until
