@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools==80.9.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cacheblend-gpt-oss"
+version = "0.0.0"
+description = "Research prototype for GPT-OSS-20B non-prefix KV-cache reuse"
+requires-python = ">=3.10,<3.14"
+license = { text = "Apache-2.0" }
+dependencies = []
+
+[project.optional-dependencies]
+gpu = [
+  "lmcache==0.4.3",
+  "torch==2.10.0+cu128",
+  "vllm==0.19.1",
+]
+test = [
+  "pytest==8.4.2",
+]
+dev = [
+  "mypy==1.17.1",
+  "ruff==0.12.11",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+cacheblend_gpt_oss = ["py.typed"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers"
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = [
+  "gpu: requires a CUDA GPU on solab-g3",
+  "integration: crosses package or process boundaries",
+  "model: loads the pinned GPT-OSS-20B model weights",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+packages = ["cacheblend_gpt_oss"]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+
