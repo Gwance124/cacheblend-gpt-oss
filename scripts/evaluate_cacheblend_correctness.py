@@ -32,9 +32,8 @@ def main() -> int:
     parser.add_argument(
         "--transfer-evidence",
         type=Path,
-        help=(
-            "bind and include the all-layer transfer sidecar in the verdict"
-        ),
+        required=True,
+        help="required all-layer transfer sidecar bound into the verdict",
     )
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
@@ -43,13 +42,8 @@ def main() -> int:
 
     reference = read_artifact(args.reference)
     cacheblend = read_artifact(args.cacheblend)
-    transfer = (
-        None
-        if args.transfer_evidence is None
-        else read_transfer_evidence(args.transfer_evidence)
-    )
-    if transfer is not None:
-        validate_transfer_evidence_binding(cacheblend, transfer)
+    transfer = read_transfer_evidence(args.transfer_evidence)
+    validate_transfer_evidence_binding(cacheblend, transfer)
     verdict = evaluate_cacheblend_100pct(
         reference,
         cacheblend,
@@ -70,12 +64,10 @@ def main() -> int:
         "negative_infinity_values": comparison.negative_infinity_values,
         "sampled_token_agreement": comparison.sampled_token_agreement,
         "top_token_agreement": comparison.top_token_agreement,
-        "transfer_evidence_digest": (
-            None if transfer is None else transfer_evidence_digest(transfer)
-        ),
-        "transfer_evidence_bound": transfer is not None,
+        "transfer_evidence_digest": transfer_evidence_digest(transfer),
+        "transfer_evidence_bound": True,
         "transfer_all_layers_loaded_and_overwritten": (
-            None if transfer is None else transfer.all_layers_loaded_and_overwritten
+            transfer.all_layers_loaded_and_overwritten
         ),
     }
     rendered = json.dumps(report, allow_nan=False, indent=2, sort_keys=True) + "\n"
