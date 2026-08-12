@@ -89,6 +89,7 @@ class BenchmarkErrorCode(str, Enum):
     DUPLICATE_TRIAL = "duplicate_trial"
     INCONSISTENT_TRIAL = "inconsistent_trial"
     INCOMPATIBLE_ARTIFACTS = "incompatible_artifacts"
+    MIXED_CACHE_STATE = "mixed_cache_state"
     EMPTY_TRIALS = "empty_trials"
     FILE_EXISTS = "file_exists"
     FILE_ERROR = "file_error"
@@ -332,6 +333,8 @@ class BenchmarkArtifact:
             _fail(BenchmarkErrorCode.EMPTY_TRIALS)
         if not trials or any(not isinstance(trial, BenchmarkTrial) for trial in trials):
             _fail(BenchmarkErrorCode.EMPTY_TRIALS)
+        if len({trial.cache_state for trial in trials}) != 1:
+            _fail(BenchmarkErrorCode.MIXED_CACHE_STATE)
         seen: set[tuple[BenchmarkArm, BenchmarkCacheState, int]] = set()
         for trial in trials:
             if trial.case is not self.case:

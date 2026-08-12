@@ -218,6 +218,15 @@ def test_missing_correctness_makes_report_not_ready_but_remains_recordable() -> 
     assert summary.failure_codes == (BenchmarkFailureCode.CORRECTNESS_FAILED,)
 
 
+def test_artifact_cannot_mix_warm_and_cold_cache_states() -> None:
+    with pytest.raises(BenchmarkError) as caught:
+        _artifact(
+            _trial(BenchmarkArm.FULL_PREFILL, state=BenchmarkCacheState.COLD),
+            _trial(BenchmarkArm.CACHEBLEND_100PCT, state=BenchmarkCacheState.WARM),
+        )
+    assert caught.value.code is BenchmarkErrorCode.MIXED_CACHE_STATE
+
+
 def test_missing_latency_is_not_reported_as_zero_or_ready() -> None:
     metrics = _metrics(reusable=False)
     incomplete = RequestMetrics(

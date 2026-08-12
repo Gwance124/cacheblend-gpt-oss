@@ -494,6 +494,8 @@ become a cached baseline. Artifacts pin the model and software identity,
 Triton attention backend, hybrid-cache requirement, block size, context limit,
 deterministic sampling settings, and TP/PP=1. The host validator computes
 per-arm means, medians, and 95% confidence intervals from repeated raw trials.
+One artifact must use one cache state across all arms; capture cold and warm
+conditions as separate artifacts rather than averaging them together.
 Summaries retain reusable-document and found/loaded/rejected-KV counts,
 document/candidate/loaded hit fractions, lookup/transfer/correction/selective/
 store timings, native serving timings, recomputed/avoided rows, and absolute/
