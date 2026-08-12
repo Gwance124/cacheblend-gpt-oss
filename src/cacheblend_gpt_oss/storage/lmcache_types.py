@@ -17,6 +17,7 @@ from cacheblend_gpt_oss.planner.fingerprint import SHA256_FINGERPRINTER
 from cacheblend_gpt_oss.planner.matching import VerifiedMatch
 from cacheblend_gpt_oss.planner.models import (
     CacheNamespace,
+    CacheRecord,
     TokenRange,
     normalize_token_ids,
 )
@@ -299,11 +300,67 @@ class VerifiedLmcacheCandidate:
 
 @dataclass(frozen=True, slots=True)
 class LmcacheStoreReceipt:
-    """Synchronous acknowledgement of complete precomputed chunks."""
+    """Synchronous acknowledgement and publishable exact sidecar records.
+
+    ``sidecar_records`` is populated only for a successfully completed
+    precomputed-document store.  A final/prefix store never publishes records
+    into the non-prefix sidecar.
+    """
 
     stored_tokens: int
     stored_chunks: int
     candidate_lookup_required: bool
+    sidecar_records: tuple[CacheRecord, ...]
+
+    def __post_init__(self) -> None:
+        _require_receipt_int("stored_tokens", self.stored_tokens)
+        _require_receipt_int("stored_chunks", self.stored_chunks)
+        if not isinstance(self.candidate_lookup_required, bool):
+            raise LmcacheProtocolError(
+                "store receipt candidate_lookup_required must be a boolean"
+            )
+        if not isinstance(self.sidecar_records, tuple) or any(
+            not isinstance(record, CacheRecord) for record in self.sidecar_records
+        ):
+            raise LmcacheProtocolError(
+                "store receipt sidecar_records must be CacheRecord values"
+            )
+        if self.stored_tokens != self.stored_chunks * LMCACHE_CHUNK_SIZE:
+            raise LmcacheProtocolError("store receipt chunk accounting is invalid")
+        if not self.candidate_lookup_required:
+            if self.sidecar_records:
+                raise LmcacheProtocolError(
+                    "a final store cannot publish non-prefix sidecar records"
+                )
+            return
+        if len(self.sidecar_records) != self.stored_chunks:
+            raise LmcacheProtocolError(
+                "precomputed store receipt is missing sidecar records"
+            )
+        previous_end: int | None = None
+        namespace: CacheNamespace | None = None
+        for record in self.sidecar_records:
+            if len(record.token_ids) != LMCACHE_CHUNK_SIZE:
+                raise LmcacheProtocolError(
+                    "precomputed sidecar record is not one complete chunk"
+                )
+            if previous_end is not None and record.source_range.start != previous_end:
+                raise LmcacheProtocolError(
+                    "precomputed sidecar record ranges are not contiguous"
+                )
+            if namespace is not None and record.namespace != namespace:
+                raise LmcacheProtocolError(
+                    "precomputed sidecar record namespaces differ"
+                )
+            expected = SHA256_FINGERPRINTER.fingerprint(
+                record.namespace, record.token_ids
+            )
+            if record.fingerprint != expected:
+                raise LmcacheProtocolError(
+                    "precomputed sidecar record fingerprint is invalid"
+                )
+            namespace = record.namespace
+            previous_end = record.source_range.end
 
 
 @dataclass(frozen=True, slots=True)
@@ -386,6 +443,11 @@ def _require_plain_int(name: str, value: object, *, minimum: int) -> None:
         raise LmcacheConfigurationError(f"{name} must be an integer")
     if value < minimum:
         raise LmcacheConfigurationError(f"{name} must be at least {minimum}")
+
+
+def _require_receipt_int(name: str, value: object) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise LmcacheProtocolError(f"store receipt {name} must be non-negative")
 
 
 def _update_length_prefixed(digest: object, value: bytes) -> None:

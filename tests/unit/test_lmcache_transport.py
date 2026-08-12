@@ -4,14 +4,17 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 from dataclasses import dataclass, replace
-from typing import NoReturn
+from types import SimpleNamespace
+from typing import NoReturn, cast
 
 import pytest
 
 from cacheblend_gpt_oss.planner import (
+    SHA256_FINGERPRINTER,
     CacheNamespace,
     InMemoryRecordIndex,
     MatchPlanner,
+    TokenRange,
     TokenSegment,
     build_cache_record,
 )
@@ -157,16 +160,38 @@ class FakeMessageQueue:
 class FakeBindings:
     lmcache_version = LMCACHE_VERSION
 
-    def __init__(self, *, schema_error: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        schema_error: bool = False,
+        chunk_hashes: object | None = None,
+        hash_error: BaseException | None = None,
+    ) -> None:
         self.schema_error = schema_error
+        self.chunk_hashes = chunk_hashes
+        self.hash_error = hash_error
         self.schema_validations = 0
         self.ordinary_waits = 0
         self.cuda_waits = 0
+        self.hash_calls: list[tuple[int, ...]] = []
 
     def validate_protocol_schema(self) -> None:
         self.schema_validations += 1
         if self.schema_error:
             raise LmcacheProtocolError("fake schema mismatch")
+
+    def compute_chunk_hashes(
+        self, token_ids: tuple[int, ...]
+    ) -> tuple[bytes, ...]:
+        self.hash_calls.append(token_ids)
+        if self.hash_error is not None:
+            raise self.hash_error
+        if self.chunk_hashes is not None:
+            return cast(tuple[bytes, ...], self.chunk_hashes)
+        return tuple(
+            bytes(((chunk_index + 1) % 256,)) * 32
+            for chunk_index in range(len(token_ids) // LMCACHE_CHUNK_SIZE)
+        )
 
     def request_type(self, request: LmcacheRequest) -> object:
         return request.value
@@ -273,10 +298,12 @@ def opened_transport(
     return transport, queue, bindings
 
 
-def registered_transport() -> tuple[
+def registered_transport(
+    *, bindings: FakeBindings | None = None
+) -> tuple[
     LmcacheBlendTransport, FakeMessageQueue, FakeBindings
 ]:
-    transport, queue, bindings = opened_transport()
+    transport, queue, bindings = opened_transport(bindings=bindings)
     queue.enqueue(LmcacheRequest.REGISTER, None)
     transport.register_staging_buffer(registration())
     return transport, queue, bindings
@@ -374,6 +401,57 @@ def test_lazy_loader_reports_missing_lmcache_actionably(
 
     with pytest.raises(LmcacheDependencyError, match="not installed"):
         runtime_module.load_lmcache_v0_4_3_bindings()
+
+
+def test_lazy_loader_constructs_the_exact_pinned_token_hasher(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    constructed: list[tuple[int, str]] = []
+    hashers: list[FakeTokenHasher] = []
+
+    class FakeTokenHasher:
+        def __init__(self, *, chunk_size: int, hash_algorithm: str) -> None:
+            constructed.append((chunk_size, hash_algorithm))
+            hashers.append(self)
+            self.chunk_size = chunk_size
+            self.hash_algorithm_name = hash_algorithm
+
+        def compute_chunk_hashes(self, token_ids: list[int]) -> list[bytes]:
+            assert token_ids == list(range(LMCACHE_CHUNK_SIZE))
+            return [b"p" * 32]
+
+    modules = {
+        "lmcache.v1.multiprocess.custom_types": SimpleNamespace(
+            IPCCacheEngineKey=FakeKey,
+            CBMatchResult=FakeMatch,
+            CudaIPCWrapper=FakeWrapper,
+        ),
+        "lmcache.v1.multiprocess.protocol": SimpleNamespace(
+            RequestType=object,
+            get_payload_classes=lambda _request: [],
+            get_response_class=lambda _request: None,
+        ),
+        "lmcache.v1.multiprocess.token_hasher": SimpleNamespace(
+            TokenHasher=FakeTokenHasher
+        ),
+    }
+    monkeypatch.setattr(runtime_module, "version", lambda _name: LMCACHE_VERSION)
+    monkeypatch.setattr(runtime_module, "import_module", modules.__getitem__)
+    monkeypatch.setattr(
+        runtime_module._RuntimeLmcacheBindings,
+        "validate_protocol_schema",
+        lambda _self: None,
+    )
+
+    bindings = runtime_module.load_lmcache_v0_4_3_bindings()
+
+    assert constructed == [(LMCACHE_CHUNK_SIZE, LMCACHE_HASH_ALGORITHM)]
+    assert tuple(bindings.compute_chunk_hashes(tuple(range(LMCACHE_CHUNK_SIZE)))) == (
+        b"p" * 32,
+    )
+    hashers[0].hash_algorithm_name = "drifted"
+    with pytest.raises(LmcacheProtocolError, match="drifted"):
+        bindings.compute_chunk_hashes(tuple(range(LMCACHE_CHUNK_SIZE)))
 
 
 def test_open_probes_ping_and_exact_chunk_size() -> None:
@@ -598,6 +676,8 @@ def test_precomputed_store_requires_complete_chunks_and_waits_for_cuda() -> None
 
     receipt = transport.store_precomputed(
         document,
+        cache_namespace=transport.config.namespace,
+        document_source_range=TokenRange(1000, 1000 + LMCACHE_CHUNK_SIZE),
         buffer_offset=16,
         event_ipc_handle=b"client-event",
         request_id="store",
@@ -606,6 +686,16 @@ def test_precomputed_store_requires_complete_chunks_and_waits_for_cuda() -> None
     assert receipt.stored_tokens == LMCACHE_CHUNK_SIZE
     assert receipt.stored_chunks == 1
     assert receipt.candidate_lookup_required
+    assert len(receipt.sidecar_records) == 1
+    record = receipt.sidecar_records[0]
+    assert record.namespace == transport.config.namespace
+    assert record.token_ids == document
+    assert record.source_range == TokenRange(1000, 1000 + LMCACHE_CHUNK_SIZE)
+    assert record.cache_key == "lmcache:0.4.3:blake3:" + (b"\x01" * 32).hex()
+    assert record.fingerprint == SHA256_FINGERPRINTER.fingerprint(
+        transport.config.namespace, document
+    )
+    assert bindings.hash_calls == [document]
     assert bindings.cuda_waits == 1
     key, offset, instance_id, event = queue.calls[-1].payloads
     assert isinstance(key, FakeKey) and key.worker_id == 0
@@ -613,19 +703,205 @@ def test_precomputed_store_requires_complete_chunks_and_waits_for_cuda() -> None
     assert offset == 16 and instance_id == 71 and event == b"client-event"
 
 
+def test_precomputed_store_derives_each_exact_chunk_and_keeps_positions_separate(
+) -> None:
+    first_hash = b"a" * 32
+    second_hash = b"b" * 32
+    bindings = FakeBindings(chunk_hashes=(first_hash, second_hash))
+    transport, queue, _ = registered_transport(bindings=bindings)
+    document = tuple(range(2 * LMCACHE_CHUNK_SIZE))
+    absolute_source = TokenRange(1000, 1000 + len(document))
+    queue.enqueue(LmcacheRequest.STORE_PRECOMPUTED, (b"server-event", True))
+
+    receipt = transport.store_precomputed(
+        document,
+        cache_namespace=transport.config.namespace,
+        document_source_range=absolute_source,
+        buffer_offset=0,
+        event_ipc_handle=b"client-event",
+        request_id="two-chunk-store",
+    )
+
+    assert [record.cache_key for record in receipt.sidecar_records] == [
+        "lmcache:0.4.3:blake3:" + first_hash.hex(),
+        "lmcache:0.4.3:blake3:" + second_hash.hex(),
+    ]
+    assert [record.source_range for record in receipt.sidecar_records] == [
+        TokenRange(1000, 1256),
+        TokenRange(1256, 1512),
+    ]
+    assert [record.token_ids for record in receipt.sidecar_records] == [
+        document[:LMCACHE_CHUNK_SIZE],
+        document[LMCACHE_CHUNK_SIZE:],
+    ]
+
+    moved_start = 17
+    moved_chunk = document[:LMCACHE_CHUNK_SIZE]
+    query = (*range(moved_start), *moved_chunk)
+    queue.enqueue(
+        LmcacheRequest.LOOKUP,
+        [
+            FakeMatch(
+                0,
+                LMCACHE_CHUNK_SIZE,
+                moved_start,
+                moved_start + LMCACHE_CHUNK_SIZE,
+                first_hash,
+            )
+        ],
+    )
+    candidate = transport.lookup_candidates(query, request_id="moved-lookup")[0]
+    plan = MatchPlanner(InMemoryRecordIndex(receipt.sidecar_records)).plan(
+        transport.config.namespace,
+        [TokenSegment.at(moved_start, moved_chunk)],
+    )
+    verified = VerifiedLmcacheCandidate.bind(
+        candidate,
+        plan.matches[0],
+        expected_namespace=transport.config.namespace,
+    )
+
+    assert candidate.source_relative_range == TokenRange(0, LMCACHE_CHUNK_SIZE)
+    assert verified.match.record.source_range == TokenRange(1000, 1256)
+    assert verified.match.position_delta == moved_start - 1000
+
+
+def test_precomputed_store_preserves_valid_hash_collision_bucket_records() -> None:
+    colliding_hash = b"c" * 32
+    bindings = FakeBindings(chunk_hashes=(colliding_hash, colliding_hash))
+    transport, queue, _ = registered_transport(bindings=bindings)
+    document = tuple(range(2 * LMCACHE_CHUNK_SIZE))
+    queue.enqueue(LmcacheRequest.STORE_PRECOMPUTED, (b"server-event", True))
+
+    receipt = transport.store_precomputed(
+        document,
+        cache_namespace=transport.config.namespace,
+        document_source_range=TokenRange(2000, 2000 + len(document)),
+        buffer_offset=0,
+        event_ipc_handle=b"client-event",
+        request_id="collision-store",
+    )
+
+    first, second = receipt.sidecar_records
+    assert first.cache_key == second.cache_key
+    assert first.token_ids != second.token_ids
+    assert first.fingerprint != second.fingerprint
+
+
 def test_precomputed_store_rejects_partial_chunk_without_rpc() -> None:
-    transport, queue, _ = registered_transport()
+    transport, queue, bindings = registered_transport()
     calls_before = len(queue.calls)
 
     with pytest.raises(LmcacheConfigurationError, match="complete chunks"):
         transport.store_precomputed(
             range(LMCACHE_CHUNK_SIZE - 1),
+            cache_namespace=transport.config.namespace,
+            document_source_range=TokenRange(1000, 1255),
             buffer_offset=0,
             event_ipc_handle=b"event",
             request_id="partial",
         )
 
     assert len(queue.calls) == calls_before
+    assert bindings.hash_calls == []
+
+
+@pytest.mark.parametrize(
+    "document_source_range",
+    [
+        TokenRange(1000, 1255),
+        TokenRange(131_000, 131_256),
+    ],
+)
+def test_precomputed_store_rejects_unpublishable_source_range_before_rpc(
+    document_source_range: TokenRange,
+) -> None:
+    transport, queue, bindings = registered_transport()
+    calls_before = len(queue.calls)
+
+    with pytest.raises(LmcacheConfigurationError, match="document_source_range"):
+        transport.store_precomputed(
+            range(LMCACHE_CHUNK_SIZE),
+            cache_namespace=transport.config.namespace,
+            document_source_range=document_source_range,
+            buffer_offset=0,
+            event_ipc_handle=b"event",
+            request_id="bad-source-range",
+        )
+
+    assert len(queue.calls) == calls_before
+    assert bindings.hash_calls == []
+
+
+def test_precomputed_store_rejects_namespace_mismatch_before_rpc() -> None:
+    transport, queue, bindings = registered_transport()
+    calls_before = len(queue.calls)
+    other_namespace = replace(namespace(), model_revision="other-revision")
+
+    with pytest.raises(LmcacheConfigurationError, match="namespace"):
+        transport.store_precomputed(
+            range(LMCACHE_CHUNK_SIZE),
+            cache_namespace=other_namespace,
+            document_source_range=TokenRange(1000, 1256),
+            buffer_offset=0,
+            event_ipc_handle=b"event",
+            request_id="wrong-namespace",
+        )
+
+    assert len(queue.calls) == calls_before
+    assert bindings.hash_calls == []
+
+
+def test_precomputed_store_rejects_tokens_outside_pinned_hasher_wire_domain() -> None:
+    transport, queue, bindings = registered_transport()
+    calls_before = len(queue.calls)
+    document = [0] * LMCACHE_CHUNK_SIZE
+    document[-1] = 1 << 32
+
+    with pytest.raises(LmcacheConfigurationError, match="unsigned 32 bits"):
+        transport.store_precomputed(
+            document,
+            cache_namespace=transport.config.namespace,
+            document_source_range=TokenRange(1000, 1256),
+            buffer_offset=0,
+            event_ipc_handle=b"event",
+            request_id="token-wire-domain",
+        )
+
+    assert len(queue.calls) == calls_before
+    assert bindings.hash_calls == []
+
+
+@pytest.mark.parametrize(
+    "chunk_hashes",
+    [
+        (),
+        (b"a" * 32, b"b" * 32),
+        (b"short",),
+        (bytearray(b"a" * 32),),
+        b"a" * 32,
+    ],
+)
+def test_precomputed_store_fails_closed_on_hash_output_drift(
+    chunk_hashes: object,
+) -> None:
+    bindings = FakeBindings(chunk_hashes=chunk_hashes)
+    transport, queue, _ = registered_transport(bindings=bindings)
+    queue.enqueue(LmcacheRequest.STORE_PRECOMPUTED, (b"server-event", True))
+
+    with pytest.raises(LmcacheProtocolError, match="TokenHasher"):
+        transport.store_precomputed(
+            range(LMCACHE_CHUNK_SIZE),
+            cache_namespace=transport.config.namespace,
+            document_source_range=TokenRange(1000, 1256),
+            buffer_offset=0,
+            event_ipc_handle=b"event",
+            request_id="hash-drift",
+        )
+
+    assert queue.calls[-1].request == LmcacheRequest.STORE_PRECOMPUTED.value
+    assert bindings.hash_calls == [tuple(range(LMCACHE_CHUNK_SIZE))]
+    assert transport.state is LmcacheTransportState.FAILED
 
 
 def test_final_store_is_not_claimed_as_non_prefix_candidate_registration() -> None:
@@ -640,22 +916,26 @@ def test_final_store_is_not_claimed_as_non_prefix_candidate_registration() -> No
     )
 
     assert not receipt.candidate_lookup_required
+    assert receipt.sidecar_records == ()
     assert queue.calls[-1].request == LmcacheRequest.STORE_FINAL.value
 
 
 def test_rejected_transfer_fails_closed() -> None:
-    transport, queue, _ = registered_transport()
+    transport, queue, bindings = registered_transport()
     queue.enqueue(LmcacheRequest.STORE_PRECOMPUTED, (b"server-event", False))
 
     with pytest.raises(LmcacheOperationError, match="reported failure"):
         transport.store_precomputed(
             range(LMCACHE_CHUNK_SIZE),
+            cache_namespace=transport.config.namespace,
+            document_source_range=TokenRange(1000, 1256),
             buffer_offset=0,
             event_ipc_handle=b"event",
             request_id="rejected",
         )
 
     assert transport.state is LmcacheTransportState.FAILED
+    assert bindings.hash_calls == []
 
 
 def test_close_unregisters_then_closes_and_is_idempotent() -> None:

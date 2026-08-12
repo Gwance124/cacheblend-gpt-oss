@@ -15,6 +15,14 @@ This module follows the exact public LMCache commit
   https://github.com/LMCache/LMCache/blob/7f326118a2f1afc7801988dd02e3055bdf21ef6b/lmcache/v1/multiprocess/mq.py#L110-L247
 * server candidate generation and storage-prefetch filtering:
   https://github.com/LMCache/LMCache/blob/7f326118a2f1afc7801988dd02e3055bdf21ef6b/lmcache/v1/multiprocess/blend_server_v2.py#L340-L460
+* precomputed storage derives rolling hashes, converts them to object keys, and
+  registers the same hashes with the matcher:
+  https://github.com/LMCache/LMCache/blob/7f326118a2f1afc7801988dd02e3055bdf21ef6b/lmcache/v1/multiprocess/blend_server_v2.py#L534-L595
+* ``TokenHasher`` construction and complete-chunk rolling-hash behavior:
+  https://github.com/LMCache/LMCache/blob/7f326118a2f1afc7801988dd02e3055bdf21ef6b/lmcache/v1/multiprocess/token_hasher.py#L54-L70
+  https://github.com/LMCache/LMCache/blob/7f326118a2f1afc7801988dd02e3055bdf21ef6b/lmcache/v1/multiprocess/token_hasher.py#L183-L231
+* object keys use each supplied chunk hash unchanged:
+  https://github.com/LMCache/LMCache/blob/7f326118a2f1afc7801988dd02e3055bdf21ef6b/lmcache/v1/distributed/api.py#L117-L170
 * one contiguous ``[2,L,T,D]`` staging buffer:
   https://github.com/LMCache/LMCache/blob/7f326118a2f1afc7801988dd02e3055bdf21ef6b/lmcache/v1/multiprocess/gpu_context.py#L340-L406
 
@@ -38,8 +46,18 @@ from importlib.metadata import PackageNotFoundError, version
 from types import GenericAlias
 from typing import Any, NoReturn, Protocol, cast
 
-from cacheblend_gpt_oss.planner.models import TokenRange, normalize_token_ids
+from cacheblend_gpt_oss.planner.fingerprint import SHA256_FINGERPRINTER
+from cacheblend_gpt_oss.planner.models import (
+    CacheNamespace,
+    CacheRecord,
+    TokenRange,
+    normalize_token_ids,
+)
 from cacheblend_gpt_oss.storage.lmcache_types import (
+    LMCACHE_CACHE_KEY_PREFIX,
+    LMCACHE_CHUNK_SIZE,
+    LMCACHE_HASH_ALGORITHM,
+    LMCACHE_HASH_BYTES,
     LMCACHE_VERSION,
     LmcacheBlendTransportConfig,
     LmcacheCandidate,
@@ -59,6 +77,9 @@ from cacheblend_gpt_oss.storage.lmcache_types import (
     validate_event_handle,
     validate_request_id,
 )
+from cacheblend_gpt_oss.storage.sidecar import MAX_TOKEN_POSITION
+
+_MAX_LMCACHE_BLAKE3_TOKEN_ID = (1 << 32) - 1
 
 
 class LmcacheRequest(str, Enum):
@@ -105,6 +126,11 @@ class LmcacheBindings(Protocol):
 
     def validate_protocol_schema(self) -> None:
         """Fail unless all used request payload and response types are exact."""
+
+    def compute_chunk_hashes(
+        self, token_ids: tuple[int, ...]
+    ) -> Sequence[bytes]:
+        """Return pinned rolling BLAKE3 hashes for every complete chunk."""
 
     def request_type(self, request: LmcacheRequest) -> object:
         """Resolve a pinned request enum member."""
@@ -160,6 +186,7 @@ class _RuntimeLmcacheBindings:
     _cuda_wrapper_type: type[Any]
     _get_payload_classes: Any
     _get_response_class: Any
+    _token_hasher: Any
 
     @property
     def lmcache_version(self) -> str:
@@ -199,6 +226,20 @@ class _RuntimeLmcacheBindings:
                 raise LmcacheProtocolError(
                     f"LMCache 0.4.3 protocol schema mismatch for {request.value}"
                 )
+
+    def compute_chunk_hashes(
+        self, token_ids: tuple[int, ...]
+    ) -> Sequence[bytes]:
+        if (
+            getattr(self._token_hasher, "chunk_size", None) != LMCACHE_CHUNK_SIZE
+            or getattr(self._token_hasher, "hash_algorithm_name", None)
+            != LMCACHE_HASH_ALGORITHM
+        ):
+            raise LmcacheProtocolError("LMCache TokenHasher configuration drifted")
+        return cast(
+            Sequence[bytes],
+            self._token_hasher.compute_chunk_hashes(list(token_ids)),
+        )
 
     def request_type(self, request: LmcacheRequest) -> object:
         try:
@@ -445,17 +486,29 @@ class LmcacheBlendTransport:
         self,
         token_ids: Sequence[int],
         *,
+        cache_namespace: CacheNamespace,
+        document_source_range: TokenRange,
         buffer_offset: int,
         event_ipc_handle: bytes,
         request_id: str,
     ) -> LmcacheStoreReceipt:
-        """Store only complete chunks and register them for non-prefix lookup."""
+        """Store complete chunks, then return exact publishable sidecar records.
+
+        LMCache hashes the compact document at relative positions beginning at
+        zero.  ``document_source_range`` is deliberately separate: its absolute
+        positions describe where the post-RoPE keys were originally computed.
+        """
 
         tokens = self._validate_store_inputs(
             token_ids,
             buffer_offset=buffer_offset,
             event_ipc_handle=event_ipc_handle,
             request_id=request_id,
+        )
+        self._validate_record_identity(
+            tokens,
+            cache_namespace=cache_namespace,
+            document_source_range=document_source_range,
         )
         key = self._make_key(
             tokens, request_id=request_id, worker_id=self._config.worker_id
@@ -467,10 +520,16 @@ class LmcacheBlendTransport:
             cuda=True,
         )
         self._require_transfer_success(response, "CB_STORE_PRE_COMPUTED")
+        records = self._derive_sidecar_records(
+            tokens,
+            cache_namespace=cache_namespace,
+            document_source_range=document_source_range,
+        )
         return LmcacheStoreReceipt(
             stored_tokens=len(tokens),
             stored_chunks=len(tokens) // self._config.chunk_size,
             candidate_lookup_required=True,
+            sidecar_records=records,
         )
 
     def store_final(
@@ -508,6 +567,7 @@ class LmcacheBlendTransport:
             stored_tokens=len(tokens),
             stored_chunks=len(tokens) // self._config.chunk_size,
             candidate_lookup_required=False,
+            sidecar_records=(),
         )
 
     def retrieve_precomputed(
@@ -647,6 +707,13 @@ class LmcacheBlendTransport:
         tokens = normalize_token_ids(token_ids)
         if not tokens:
             raise LmcacheConfigurationError("store token_ids must not be empty")
+        # The pinned BLAKE3 implementation serializes every token with
+        # ``struct.pack(">I", token_id)``.  Reject values outside that exact
+        # unsigned-32-bit wire domain before asking the server to hash them.
+        if any(token_id > _MAX_LMCACHE_BLAKE3_TOKEN_ID for token_id in tokens):
+            raise LmcacheConfigurationError(
+                "LMCache BLAKE3 token IDs must fit in unsigned 32 bits"
+            )
         if len(tokens) % self._config.chunk_size != 0:
             raise LmcacheConfigurationError(
                 "Blend V2 stores only complete chunks; partial stores are rejected"
@@ -675,6 +742,88 @@ class LmcacheBlendTransport:
             end=len(tokens),
             request_id=request_id,
         )
+
+    def _validate_record_identity(
+        self,
+        tokens: tuple[int, ...],
+        *,
+        cache_namespace: CacheNamespace,
+        document_source_range: TokenRange,
+    ) -> None:
+        if not isinstance(cache_namespace, CacheNamespace):
+            raise LmcacheConfigurationError(
+                "cache_namespace must be a CacheNamespace"
+            )
+        if cache_namespace != self._config.namespace:
+            raise LmcacheConfigurationError(
+                "store cache_namespace does not match transport configuration"
+            )
+        if not isinstance(document_source_range, TokenRange):
+            raise LmcacheConfigurationError(
+                "document_source_range must be a TokenRange"
+            )
+        if len(document_source_range) != len(tokens):
+            raise LmcacheConfigurationError(
+                "document_source_range length must equal the stored token count"
+            )
+        if document_source_range.end > MAX_TOKEN_POSITION:
+            raise LmcacheConfigurationError(
+                "document_source_range exceeds the GPT-OSS context limit"
+            )
+
+    def _derive_sidecar_records(
+        self,
+        tokens: tuple[int, ...],
+        *,
+        cache_namespace: CacheNamespace,
+        document_source_range: TokenRange,
+    ) -> tuple[CacheRecord, ...]:
+        expected_chunks = len(tokens) // self._config.chunk_size
+        try:
+            raw_hashes = self._bindings.compute_chunk_hashes(tokens)
+            if isinstance(raw_hashes, bytes | bytearray | str) or not isinstance(
+                raw_hashes, Sequence
+            ):
+                raise TypeError("chunk hashes are not a sequence")
+            if len(raw_hashes) != expected_chunks:
+                raise ValueError("chunk hash count differs from complete chunks")
+            # Index only the already bounded expected count.  This avoids
+            # trusting an injected object's iterator to terminate.
+            hashes = tuple(raw_hashes[index] for index in range(expected_chunks))
+        except Exception as exc:
+            self._state = LmcacheTransportState.FAILED
+            raise LmcacheProtocolError(
+                "LMCache TokenHasher output drifted after precomputed storage"
+            ) from exc
+        if any(
+            not isinstance(chunk_hash, bytes)
+            or len(chunk_hash) != LMCACHE_HASH_BYTES
+            for chunk_hash in hashes
+        ):
+            self._state = LmcacheTransportState.FAILED
+            raise LmcacheProtocolError(
+                "LMCache TokenHasher returned malformed complete-chunk hashes"
+            )
+        records: list[CacheRecord] = []
+        for chunk_index, chunk_hash in enumerate(hashes):
+            relative_start = chunk_index * self._config.chunk_size
+            relative_end = relative_start + self._config.chunk_size
+            chunk_tokens = tokens[relative_start:relative_end]
+            source_start = document_source_range.start + relative_start
+            records.append(
+                CacheRecord(
+                    namespace=cache_namespace,
+                    fingerprint=SHA256_FINGERPRINTER.fingerprint(
+                        cache_namespace, chunk_tokens
+                    ),
+                    token_ids=chunk_tokens,
+                    source_range=TokenRange(
+                        source_start, source_start + self._config.chunk_size
+                    ),
+                    cache_key=LMCACHE_CACHE_KEY_PREFIX + chunk_hash.hex(),
+                )
+            )
+        return tuple(records)
 
     def _active_registration(self) -> LmcacheStagingRegistration:
         self._require_state(LmcacheTransportState.REGISTERED)
@@ -739,7 +888,14 @@ def load_lmcache_v0_4_3_bindings() -> LmcacheBindings:
     try:
         custom_types = import_module("lmcache.v1.multiprocess.custom_types")
         protocol = import_module("lmcache.v1.multiprocess.protocol")
-    except ImportError as exc:
+        token_hasher_module = import_module(
+            "lmcache.v1.multiprocess.token_hasher"
+        )
+        token_hasher = token_hasher_module.TokenHasher(
+            chunk_size=LMCACHE_CHUNK_SIZE,
+            hash_algorithm=LMCACHE_HASH_ALGORITHM,
+        )
+    except (ImportError, AttributeError, TypeError, ValueError) as exc:
         raise LmcacheDependencyError(
             "LMCache 0.4.3 Blend V2 modules could not be imported; "
             "verify the pinned wheel and CUDA runtime"
@@ -752,6 +908,7 @@ def load_lmcache_v0_4_3_bindings() -> LmcacheBindings:
         _cuda_wrapper_type=custom_types.CudaIPCWrapper,
         _get_payload_classes=protocol.get_payload_classes,
         _get_response_class=protocol.get_response_class,
+        _token_hasher=token_hasher,
     )
     bindings.validate_protocol_schema()
     return bindings
