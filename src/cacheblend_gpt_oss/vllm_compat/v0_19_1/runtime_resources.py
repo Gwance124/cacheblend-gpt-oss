@@ -101,6 +101,24 @@ class CudaRuntimeIdentity:
     gpu_name: str
     compute_capability: str
 
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.device_index, bool)
+            or not isinstance(self.device_index, int)
+            or self.device_index < 0
+        ):
+            _fail(RuntimeResourceErrorCode.INVALID_DEVICE)
+        if any(
+            not isinstance(value, str) or not value
+            for value in (
+                self.torch_version,
+                self.cuda_runtime,
+                self.gpu_name,
+                self.compute_capability,
+            )
+        ):
+            _fail(RuntimeResourceErrorCode.INVALID_DEVICE)
+
 
 class CudaRuntimeFactory(Protocol):
     """Injected CUDA identity boundary for CPU tests and the real worker."""

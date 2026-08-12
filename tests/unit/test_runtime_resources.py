@@ -375,6 +375,19 @@ def test_worker_rejects_unpinned_cuda_runtime_identity(
     assert error.value.code is RuntimeResourceErrorCode.INVALID_DEVICE
 
 
+def test_cuda_identity_rejects_boolean_device_index() -> None:
+    with pytest.raises(RuntimeResourceError) as error:
+        CudaRuntimeIdentity(
+            device_index=True,  # type: ignore[arg-type]
+            torch_version="2.10.0+cu128",
+            cuda_runtime="12.8",
+            gpu_name="NVIDIA A100-SXM4-80GB",
+            compute_capability="8.0",
+        )
+
+    assert error.value.code is RuntimeResourceErrorCode.INVALID_DEVICE
+
+
 class FakeClosableRuntime:
     def __init__(self, *, close_error: bool = False) -> None:
         self.close_error = close_error
