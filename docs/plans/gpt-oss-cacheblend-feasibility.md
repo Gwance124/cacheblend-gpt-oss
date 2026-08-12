@@ -360,7 +360,9 @@ selective execution or correctness. The same module now validates the complete
 flattened `slot_mapping` vector against each layer's expected physical slots,
 including the alternating full/sliding group tables, and rejects padding or
 cross-group mappings before any write. This closes the CPU-side input contract;
-it does not replace the required real CUDA/backend test.
+the injected updater requires one validated vector for every layer, so the
+future backend cannot silently skip the check. It does not replace the
+required real CUDA/backend test.
 
 The companion `gpt_oss.forward_output` contract guards the model-runner side:
 a future model override must preserve the full hidden-state row shape and the

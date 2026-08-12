@@ -269,8 +269,9 @@ CPU-tested for all-preflight-before-mutation, selected-row-only writes, and
 fail-closed shape/dtype/device checks. `validate_slot_mapping` also checks the
 flattened per-token slot vector that the pinned method receives against every
 target block/offset, rejecting negative/padding entries and cross-group
-mismatches before mutation. These contracts remain dormant until the M3--M5
-GPU gates and a real Triton implementation exist.
+mismatches before mutation; the updater requires one vector per layer rather
+than making this check optional. These contracts remain dormant until the
+M3--M5 GPU gates and a real Triton implementation exist.
 
 ## LMCache 0.4.3 integration audit
 

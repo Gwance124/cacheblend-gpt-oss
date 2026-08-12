@@ -8,6 +8,10 @@ that split from the dependency-free :class:`ForwardRowPlan` and the existing
 hybrid group scatter spans; it performs no tensor mutation and imports neither
 vLLM nor Torch.
 
+The slot vector validated here is the ``slot_mapping`` argument of the pinned
+``TritonAttentionImpl.do_kv_cache_update``:
+https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/v1/attention/backends/triton_attn.py#L575-L606
+
 The source spans are expected to cover one complete prompt for all 24
 GPT-OSS layers.  Each selected sub-span keeps the old source positions (for
 YaRN correction) while changing only the destination target range and physical
@@ -69,6 +73,10 @@ class SelectiveUpdateErrorCode(str, Enum):
     DTYPE_MISMATCH = "dtype_mismatch"
     DEVICE_MISMATCH = "device_mismatch"
     INVALID_DEVICE = "invalid_device"
+    SLOT_MAPPING_SET_MISMATCH = "slot_mapping_set_mismatch"
+    INVALID_SLOT_MAPPING = "invalid_slot_mapping"
+    SLOT_MAPPING_LENGTH_MISMATCH = "slot_mapping_length_mismatch"
+    SLOT_MAPPING_VALUE_MISMATCH = "slot_mapping_value_mismatch"
     MUTATION_FAILED = "mutation_failed"
 
 
@@ -394,8 +402,16 @@ class GptOssSelectiveKvUpdater:
         key_by_layer: Mapping[str, object],
         value_by_layer: Mapping[str, object],
         paged_caches: Mapping[str, object],
+        slot_mapping_by_layer: Mapping[str, Sequence[object]],
     ) -> SelectiveUpdateReceipt:
-        """Write only recomputed rows; no operation occurs before all checks."""
+        """Write only recomputed rows; no operation occurs before all checks.
+
+        ``slot_mapping_by_layer`` is the CPU-readable form of the pinned
+        Triton ``slot_mapping`` tensor.  A future backend must provide one
+        vector per concrete GPT-OSS layer; omitting it would make the physical
+        destination contract unverifiable, so the argument is required even
+        when every row is recomputed.
+        """
 
         if not isinstance(plan, SelectiveWritePlan):
             _fail_update(SelectiveUpdateErrorCode.INVALID_PLAN)
@@ -408,6 +424,8 @@ class GptOssSelectiveKvUpdater:
             or set(paged_caches) != expected_names
         ):
             _fail_update(SelectiveUpdateErrorCode.TENSOR_SET_MISMATCH)
+        if set(slot_mapping_by_layer) != expected_names:
+            _fail_update(SelectiveUpdateErrorCode.SLOT_MAPPING_SET_MISMATCH)
 
         dtype: str | None = None
         device: str | None = None
@@ -417,6 +435,28 @@ class GptOssSelectiveKvUpdater:
             key = key_by_layer[layer_name]
             value = value_by_layer[layer_name]
             cache = paged_caches[layer_name]
+            try:
+                validate_slot_mapping(
+                    plan,
+                    layer_index=layer_index,
+                    slot_mapping=slot_mapping_by_layer[layer_name],
+                )
+            except SelectiveWriteError as error:
+                update_code = {
+                    SelectiveWriteErrorCode.INVALID_SLOT_MAPPING: (
+                        SelectiveUpdateErrorCode.INVALID_SLOT_MAPPING
+                    ),
+                    SelectiveWriteErrorCode.SLOT_MAPPING_LENGTH_MISMATCH: (
+                        SelectiveUpdateErrorCode.SLOT_MAPPING_LENGTH_MISMATCH
+                    ),
+                    SelectiveWriteErrorCode.SLOT_MAPPING_VALUE_MISMATCH: (
+                        SelectiveUpdateErrorCode.SLOT_MAPPING_VALUE_MISMATCH
+                    ),
+                }.get(
+                    error.code,
+                    SelectiveUpdateErrorCode.INVALID_SLOT_MAPPING,
+                )
+                raise SelectiveUpdateError(update_code) from error
             key_shape = self._safe_shape(key)
             value_shape = self._safe_shape(value)
             if key_shape != (

@@ -193,6 +193,19 @@ def _selective_plan():
     )
 
 
+def _slot_mappings(plan) -> dict[str, tuple[int, ...]]:
+    mappings: dict[str, list[int]] = {
+        _layer_name(index): [0] * PROMPT_TOKENS for index in range(24)
+    }
+    for span in plan.full_layer_spans:
+        mapping = mappings[span.layer_name]
+        for offset in range(span.token_count):
+            mapping[span.target_range.start + offset] = (
+                span.physical_slot_start + offset
+            )
+    return {name: tuple(values) for name, values in mappings.items()}
+
+
 def _cache_value(caches: dict[str, FakeTensor], layer: int, component: int, token: int):
     block_id, offset = ((2, token) if token < 16 else (3, token - 16))
     rows = caches[_layer_name(layer)].rows
@@ -203,12 +216,14 @@ def _cache_value(caches: dict[str, FakeTensor], layer: int, component: int, toke
 def test_updater_writes_only_recomputed_rows_and_preserves_cached_rows() -> None:
     ops = FakeSelectiveOps()
     keys, values, caches = _tensors()
+    plan = _selective_plan()
 
     receipt = GptOssSelectiveKvUpdater(ops).update(
-        plan=_selective_plan(),
+        plan=plan,
         key_by_layer=keys,
         value_by_layer=values,
         paged_caches=caches,
+        slot_mapping_by_layer=_slot_mappings(plan),
     )
 
     assert receipt.recomputed_token_rows == 23 * PROMPT_TOKENS + 13
@@ -234,12 +249,14 @@ def test_all_cached_layer_is_valid_and_performs_no_layer_writes() -> None:
     )
     ops = FakeSelectiveOps()
     keys, values, caches = _tensors()
+    slot_mappings = _slot_mappings(plan)
 
     receipt = GptOssSelectiveKvUpdater(ops).update(
         plan=plan,
         key_by_layer=keys,
         value_by_layer=values,
         paged_caches=caches,
+        slot_mapping_by_layer=slot_mappings,
     )
 
     assert receipt.cached_token_rows == PROMPT_TOKENS
@@ -254,13 +271,15 @@ def test_bad_layer_is_preflighted_before_any_copy() -> None:
     ops = FakeSelectiveOps()
     keys, values, caches = _tensors()
     caches[_layer_name(23)] = FakeTensor((4, 2, BLOCK_SIZE, 8, 32))
+    plan = _selective_plan()
 
     with pytest.raises(SelectiveUpdateError) as error:
         GptOssSelectiveKvUpdater(ops).update(
-            plan=_selective_plan(),
+            plan=plan,
             key_by_layer=keys,
             value_by_layer=values,
             paged_caches=caches,
+            slot_mapping_by_layer=_slot_mappings(plan),
         )
 
     assert error.value.code is SelectiveUpdateErrorCode.INVALID_CACHE_SHAPE
@@ -287,13 +306,35 @@ def test_dtype_and_device_checks_fail_closed(kind: str, expected) -> None:
         keys[_layer_name(0)].device = "cpu"
         values[_layer_name(0)].device = "cpu"
         caches[_layer_name(0)].device = "cpu"
+    plan = _selective_plan()
 
     with pytest.raises(SelectiveUpdateError) as error:
         GptOssSelectiveKvUpdater(ops).update(
-            plan=_selective_plan(),
+            plan=plan,
             key_by_layer=keys,
             value_by_layer=values,
             paged_caches=caches,
+            slot_mapping_by_layer=_slot_mappings(plan),
         )
     assert error.value.code is expected
     assert ops.copy_count == 0
+
+
+def test_slot_mapping_failure_is_preflighted_before_any_copy() -> None:
+    ops = FakeSelectiveOps()
+    keys, values, caches = _tensors()
+    plan = _selective_plan()
+    mappings = _slot_mappings(plan)
+    mappings[_layer_name(0)] = (999, *mappings[_layer_name(0)][1:])
+
+    with pytest.raises(SelectiveUpdateError) as error:
+        GptOssSelectiveKvUpdater(ops).update(
+            plan=plan,
+            key_by_layer=keys,
+            value_by_layer=values,
+            paged_caches=caches,
+            slot_mapping_by_layer=mappings,
+        )
+    assert error.value.code is SelectiveUpdateErrorCode.SLOT_MAPPING_VALUE_MISMATCH
+    assert ops.copy_count == 0
+    assert ops.sync_count == 0
