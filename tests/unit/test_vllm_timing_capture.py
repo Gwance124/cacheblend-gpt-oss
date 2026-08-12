@@ -170,6 +170,10 @@ def test_prompt_source_counters_require_zero_external_credit() -> None:
 
 
 def test_prompt_source_external_or_unknown_labels_fail_closed() -> None:
+    with pytest.raises(ValueError, match="family is incomplete"):
+        parse_vllm_prompt_source_snapshot(
+            'vllm:prompt_tokens_by_source{source="local_compute"} 1\n'
+        )
     with pytest.raises(ValueError, match="prompt-source label"):
         parse_vllm_prompt_source_snapshot(
             'vllm:prompt_tokens_by_source{source="unknown"} 1\n'

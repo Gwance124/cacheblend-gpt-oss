@@ -276,7 +276,7 @@ def has_vllm_prompt_source_metric_surface(text: str) -> bool:
         sample_name, _, labels = parts[0].partition("{")
         if sample_name != _VLLM_PROMPT_SOURCE_METRIC or not labels.endswith("}"):
             continue
-        match = _SOURCE_LABEL.search(labels[1:-1])
+        match = _SOURCE_LABEL.search(labels[:-1])
         if match is not None:
             found.add(match.group(1))
     return found == set(_VLLM_PROMPT_SOURCES)
@@ -288,6 +288,7 @@ def parse_vllm_prompt_source_snapshot(text: str) -> dict[str, int]:
     if not isinstance(text, str):
         raise TypeError("Prometheus snapshot must be text")
     values = {source: 0.0 for source in _VLLM_PROMPT_SOURCES}
+    found: set[str] = set()
     for line in text.splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
@@ -300,9 +301,10 @@ def parse_vllm_prompt_source_snapshot(text: str) -> dict[str, int]:
             continue
         if not labels.endswith("}"):
             raise ValueError("invalid vLLM prompt-source labels")
-        match = _SOURCE_LABEL.search(labels[1:-1])
+        match = _SOURCE_LABEL.search(labels[:-1])
         if match is None or match.group(1) not in values:
             raise ValueError("invalid vLLM prompt-source label")
+        found.add(match.group(1))
         try:
             value = float(parts[1])
         except ValueError as exc:
@@ -310,6 +312,8 @@ def parse_vllm_prompt_source_snapshot(text: str) -> dict[str, int]:
         if not math.isfinite(value) or value < 0.0 or not value.is_integer():
             raise ValueError("invalid vLLM prompt-source metric value")
         values[match.group(1)] += value
+    if found != set(_VLLM_PROMPT_SOURCES):
+        raise ValueError("vLLM prompt-source metric family is incomplete")
     return {source: int(values[source]) for source in _VLLM_PROMPT_SOURCES}
 
 
