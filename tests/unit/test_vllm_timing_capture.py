@@ -13,6 +13,7 @@ from cacheblend_gpt_oss.correctness import (
     parse_vllm_prompt_counter_snapshot,
     parse_vllm_timing_snapshot,
     require_vllm_prefill_work_delta,
+    require_vllm_prefill_work_total,
     require_vllm_timing_delta,
     vllm_prefill_work_snapshot_delta,
     vllm_prompt_counter_delta,
@@ -120,6 +121,17 @@ def test_native_prefill_work_rejects_partial_or_mismatched_histograms() -> None:
         require_vllm_prefill_work_delta(
             VllmPrefillWorkSnapshot(1, 279),
             expected_prompt_tokens=280,
+        )
+    require_vllm_prefill_work_total(
+        VllmPrefillWorkSnapshot(3, 811),
+        expected_prompt_tokens=811,
+        expected_requests=3,
+    )
+    with pytest.raises(ValueError, match="total does not match"):
+        require_vllm_prefill_work_total(
+            VllmPrefillWorkSnapshot(3, 810),
+            expected_prompt_tokens=811,
+            expected_requests=3,
         )
 
 

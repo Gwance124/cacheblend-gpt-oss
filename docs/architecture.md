@@ -431,7 +431,9 @@ The Responses contract harness parses the pinned vLLM histogram families
 `vllm:request_queue_time_seconds`, `vllm:request_prefill_time_seconds`, and
 `vllm:request_decode_time_seconds` from their `_count`/`_sum` samples. It
 requires one observation per request and stores only aggregate count/sum/mean
-values; labels and bucket samples are discarded. These names and semantics are
+values; labels and bucket samples are discarded. The three-turn Responses gate
+also reconciles the native `vllm:prompt_tokens` delta with
+`vllm:request_prefill_kv_computed_tokens_sum`. These names and semantics are
 from the pinned
 [`PrometheusStatLogger`](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/v1/metrics/loggers.py#L727-L889),
 not inferred client timings.

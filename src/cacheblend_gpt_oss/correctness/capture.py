@@ -356,6 +356,32 @@ def require_vllm_prefill_work_delta(
         raise ValueError("native vLLM prefill work does not match the prompt")
 
 
+def require_vllm_prefill_work_total(
+    delta: VllmPrefillWorkSnapshot,
+    *,
+    expected_prompt_tokens: int,
+    expected_requests: int,
+) -> None:
+    """Require aggregate native prefill work to match an interval total."""
+
+    if (
+        isinstance(expected_prompt_tokens, bool)
+        or not isinstance(expected_prompt_tokens, int)
+        or expected_prompt_tokens <= 0
+        or isinstance(expected_requests, bool)
+        or not isinstance(expected_requests, int)
+        or expected_requests <= 0
+    ):
+        raise ValueError("native prefill-work totals are invalid")
+    if not isinstance(delta, VllmPrefillWorkSnapshot):
+        raise TypeError("vLLM prefill-work delta has an invalid type")
+    if (
+        delta.observations != expected_requests
+        or delta.kv_computed_tokens != expected_prompt_tokens
+    ):
+        raise ValueError("native vLLM prefill work total does not match the prompt")
+
+
 def has_vllm_timing_metric_surface(text: str) -> bool:
     """Return whether all pinned vLLM timing histogram pairs are advertised."""
 
@@ -599,6 +625,7 @@ __all__ = [
     "parse_vllm_prompt_counter_snapshot",
     "parse_vllm_timing_snapshot",
     "require_vllm_prefill_work_delta",
+    "require_vllm_prefill_work_total",
     "require_vllm_timing_delta",
     "vllm_prefill_work_snapshot_delta",
     "vllm_prompt_counter_delta",

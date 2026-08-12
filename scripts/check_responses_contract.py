@@ -5,6 +5,10 @@
 The request and replay shape follows the exact pinned vLLM tests:
 https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/tests/entrypoints/openai/responses/test_harmony.py#L82-L105
 https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/tests/entrypoints/openai/responses/test_function_call.py#L111-L169
+
+Native prompt accounting and timing names come from the pinned vLLM
+``PrometheusStatLogger``:
+https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/v1/metrics/loggers.py#L580-L903
 """
 
 from __future__ import annotations
@@ -23,10 +27,17 @@ from cacheblend_gpt_oss.correctness import (
     CorrectnessRuntimeIdentity,
     connector_counter_delta,
     has_connector_metric_surface,
+    has_vllm_prefill_work_metric_surface,
+    has_vllm_prompt_metric_surface,
     has_vllm_timing_metric_surface,
     parse_connector_counter_snapshot,
+    parse_vllm_prefill_work_snapshot,
+    parse_vllm_prompt_counter_snapshot,
     parse_vllm_timing_snapshot,
+    require_vllm_prefill_work_total,
     require_vllm_timing_delta,
+    vllm_prefill_work_snapshot_delta,
+    vllm_prompt_counter_delta,
     vllm_timing_snapshot_delta,
 )
 from cacheblend_gpt_oss.responses_contract import (
@@ -200,7 +211,13 @@ def main() -> int:
         raise ValueError("CacheBlend connector metrics are not present")
     if not has_vllm_timing_metric_surface(initial_metrics):
         raise ValueError("pinned vLLM timing metrics are not present")
+    if not has_vllm_prompt_metric_surface(initial_metrics):
+        raise ValueError("pinned vLLM prompt metrics are not present")
+    if not has_vllm_prefill_work_metric_surface(initial_metrics):
+        raise ValueError("pinned vLLM prefill-work metrics are not present")
     before = parse_connector_counter_snapshot(initial_metrics)
+    before_prompt = parse_vllm_prompt_counter_snapshot(initial_metrics)
+    before_prefill_work = parse_vllm_prefill_work_snapshot(initial_metrics)
     before_timing = parse_vllm_timing_snapshot(initial_metrics)
 
     initial_input: list[JsonObject] = [
@@ -262,6 +279,18 @@ def main() -> int:
         parse_vllm_timing_snapshot(after_metrics),
     )
     require_vllm_timing_delta(timing_delta, expected_requests=3)
+    after_prompt = parse_vllm_prompt_counter_snapshot(after_metrics)
+    after_prefill_work = parse_vllm_prefill_work_snapshot(after_metrics)
+    native_prompt_tokens = vllm_prompt_counter_delta(before_prompt, after_prompt)
+    native_prefill_work = vllm_prefill_work_snapshot_delta(
+        before_prefill_work,
+        after_prefill_work,
+    )
+    require_vllm_prefill_work_total(
+        native_prefill_work,
+        expected_prompt_tokens=native_prompt_tokens,
+        expected_requests=3,
+    )
     report = {
         "schema_version": 1,
         "contract": "gpt_oss_responses_harmony_tool_append_only_multiturn",
@@ -295,6 +324,11 @@ def main() -> int:
             "final_input": len(final_history),
         },
         "connector_counter_delta": delta,
+        "native_prompt_tokens_processed": native_prompt_tokens,
+        "native_prefill_work": {
+            "observations": native_prefill_work.observations,
+            "kv_computed_tokens": native_prefill_work.kv_computed_tokens,
+        },
         "vllm_timing_delta": timing_delta.as_dict(),
     }
     rendered = json.dumps(report, allow_nan=False, indent=2, sort_keys=True) + "\n"
