@@ -808,6 +808,7 @@ class GptOssWorkerBridge:
             if (
                 record.namespace != namespace
                 or len(record.token_ids) != LMCACHE_CHUNK_SIZE
+                or (previous_end is None and record.source_range.start != 0)
                 or (previous_end is not None
                 and record.source_range.start != previous_end)
                 or not GptOssWorkerBridge._valid_record(

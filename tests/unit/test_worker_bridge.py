@@ -762,6 +762,26 @@ def test_direct_atomic_publish_rechecks_fingerprint_source_and_cache_key() -> No
     assert fixture.bridge.publish_sidecar_records_atomically((valid,)) == 1
 
 
+def test_direct_atomic_publish_rejects_nonzero_compact_source_start() -> None:
+    fixture = _fixture()
+    fixture.bridge.open()
+    namespace = fixture.transport.config.namespace
+    tokens = tuple(range(256))
+    record = CacheRecord(
+        namespace,
+        SHA256_FINGERPRINTER.fingerprint(namespace, tokens),
+        tokens,
+        TokenRange(256, 512),
+        LMCACHE_CACHE_KEY_PREFIX + (b"\x0a" * 32).hex(),
+    )
+
+    _assert_error(
+        WorkerBridgeErrorCode.INVALID_PLAN,
+        lambda: fixture.bridge.publish_sidecar_records_atomically((record,)),
+    )
+    assert fixture.sidecar.batches == []
+
+
 def test_failed_open_can_be_closed_once_without_bridge_double_unregister() -> None:
     fixture = _fixture(fail_open=True)
 
