@@ -814,7 +814,9 @@ class TransferRuntime:
         for chunk, record in zip(
             plan.chunks, receipt.sidecar_records, strict=True
         ):
-            if not isinstance(record.cache_key, str):
+            if not isinstance(record, CacheRecord) or not isinstance(
+                record.cache_key, str
+            ):
                 return False
             suffix = record.cache_key.removeprefix(LMCACHE_CACHE_KEY_PREFIX)
             if (
