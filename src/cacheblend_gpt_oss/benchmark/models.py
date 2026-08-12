@@ -265,7 +265,11 @@ class BenchmarkTrial:
             _fail(BenchmarkErrorCode.INVALID_DIGEST)
         if (
             self.arm
-            in {BenchmarkArm.CACHEBLEND_100PCT, BenchmarkArm.CACHEBLEND_SELECTIVE}
+            in {
+                BenchmarkArm.CACHEBLEND_100PCT,
+                BenchmarkArm.CACHEBLEND_SELECTIVE,
+                BenchmarkArm.PREFIX_PLUS_CACHEBLEND,
+            }
             and self.correctness_passed
             and self.transfer_evidence_digest is None
         ):

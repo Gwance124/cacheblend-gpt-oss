@@ -427,6 +427,20 @@ def test_invalid_arm_ratio_case_and_duplicate_trials_fail_closed() -> None:
     assert caught.value.code is BenchmarkErrorCode.TRANSFER_EVIDENCE_MISSING
 
     with pytest.raises(BenchmarkError) as caught:
+        BenchmarkTrial(
+            arm=BenchmarkArm.PREFIX_PLUS_CACHEBLEND,
+            case=CorrectnessCase.MOVED_DOCUMENT,
+            cache_state=BenchmarkCacheState.WARM,
+            trial_index=1,
+            metrics=_metrics(recomputed=100, avoided=0),
+            recompute_ratio=None,
+            peak_memory_bytes=1,
+            correctness_passed=True,
+            correctness_artifact_digest="d" * 64,
+        )
+    assert caught.value.code is BenchmarkErrorCode.TRANSFER_EVIDENCE_MISSING
+
+    with pytest.raises(BenchmarkError) as caught:
         _artifact(
             _trial(BenchmarkArm.FULL_PREFILL),
             _trial(BenchmarkArm.FULL_PREFILL),
