@@ -80,6 +80,39 @@ def _mapping_get(value: object, name: str, default: Any = None) -> Any:
     return _get(value, name, default)
 
 
+def _strict_equal(expected: object, observed: object) -> bool:
+    """Compare finalized config values without Python's bool/int coercion.
+
+    vLLM configuration fields are populated from several parsers and may be
+    supplied by test doubles or launch wrappers.  Plain ``==`` would accept
+    values such as ``True`` for an expected integer ``1`` (and ``0`` for an
+    expected ``False``), weakening the fail-closed startup boundary.
+    Numeric RoPE values intentionally allow an integral value for a float
+    expectation because Hugging Face config normalization can preserve either
+    representation; booleans are never numeric here.
+    """
+
+    if isinstance(expected, bool):
+        return isinstance(observed, bool) and observed is expected
+    if isinstance(expected, int):
+        return (
+            isinstance(observed, int)
+            and not isinstance(observed, bool)
+            and observed == expected
+        )
+    if isinstance(expected, float):
+        return (
+            isinstance(observed, int | float)
+            and not isinstance(observed, bool)
+            and float(observed) == expected
+        )
+    if expected is None:
+        return observed is None
+    if type(observed) is not type(expected):
+        return False
+    return observed == expected
+
+
 def _served_model_names(model_config: object) -> tuple[str, ...]:
     names = _get(model_config, "served_model_name")
     if isinstance(names, str):
@@ -117,7 +150,7 @@ def collect_pinned_config_issues(
     issues: list[PinnedConfigIssue] = []
 
     def expect(field: str, expected: object, observed: object) -> None:
-        if observed != expected:
+        if not _strict_equal(expected, observed):
             issues.append(
                 PinnedConfigIssue(
                     field=field,
@@ -397,7 +430,7 @@ def collect_transfer_100pct_config_issues(
     )
     for field_name, expected in exact_scheduler_values:
         observed = _get(scheduler, field_name)
-        if observed != expected:
+        if not _strict_equal(expected, observed):
             reject(f"transfer.scheduler.{field_name}", expected, observed)
 
     max_num_batched_tokens = _get(scheduler, "max_num_batched_tokens")

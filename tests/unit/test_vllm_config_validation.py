@@ -274,6 +274,52 @@ def test_v2_runner_and_incomplete_hybrid_layout_are_both_reported() -> None:
     assert {issue.field for issue in issues} >= {"runner.v2_enabled", "kv.layers"}
 
 
+@pytest.mark.parametrize(
+    ("mutation", "expected_field"),
+    [
+        (
+            lambda config, _: setattr(
+                config.model_config.hf_config, "num_hidden_layers", True
+            ),
+            "model.num_hidden_layers",
+        ),
+        (
+            lambda config, _: setattr(
+                config.parallel_config, "tensor_parallel_size", True
+            ),
+            "parallel.tensor_parallel_size",
+        ),
+        (
+            lambda config, _: setattr(
+                config.model_config.hf_config, "attention_bias", 1
+            ),
+            "model.attention_bias",
+        ),
+        (
+            lambda _, cache: setattr(
+                cache.kv_cache_groups[0].kv_cache_spec, "block_size", True
+            ),
+            "kv.groups.0.block_size",
+        ),
+    ],
+)
+def test_pinned_configuration_rejects_boolean_numeric_coercion(
+    mutation: Callable[[Any, Any], None],
+    expected_field: str,
+) -> None:
+    vllm_config, kv_cache_config = _valid_config()
+    mutation(vllm_config, kv_cache_config)
+
+    with pytest.raises(UnsupportedPinnedConfigError) as error:
+        require_pinned_config(
+            vllm_config,
+            kv_cache_config,
+            v2_model_runner_enabled=False,
+        )
+
+    assert expected_field in {issue.field for issue in error.value.issues}
+
+
 def test_exact_transfer_100pct_scheduler_envelope_is_accepted() -> None:
     vllm_config, _ = _valid_config()
 
@@ -367,6 +413,32 @@ def test_transfer_100pct_accepts_pinned_scheduler_default_budget_fallback() -> N
         vllm_config,
         staging_token_capacity=4096,
     )
+
+
+@pytest.mark.parametrize(
+    ("field_name", "invalid"),
+    [
+        ("max_num_seqs", True),
+        ("long_prefill_token_threshold", False),
+        ("async_scheduling", 0),
+    ],
+)
+def test_transfer_100pct_rejects_boolean_scheduler_coercion(
+    field_name: str,
+    invalid: object,
+) -> None:
+    vllm_config, _ = _valid_config()
+    setattr(vllm_config.scheduler_config, field_name, invalid)
+
+    with pytest.raises(UnsupportedPinnedConfigError) as error:
+        require_transfer_100pct_config(
+            vllm_config,
+            staging_token_capacity=4096,
+        )
+
+    assert f"transfer.scheduler.{field_name}" in {
+        issue.field for issue in error.value.issues
+    }
 
 
 @pytest.mark.parametrize("invalid", [0, False, "4096"])
