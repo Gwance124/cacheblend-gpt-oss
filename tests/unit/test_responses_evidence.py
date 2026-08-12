@@ -152,6 +152,13 @@ def test_nested_counter_and_timing_tampering_is_rejected() -> None:
     with pytest.raises(ResponsesEvidenceError, match="invalid_prefill_work"):
         responses_contract_evidence_from_dict(report)
 
+    report = _report()
+    connector = report["connector_counter_delta"]
+    assert isinstance(connector, dict)
+    connector["tokens_recomputed"] = 810
+    with pytest.raises(ResponsesEvidenceError, match="invalid_connector_metrics"):
+        responses_contract_evidence_from_dict(report)
+
 
 def test_extra_keys_and_turn_structure_are_rejected() -> None:
     report = _report()
@@ -163,5 +170,23 @@ def test_extra_keys_and_turn_structure_are_rejected() -> None:
     turns = report["turns"]
     assert isinstance(turns, list)
     turns[1]["function_calls"] = 0  # type: ignore[index]
+    with pytest.raises(ResponsesEvidenceError, match="invalid_turns"):
+        responses_contract_evidence_from_dict(report)
+
+    report = deepcopy(_report())
+    turns = report["turns"]
+    assert isinstance(turns, list)
+    turns[0]["reasoning_items"] = 2  # type: ignore[index]
+    with pytest.raises(ResponsesEvidenceError, match="invalid_turns"):
+        responses_contract_evidence_from_dict(report)
+
+    report = deepcopy(_report())
+    turns = report["turns"]
+    assert isinstance(turns, list)
+    turns[1]["output_types"] = [  # type: ignore[index]
+        "reasoning",
+        "function_call",
+        "message",
+    ]
     with pytest.raises(ResponsesEvidenceError, match="invalid_turns"):
         responses_contract_evidence_from_dict(report)

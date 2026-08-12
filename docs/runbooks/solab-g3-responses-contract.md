@@ -120,7 +120,10 @@ prefill must be zero. The report stores native prompt/source/prefill work plus c
 sum, and mean for TTFT, end-to-end, queue, prefill, and decode latency; TTFT is
 never inferred from client wall time. The request wait requires those native
 observation milestones before taking its final interval scrape, preventing
-asynchronous exporter lag from creating a false mismatch.
+asynchronous exporter lag from creating a false mismatch. The offline
+validator also requires the connector's recomputed-token delta to equal the
+native prompt-token delta and checks every reported reasoning and function-call
+count against its output-type sequence.
 
 ## Stop/go decision
 

@@ -218,13 +218,21 @@ def _parse_turns(value: object) -> tuple[ResponsesTurnEvidence, ...]:
         reasoning_items = _bounded_count(
             mapping["reasoning_items"], ResponsesEvidenceErrorCode.INVALID_TURNS
         )
-        if reasoning_items < 1 or output_types[0] != "reasoning":
+        if (
+            reasoning_items < 1
+            or reasoning_items != output_types.count("reasoning")
+            or output_types[0] != "reasoning"
+        ):
             _fail(ResponsesEvidenceErrorCode.INVALID_TURNS)
         if index == 0:
             function_calls = _bounded_count(
                 mapping["function_calls"], ResponsesEvidenceErrorCode.INVALID_TURNS
             )
-            if function_calls != 1 or output_types[-1] != "function_call":
+            if (
+                function_calls != 1
+                or function_calls != output_types.count("function_call")
+                or output_types[-1] != "function_call"
+            ):
                 _fail(ResponsesEvidenceErrorCode.INVALID_TURNS)
             turns.append(
                 ResponsesTurnEvidence(
@@ -235,7 +243,11 @@ def _parse_turns(value: object) -> tuple[ResponsesTurnEvidence, ...]:
             message_text_parts = _bounded_count(
                 mapping["message_text_parts"], ResponsesEvidenceErrorCode.INVALID_TURNS
             )
-            if message_text_parts < 1 or output_types[-1] != "message":
+            if (
+                message_text_parts < 1
+                or "function_call" in output_types
+                or output_types[-1] != "message"
+            ):
                 _fail(ResponsesEvidenceErrorCode.INVALID_TURNS)
             turns.append(
                 ResponsesTurnEvidence(
@@ -408,6 +420,8 @@ def responses_contract_evidence_from_dict(data: object) -> ResponsesContractEvid
         root["native_prompt_source_delta"],
         expected_prompt_tokens=native_prompt,
     )
+    if connector["tokens_recomputed"] != native_prompt:
+        _fail(ResponsesEvidenceErrorCode.INVALID_CONNECTOR_METRICS)
     native_prefill = _exact_mapping(
         root["native_prefill_work"],
         frozenset({"observations", "kv_computed_tokens"}),
