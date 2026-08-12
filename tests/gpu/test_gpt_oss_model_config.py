@@ -56,8 +56,9 @@ def test_pinned_gpt_oss_hybrid_model_config() -> None:
 
     layer_types = tuple(getattr(config, "layer_types", ()))
     assert layer_types == (
-        ("sliding_attention", "full_attention") * 12
-    )
+        "sliding_attention",
+        "full_attention",
+    ) * 12
 
     rope_parameters = _mapping(getattr(config, "rope_parameters", None))
     assert rope_parameters.get("rope_type") == "yarn"
