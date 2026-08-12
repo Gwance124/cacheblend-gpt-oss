@@ -412,6 +412,11 @@ def test_lease_rejects_position_outside_bound_transfer() -> None:
         {"instance_id": 1, "token_capacity": CAPACITY, "device": "cuda"},
         {"instance_id": 1, "token_capacity": CAPACITY, "device": "cuda:-1"},
         {"instance_id": 1, "token_capacity": CAPACITY, "device": "cuda:01"},
+        {
+            "instance_id": 1,
+            "token_capacity": CAPACITY,
+            "device": "cuda:" + "9" * 10_000,
+        },
         {"instance_id": 1, "token_capacity": CAPACITY, "device": "cpu"},
     ],
 )

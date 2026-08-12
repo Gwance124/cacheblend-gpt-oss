@@ -876,7 +876,11 @@ def _parse_indexed_cuda_device(device: object) -> int:
             "device must be an explicitly indexed CUDA device",
         )
     suffix = device.removeprefix("cuda:")
-    if not suffix.isdigit() or str(int(suffix)) != suffix:
+    if (
+        not suffix.isdigit()
+        or len(suffix) > 6
+        or str(int(suffix)) != suffix
+    ):
         _fail(
             StagingErrorCode.INVALID_CONFIG,
             "device must use canonical form cuda:<non-negative integer>",

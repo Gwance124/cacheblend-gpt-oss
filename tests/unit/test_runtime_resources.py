@@ -305,7 +305,16 @@ def test_worker_resources_bind_one_device_and_open_bridge(tmp_path: object) -> N
     assert sidecar.close_calls == 1
 
 
-@pytest.mark.parametrize("device", ["cuda", "cpu", "cuda:-1", "cuda:1:2"])
+@pytest.mark.parametrize(
+    "device",
+    [
+        "cuda",
+        "cpu",
+        "cuda:-1",
+        "cuda:1:2",
+        "cuda:" + "9" * 10_000,
+    ],
+)
 def test_worker_rejects_nonindexed_cuda_device(
     tmp_path: object, device: str
 ) -> None:
