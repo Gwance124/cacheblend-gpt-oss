@@ -426,6 +426,19 @@ def test_invalid_arm_ratio_case_and_duplicate_trials_fail_closed() -> None:
         )
     assert caught.value.code is BenchmarkErrorCode.TRANSFER_EVIDENCE_MISSING
 
+    cache_miss = BenchmarkTrial(
+        arm=BenchmarkArm.CACHEBLEND_100PCT,
+        case=CorrectnessCase.CACHE_MISS,
+        cache_state=BenchmarkCacheState.WARM,
+        trial_index=2,
+        metrics=_metrics(recomputed=100, avoided=0, reusable=False),
+        recompute_ratio=1.0,
+        peak_memory_bytes=1,
+        correctness_passed=True,
+        correctness_artifact_digest="d" * 64,
+    )
+    assert cache_miss.transfer_evidence_digest is None
+
     with pytest.raises(BenchmarkError) as caught:
         BenchmarkTrial(
             arm=BenchmarkArm.PREFIX_PLUS_CACHEBLEND,

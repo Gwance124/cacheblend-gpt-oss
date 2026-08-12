@@ -271,6 +271,7 @@ class BenchmarkTrial:
                 BenchmarkArm.PREFIX_PLUS_CACHEBLEND,
             }
             and self.correctness_passed
+            and self.metrics.counters.kv_tokens_loaded > 0
             and self.transfer_evidence_digest is None
         ):
             _fail(BenchmarkErrorCode.TRANSFER_EVIDENCE_MISSING)

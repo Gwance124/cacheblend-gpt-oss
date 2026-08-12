@@ -462,12 +462,16 @@ not inferred client timings.
 
 The implemented M3 correctness artifacts record the complete normalized output
 logprob vector, sampled/top token, BF16 dtype, prompt/token digests, exact
-runtime/config/plugin identity, and reconciled connector work. The evaluator
-requires and binds the independent all-layer transfer-evidence sidecar, then
-records maximum/mean absolute and relative error against a tolerance frozen
-from repeated full prefill before CacheBlend is run. These values are not
-high-cardinality Prometheus labels. Raw hidden-state/layer probes remain an
-additional live-debug surface, not a claimed artifact field.
+runtime/config/plugin identity, and reconciled connector work. For any positive
+KV transfer, the evaluator requires and binds an independent all-layer
+transfer-evidence sidecar, then records maximum/mean absolute and relative
+error against a tolerance frozen from repeated full prefill before CacheBlend
+is run. The explicit cache-miss case may use the evaluator's
+`--allow-cache-miss-no-transfer` escape hatch only when found, loaded, and
+rejected KV counters are all zero; it is an ordinary full-prefill fallback, not
+transfer evidence. These values are not high-cardinality Prometheus labels.
+Raw hidden-state/layer probes remain an additional live-debug surface, not a
+claimed artifact field.
 
 The moved-document capture harness also cross-checks each source/target
 interval against native `vllm:prompt_tokens` accounting and requires one

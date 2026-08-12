@@ -511,10 +511,12 @@ controlled-trial evidence boundary. A trial records one arm, cache state,
 reconciled request counters/timers, peak memory, recomputation ratio, a digest
 of its independent correctness artifact, and finite maximum and mean absolute
 numerical error from the deterministic logit/hidden-state comparison.
-CacheBlend arms also require a
-transfer-evidence digest; the correctness evaluator now requires that sidecar
-and binds it to the CacheBlend artifact, while one prompt-fixture digest binds
-all arms in a case. The ordinary `full_prefill` arm is additionally required to recompute
+CacheBlend arms with positive loaded KV require a transfer-evidence digest; the
+correctness evaluator requires that sidecar and binds it to the CacheBlend
+artifact. The explicit cache-miss arm may use the evaluator's
+`--allow-cache-miss-no-transfer` mode only with zero found/loaded/rejected KV
+counters. One prompt-fixture digest binds all arms in a case. The ordinary
+`full_prefill` arm is additionally required to recompute
 every prompt row with zero reusable-document/KV counters; it cannot silently
 become a cached baseline. Artifacts pin the model and software identity,
 Triton attention backend, hybrid-cache requirement, block size, context limit,

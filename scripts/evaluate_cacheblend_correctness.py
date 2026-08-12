@@ -10,6 +10,8 @@ import math
 from pathlib import Path
 
 from cacheblend_gpt_oss.correctness import (
+    CorrectnessArtifact,
+    CorrectnessCase,
     artifact_digest,
     evaluate_cacheblend_100pct,
     read_artifact,
@@ -24,6 +26,23 @@ def _number(value: float) -> float | str:
     return value if math.isfinite(value) else "inf"
 
 
+def _validate_no_transfer_cache_miss(cacheblend: CorrectnessArtifact) -> None:
+    """Accept no sidecar only for an explicit zero-transfer cache miss."""
+
+    connector = cacheblend.connector
+    if (
+        cacheblend.prompt.case is not CorrectnessCase.CACHE_MISS
+        or connector is None
+        or connector.kv_tokens_found != 0
+        or connector.kv_tokens_loaded != 0
+        or connector.kv_tokens_rejected != 0
+    ):
+        raise ValueError(
+            "no-transfer evaluation requires a CACHE_MISS artifact with zero "
+            "found, loaded, and rejected KV tokens"
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--reference", type=Path, required=True)
@@ -32,18 +51,37 @@ def main() -> int:
     parser.add_argument(
         "--transfer-evidence",
         type=Path,
-        required=True,
-        help="required all-layer transfer sidecar bound into the verdict",
+        help="all-layer transfer sidecar bound into the verdict",
+    )
+    parser.add_argument(
+        "--allow-cache-miss-no-transfer",
+        action="store_true",
+        help=(
+            "allow the explicit cache-miss case to be judged without a "
+            "transfer sidecar when all transfer counters are zero"
+        ),
     )
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
+    if args.transfer_evidence is None and not args.allow_cache_miss_no_transfer:
+        parser.error(
+            "--transfer-evidence is required unless "
+            "--allow-cache-miss-no-transfer is set"
+        )
     if args.output is not None and args.output.exists():
         raise FileExistsError("correctness verdict output already exists")
 
     reference = read_artifact(args.reference)
     cacheblend = read_artifact(args.cacheblend)
-    transfer = read_transfer_evidence(args.transfer_evidence)
-    validate_transfer_evidence_binding(cacheblend, transfer)
+    transfer = None
+    if args.transfer_evidence is not None:
+        transfer = read_transfer_evidence(args.transfer_evidence)
+        validate_transfer_evidence_binding(cacheblend, transfer)
+    else:
+        try:
+            _validate_no_transfer_cache_miss(cacheblend)
+        except ValueError as exc:
+            parser.error(str(exc))
     verdict = evaluate_cacheblend_100pct(
         reference,
         cacheblend,
@@ -64,11 +102,14 @@ def main() -> int:
         "negative_infinity_values": comparison.negative_infinity_values,
         "sampled_token_agreement": comparison.sampled_token_agreement,
         "top_token_agreement": comparison.top_token_agreement,
-        "transfer_evidence_digest": transfer_evidence_digest(transfer),
-        "transfer_evidence_bound": True,
-        "transfer_all_layers_loaded_and_overwritten": (
-            transfer.all_layers_loaded_and_overwritten
+        "transfer_evidence_digest": (
+            None if transfer is None else transfer_evidence_digest(transfer)
         ),
+        "transfer_evidence_bound": transfer is not None,
+        "transfer_all_layers_loaded_and_overwritten": (
+            False if transfer is None else transfer.all_layers_loaded_and_overwritten
+        ),
+        "explicit_cache_miss_without_transfer": transfer is None,
     }
     rendered = json.dumps(report, allow_nan=False, indent=2, sort_keys=True) + "\n"
     if args.output is not None:

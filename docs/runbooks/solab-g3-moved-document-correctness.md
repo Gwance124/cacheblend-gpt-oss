@@ -327,7 +327,11 @@ done
 With the CacheBlend server and a clean sidecar state appropriate to the case,
 repeat the same loop with `--mode cacheblend_100pct` and output names
 `${CASE}-cacheblend.json`; then evaluate each pair with its own frozen
-tolerance. The expected transfer evidence is:
+tolerance. Supply `--transfer-evidence` for every case with positive loaded KV.
+For the explicit cache miss, omit that file only with
+`--allow-cache-miss-no-transfer`; the evaluator then requires zero found,
+loaded, and rejected KV counters before comparing the ordinary full-prefill
+fallback. The expected transfer evidence is:
 
 | Case | Reusable segments | Expected loaded tokens | Position relation |
 |---|---:|---:|---|
@@ -338,9 +342,9 @@ tolerance. The expected transfer evidence is:
 
 Every case must still report full target-prompt recomputation and zero saved
 prefill. A cache miss is a successful ordinary-prefill fallback only when its
-artifact explicitly reports zero found/loaded tokens and the final distribution
-passes the corresponding full-prefill comparison. Do not use one case's
-tolerance or sidecar evidence to judge another case.
+artifact explicitly reports zero found/loaded/rejected tokens and the final
+distribution passes the corresponding full-prefill comparison. Do not use one
+case's tolerance or sidecar evidence to judge another case.
 
 ## Stop/go decision
 
