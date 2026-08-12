@@ -227,11 +227,15 @@ The capture command first sends the 256-token source document and waits for its
 complete store counter before issuing the target. It then sends a 280-token
 target where the exact document starts at position 17. It refuses to write a
 CacheBlend artifact unless the target interval contains exactly one connector
-request, all 256 reusable tokens were loaded, all 280 prompt tokens were
-recomputed, and saved prefill remained zero. This store-counter wait prevents
-request completion from racing the source sidecar/LMCache publication; the
-capture also reconciles each request's eligible/completed chunk count and
-requires zero store fallbacks.
+request, the native vLLM prompt-token counter advances by exactly the expected
+source and target lengths, each target timing histogram records one observation,
+all 256 reusable tokens were loaded, all 280 prompt tokens were recomputed, and
+saved prefill remained zero. This store-counter wait prevents request
+completion from racing the source sidecar/LMCache publication; the capture also
+reconciles each request's eligible/completed chunk count and requires zero store
+fallbacks. Native prompt/timing names are taken from the pinned
+[`PrometheusStatLogger`](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/v1/metrics/loggers.py#L580-L889),
+and TTFT is never estimated from client wall time.
 
 ```bash
 .venv/bin/python scripts/capture_moved_document.py \

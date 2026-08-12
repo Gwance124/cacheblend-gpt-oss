@@ -5,9 +5,12 @@ import pytest
 from cacheblend_gpt_oss.correctness import (
     VllmTimingSnapshot,
     VllmTimingSummary,
+    has_vllm_prompt_metric_surface,
     has_vllm_timing_metric_surface,
+    parse_vllm_prompt_counter_snapshot,
     parse_vllm_timing_snapshot,
     require_vllm_timing_delta,
+    vllm_prompt_counter_delta,
     vllm_timing_snapshot_delta,
 )
 
@@ -53,6 +56,33 @@ def test_pinned_timing_histograms_are_aggregated_without_labels() -> None:
     assert snapshot.as_dict()["decode_latency_seconds"]["sum_seconds"] == pytest.approx(
         3.4
     )
+
+
+def test_native_prompt_counter_is_aggregated_and_delta_checked() -> None:
+    before = parse_vllm_prompt_counter_snapshot(
+        'vllm:prompt_tokens{engine="0"} 11\n'
+        'vllm:prompt_tokens{engine="1"} 4\n'
+    )
+    after = parse_vllm_prompt_counter_snapshot(
+        'vllm:prompt_tokens{engine="0"} 291\n'
+        'vllm:prompt_tokens{engine="1"} 4\n'
+    )
+
+    assert has_vllm_prompt_metric_surface(
+        'vllm:prompt_tokens{engine="0"} 11\n'
+    )
+    assert vllm_prompt_counter_delta(before, after) == 280
+
+
+def test_native_prompt_counter_rejects_missing_or_backwards_intervals() -> None:
+    assert not has_vllm_prompt_metric_surface("vllm:num_requests_running 0\n")
+    empty = parse_vllm_prompt_counter_snapshot("")
+    assert empty == {"prompt_tokens": 0}
+    with pytest.raises(ValueError, match="moved backwards"):
+        vllm_prompt_counter_delta(
+            {"prompt_tokens": 10},
+            {"prompt_tokens": 9},
+        )
 
 
 def test_timing_delta_and_complete_request_gate() -> None:

@@ -10,6 +10,10 @@ https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666
 Pinned completions accept integer token prompts and token-ID logprob output:
 https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/entrypoints/openai/completion/protocol.py#L42-L60
 https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/entrypoints/openai/completion/protocol.py#L126-L143
+
+The native prompt-token and timing checks use the pinned vLLM Prometheus
+logger's ``prompt_tokens`` counter and request timing histograms:
+https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/v1/metrics/loggers.py#L580-L889
 """
 
 from __future__ import annotations
@@ -30,13 +34,21 @@ from cacheblend_gpt_oss.correctness import (
     CorrectnessCase,
     CorrectnessRunMode,
     CorrectnessRuntimeIdentity,
+    VllmTimingSnapshot,
     build_correctness_fixture,
     connector_evidence_from_snapshots,
     connector_store_counter_delta,
     has_connector_metric_surface,
+    has_vllm_prompt_metric_surface,
+    has_vllm_timing_metric_surface,
     parse_completion_distribution,
     parse_connector_counter_snapshot,
     parse_connector_store_counter_snapshot,
+    parse_vllm_prompt_counter_snapshot,
+    parse_vllm_timing_snapshot,
+    require_vllm_timing_delta,
+    vllm_prompt_counter_delta,
+    vllm_timing_snapshot_delta,
     write_artifact,
 )
 from cacheblend_gpt_oss.storage.lmcache_types import LMCACHE_CHUNK_SIZE
@@ -153,7 +165,7 @@ def _wait_for_request_counter(
     wait_seconds: float,
     *,
     minimum_store_tokens: int | None = None,
-) -> tuple[dict[str, int], dict[str, int]]:
+) -> tuple[dict[str, int], dict[str, int], str]:
     if wait_seconds <= 0:
         raise ValueError("metric wait must be positive")
     deadline = time.monotonic() + wait_seconds
@@ -168,12 +180,32 @@ def _wait_for_request_counter(
                 or stores["store_tokens_completed"] >= minimum_store_tokens
             )
         ):
-            return snapshot, stores
+            return snapshot, stores, metrics
         if time.monotonic() >= deadline:
             raise TimeoutError(
                 "connector request/store metrics did not reach the expected "
                 "milestone"
             )
+        time.sleep(0.25)
+
+
+def _wait_for_prompt_counter(
+    client: LocalVllmClient,
+    minimum: int,
+    wait_seconds: float,
+) -> tuple[dict[str, int], str]:
+    """Wait for one native vLLM prompt-token counter milestone."""
+
+    if wait_seconds <= 0:
+        raise ValueError("metric wait must be positive")
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        metrics = client.get_text("/metrics")
+        snapshot = parse_vllm_prompt_counter_snapshot(metrics)
+        if snapshot["prompt_tokens"] >= minimum:
+            return snapshot, metrics
+        if time.monotonic() >= deadline:
+            raise TimeoutError("vLLM prompt-token metrics did not reach the expected")
         time.sleep(0.25)
 
 
@@ -207,11 +239,19 @@ def main() -> int:
     _require_served_model(client.get_json("/v1/models"))
     fixture = build_correctness_fixture(CorrectnessCase(args.case))
     connector = None
+    target_prompt_tokens_processed: int | None = None
+    target_timing_delta: VllmTimingSnapshot | None = None
     if mode is CorrectnessRunMode.CACHEBLEND_100PCT:
         initial_metrics = client.get_text("/metrics")
         _require_connector_metric_surface(initial_metrics, expected=True)
+        if not has_vllm_prompt_metric_surface(initial_metrics):
+            raise ValueError("pinned vLLM prompt metrics are not present")
+        if not has_vllm_timing_metric_surface(initial_metrics):
+            raise ValueError("pinned vLLM timing metrics are not present")
         initial = parse_connector_counter_snapshot(initial_metrics)
         initial_store = parse_connector_store_counter_snapshot(initial_metrics)
+        initial_prompt = parse_vllm_prompt_counter_snapshot(initial_metrics)
+        initial_timing = parse_vllm_timing_snapshot(initial_metrics)
         source_store_tokens = (
             len(fixture.source_prompt_token_ids) // LMCACHE_CHUNK_SIZE
         ) * LMCACHE_CHUNK_SIZE
@@ -222,28 +262,52 @@ def main() -> int:
             "/v1/completions",
             _completion_payload(fixture.source_prompt_token_ids, full=False),
         )
-        after_source, after_source_store = _wait_for_request_counter(
-            client,
-            initial["requests"] + 1,
-            args.metric_wait_seconds,
-            minimum_store_tokens=(
-                initial_store["store_tokens_completed"] + source_store_tokens
-            ),
+        after_source, after_source_store, after_source_metrics = (
+            _wait_for_request_counter(
+                client,
+                initial["requests"] + 1,
+                args.metric_wait_seconds,
+                minimum_store_tokens=(
+                    initial_store["store_tokens_completed"] + source_store_tokens
+                ),
+            )
         )
         target_response = client.post_json(
             "/v1/completions",
             _completion_payload(fixture.target_prompt_token_ids, full=True),
         )
-        after_target, after_target_store = _wait_for_request_counter(
-            client,
-            after_source["requests"] + 1,
-            args.metric_wait_seconds,
-            minimum_store_tokens=(
-                initial_store["store_tokens_completed"]
-                + source_store_tokens
-                + target_store_tokens
-            ),
+        after_target, after_target_store, after_target_metrics = (
+            _wait_for_request_counter(
+                client,
+                after_source["requests"] + 1,
+                args.metric_wait_seconds,
+                minimum_store_tokens=(
+                    initial_store["store_tokens_completed"]
+                    + source_store_tokens
+                    + target_store_tokens
+                ),
+            )
         )
+        source_prompt = parse_vllm_prompt_counter_snapshot(after_source_metrics)
+        target_prompt = parse_vllm_prompt_counter_snapshot(after_target_metrics)
+        source_prompt_delta = vllm_prompt_counter_delta(initial_prompt, source_prompt)
+        target_prompt_tokens_processed = vllm_prompt_counter_delta(
+            source_prompt, target_prompt
+        )
+        if source_prompt_delta != len(fixture.source_prompt_token_ids):
+            raise ValueError("source native prompt-token delta does not match fixture")
+        if target_prompt_tokens_processed != len(fixture.target_prompt_token_ids):
+            raise ValueError("target native prompt-token delta does not match fixture")
+        source_timing = vllm_timing_snapshot_delta(
+            initial_timing,
+            parse_vllm_timing_snapshot(after_source_metrics),
+        )
+        require_vllm_timing_delta(source_timing, expected_requests=1)
+        target_timing_delta = vllm_timing_snapshot_delta(
+            parse_vllm_timing_snapshot(after_source_metrics),
+            parse_vllm_timing_snapshot(after_target_metrics),
+        )
+        require_vllm_timing_delta(target_timing_delta, expected_requests=1)
         source_store_delta = connector_store_counter_delta(
             initial_store, after_source_store
         )
@@ -264,11 +328,33 @@ def main() -> int:
                 )
         connector = connector_evidence_from_snapshots(after_source, after_target)
     else:
-        _require_connector_metric_surface(client.get_text("/metrics"), expected=False)
+        initial_metrics = client.get_text("/metrics")
+        _require_connector_metric_surface(initial_metrics, expected=False)
+        if not has_vllm_prompt_metric_surface(initial_metrics):
+            raise ValueError("pinned vLLM prompt metrics are not present")
+        if not has_vllm_timing_metric_surface(initial_metrics):
+            raise ValueError("pinned vLLM timing metrics are not present")
+        initial_prompt = parse_vllm_prompt_counter_snapshot(initial_metrics)
+        initial_timing = parse_vllm_timing_snapshot(initial_metrics)
         target_response = client.post_json(
             "/v1/completions",
             _completion_payload(fixture.target_prompt_token_ids, full=True),
         )
+        after_prompt, after_metrics = _wait_for_prompt_counter(
+            client,
+            initial_prompt["prompt_tokens"] + len(fixture.target_prompt_token_ids),
+            args.metric_wait_seconds,
+        )
+        target_prompt_tokens_processed = vllm_prompt_counter_delta(
+            initial_prompt, after_prompt
+        )
+        if target_prompt_tokens_processed != len(fixture.target_prompt_token_ids):
+            raise ValueError("target native prompt-token delta does not match fixture")
+        target_timing_delta = vllm_timing_snapshot_delta(
+            initial_timing,
+            parse_vllm_timing_snapshot(after_metrics),
+        )
+        require_vllm_timing_delta(target_timing_delta, expected_requests=1)
     artifact = CorrectnessArtifact(
         schema_version=ARTIFACT_SCHEMA_VERSION,
         run_mode=mode,
@@ -298,6 +384,12 @@ def main() -> int:
                             artifact.connector.prefill_tokens_avoided
                         ),
                     }
+                ),
+                "native_prompt_tokens_processed": target_prompt_tokens_processed,
+                "vllm_timing_delta": (
+                    None
+                    if target_timing_delta is None
+                    else target_timing_delta.as_dict()
                 ),
             },
             sort_keys=True,

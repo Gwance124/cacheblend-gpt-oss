@@ -41,6 +41,9 @@ _STORE_COUNTER_METRICS = {
     "store_tokens_completed": "vllm:cacheblend_store_tokens_completed_total",
     "store_fallbacks": "vllm:cacheblend_store_fallbacks_total",
 }
+_VLLM_PROMPT_COUNTER_METRICS = {
+    "prompt_tokens": "vllm:prompt_tokens",
+}
 _VLLM_TIMING_METRICS = {
     "ttft_seconds": "vllm:time_to_first_token_seconds",
     "end_to_end_latency_seconds": "vllm:e2e_request_latency_seconds",
@@ -179,6 +182,50 @@ def parse_connector_store_counter_snapshot(text: str) -> dict[str, int]:
     """Parse store-only counters used to gate source-cache persistence."""
 
     return _parse_counter_snapshot(text, _STORE_COUNTER_METRICS)
+
+
+def has_vllm_prompt_metric_surface(text: str) -> bool:
+    """Return whether the pinned native prompt-token counter is advertised."""
+
+    if not isinstance(text, str):
+        raise TypeError("Prometheus snapshot must be text")
+    names: set[str] = set()
+    for line in text.splitlines():
+        parts = line.strip().split()
+        if not parts or parts[0].startswith("#"):
+            continue
+        names.add(parts[0].split("{", 1)[0])
+    return _VLLM_PROMPT_COUNTER_METRICS["prompt_tokens"] in names
+
+
+def parse_vllm_prompt_counter_snapshot(text: str) -> dict[str, int]:
+    """Parse vLLM's aggregate prompt-token counter without retaining labels."""
+
+    return _parse_counter_snapshot(text, _VLLM_PROMPT_COUNTER_METRICS)
+
+
+def vllm_prompt_counter_delta(
+    before: Mapping[str, int],
+    after: Mapping[str, int],
+) -> int:
+    """Return the monotonic native prompt-token interval."""
+
+    if set(before) != set(_VLLM_PROMPT_COUNTER_METRICS) or set(after) != set(
+        _VLLM_PROMPT_COUNTER_METRICS
+    ):
+        raise ValueError("vLLM prompt counter snapshot schema mismatch")
+    old_value = before["prompt_tokens"]
+    new_value = after["prompt_tokens"]
+    if (
+        isinstance(old_value, bool)
+        or not isinstance(old_value, int)
+        or isinstance(new_value, bool)
+        or not isinstance(new_value, int)
+        or old_value < 0
+        or new_value < old_value
+    ):
+        raise ValueError("vLLM prompt counter is invalid or moved backwards")
+    return new_value - old_value
 
 
 def has_vllm_timing_metric_surface(text: str) -> bool:
@@ -413,11 +460,14 @@ __all__ = [
     "connector_evidence_from_snapshots",
     "connector_store_counter_delta",
     "has_connector_metric_surface",
+    "has_vllm_prompt_metric_surface",
     "has_vllm_timing_metric_surface",
     "parse_completion_distribution",
     "parse_connector_counter_snapshot",
     "parse_connector_store_counter_snapshot",
+    "parse_vllm_prompt_counter_snapshot",
     "parse_vllm_timing_snapshot",
     "require_vllm_timing_delta",
+    "vllm_prompt_counter_delta",
     "vllm_timing_snapshot_delta",
 ]
