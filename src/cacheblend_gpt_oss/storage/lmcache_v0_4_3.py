@@ -454,6 +454,10 @@ class LmcacheBlendTransport:
                     raise LmcacheProtocolError(
                         "candidate source range is not one complete chunk"
                     )
+                if len(target_range) != self._config.chunk_size:
+                    raise LmcacheProtocolError(
+                        "candidate target range is not one complete chunk"
+                    )
                 if target_range.end > len(tokens):
                     raise LmcacheProtocolError(
                         "candidate target range exceeds the query tokens"

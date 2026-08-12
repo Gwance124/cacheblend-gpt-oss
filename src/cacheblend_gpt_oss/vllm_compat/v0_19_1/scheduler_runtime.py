@@ -672,6 +672,20 @@ class SchedulerLookupRuntime:
                 SchedulerLookupStatus.FATAL_PROTOCOL_DRIFT,
                 _empty_lookup_plan(),
             )
+        # Blend V2's matcher is configured for complete 256-token chunks.  The
+        # transport validates this boundary, but keep the scheduler boundary
+        # independent so an injected or future transport cannot turn a
+        # short/partial range into a transfer-ready handoff.
+        if any(
+            len(candidate.source_relative_range) != LMCACHE_CHUNK_SIZE
+            or len(candidate.target_range) != LMCACHE_CHUNK_SIZE
+            for candidate in candidates
+        ):
+            self._mark_fatal(SchedulerLookupStatus.FATAL_PROTOCOL_DRIFT)
+            return (
+                SchedulerLookupStatus.FATAL_PROTOCOL_DRIFT,
+                _empty_lookup_plan(),
+            )
         if len(candidates) > query_window_count:
             self._mark_fatal(SchedulerLookupStatus.FATAL_PROTOCOL_DRIFT)
             return (

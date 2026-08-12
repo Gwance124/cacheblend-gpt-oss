@@ -579,6 +579,7 @@ def test_lookup_returns_untrusted_candidates_and_rankless_key() -> None:
     [
         FakeMatch(0, 128, 0, 128, b"h" * 32),
         FakeMatch(0, 256, -1, 255, b"h" * 32),
+        FakeMatch(0, 256, 0, 128, b"h" * 32),
         FakeMatch(0, 256, 300, 556, b"h" * 32),
         FakeMatch(0, 256, 0, 256, b"short"),
     ],

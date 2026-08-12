@@ -552,6 +552,28 @@ def test_malformed_or_impossible_candidate_response_is_fatal(
     assert runtime.state is SchedulerRuntimeState.FATAL
 
 
+def test_partial_chunk_candidate_is_fatal_before_sidecar_lookup() -> None:
+    config = _transfer_config()
+    prompt = tuple(range(256))
+    candidate = LmcacheCandidate(
+        source_relative_range=TokenRange(0, 128),
+        target_range=TokenRange(0, 128),
+        storage_hash=b"p" * 32,
+        storage_model_name="wrong",
+        query_digest=query_digest(prompt),
+    )
+    transport = FakeCandidateTransport(
+        _transport_config(config), lambda _prompt: (candidate,)
+    )
+    lookup = LmcacheCandidateLookupCoordinator(InMemoryRecordIndex())
+    runtime = _runtime(config, transport, lookup)
+
+    metadata = runtime.lookup(_request(prompt))
+
+    assert metadata.status is SchedulerLookupStatus.FATAL_PROTOCOL_DRIFT
+    assert runtime.state is SchedulerRuntimeState.FATAL
+
+
 def test_duplicate_lookup_and_one_step_preemption_are_idempotent() -> None:
     runtime, transport, prompt = _hit_runtime()
     request = _request(prompt)
