@@ -448,6 +448,9 @@ At the request boundary, `found == loaded + rejected`, and
 `effective_saved_prefill_fraction == 0` whenever recomputation is 100%.
 Violating these invariants fails the test run. The first live numerical gate is
 documented in `docs/runbooks/solab-g3-moved-document-correctness.md`.
+The recommended evaluator accepts the transfer sidecar directly, binds it to
+the candidate artifact, and includes its digest and all-layer status in the
+returned verdict.
 
 ## External RAG interface
 

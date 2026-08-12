@@ -244,6 +244,7 @@ were recomputed, and saved prefill remained zero.
   --reference "$CACHEBLEND_RUN_DIR/full-prefill-reference.json" \
   --cacheblend "$CACHEBLEND_RUN_DIR/cacheblend-100pct.json" \
   --tolerance "$CACHEBLEND_RUN_DIR/frozen-bf16-tolerance.json" \
+  --transfer-evidence "$CACHEBLEND_RUN_DIR/transfer-evidence.json" \
   --output "$CACHEBLEND_RUN_DIR/cacheblend-verdict.json" \
   | tee "$CACHEBLEND_RUN_DIR/cacheblend-verdict.txt"
 
