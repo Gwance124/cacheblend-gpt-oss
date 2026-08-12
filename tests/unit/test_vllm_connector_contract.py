@@ -16,6 +16,20 @@ import pytest
 
 from cacheblend_gpt_oss.connector.control_plane import RequestPlan
 from cacheblend_gpt_oss.planner import MatchPlan, TokenRange
+from cacheblend_gpt_oss.planner.fingerprint import SHA256_FINGERPRINTER
+from cacheblend_gpt_oss.planner.matching import VerifiedMatch
+from cacheblend_gpt_oss.planner.models import (
+    CacheNamespace,
+    CacheRecord,
+    CandidateMatch,
+    TokenSegment,
+)
+from cacheblend_gpt_oss.storage.lmcache_types import (
+    LMCACHE_CACHE_KEY_PREFIX,
+    LmcacheCandidate,
+    VerifiedLmcacheCandidate,
+    query_digest,
+)
 from cacheblend_gpt_oss.storage.lookup import (
     LmcacheLookupCounters,
     LmcacheLookupPlan,
@@ -540,30 +554,82 @@ def _enable_transfer(
     }
 
 
+def _verified_transfer_candidate(
+    prompt: tuple[int, ...], namespace: CacheNamespace
+) -> VerifiedLmcacheCandidate:
+    """Build one exact candidate whose cached document moved from position 1024."""
+
+    target_range = TokenRange(0, len(prompt))
+    target_segment = TokenSegment(target_range, prompt)
+    fingerprint = SHA256_FINGERPRINTER.fingerprint(namespace, prompt)
+    storage_hash = bytes([17]) * 32
+    record = CacheRecord(
+        namespace=namespace,
+        fingerprint=fingerprint,
+        token_ids=prompt,
+        source_range=TokenRange(1024, 1024 + len(prompt)),
+        cache_key=LMCACHE_CACHE_KEY_PREFIX + storage_hash.hex(),
+    )
+    match = VerifiedMatch(
+        CandidateMatch(target_segment, fingerprint, record)
+    )
+    raw = LmcacheCandidate(
+        source_relative_range=TokenRange(0, len(prompt)),
+        target_range=target_range,
+        storage_hash=storage_hash,
+        storage_model_name="fake-storage-namespace",
+        query_digest=query_digest(prompt),
+    )
+    return VerifiedLmcacheCandidate.bind(
+        raw, match, expected_namespace=namespace
+    )
+
+
 class FakeSchedulerLookupRuntime:
-    def __init__(self) -> None:
+    def __init__(
+        self, verified_candidate: VerifiedLmcacheCandidate | None = None
+    ) -> None:
         self.requests: list[object] = []
         self.discards: list[str] = []
+        self.verified_candidate = verified_candidate
 
     def lookup(self, request: Any) -> SchedulerLookupMetadata:
         self.requests.append(request)
         request_id = request.request_id
         prompt = request.prompt_token_ids
         preemptions = request.preemption_count
-        plan = RequestPlan(request_id, len(prompt), (), MatchPlan((), (), 0))
-        empty_lookup = LmcacheLookupPlan(
-            (), (), LmcacheLookupCounters(0, 0, 0, 0, 0, 0, 0, 0)
+        candidate = (
+            self.verified_candidate
+            if self.verified_candidate is not None and len(prompt) == 256
+            else None
         )
-        windows = (
-            (TokenRange(0, 256),) if len(prompt) == 256 else ()
+        if candidate is None:
+            matches: tuple[VerifiedMatch, ...] = ()
+            lookup_plan = LmcacheLookupPlan(
+                (), (), LmcacheLookupCounters(0, 0, 0, 0, 0, 0, 0, 0)
+            )
+            status = SchedulerLookupStatus.FULL_PREFILL_MISS
+        else:
+            matches = (candidate.match,)
+            lookup_plan = LmcacheLookupPlan(
+                (candidate,), (), LmcacheLookupCounters(1, 256, 1, 256, 1, 256, 0, 0)
+            )
+            status = SchedulerLookupStatus.TRANSFER_READY
+        segments = tuple(match.target_segment for match in matches)
+        plan = RequestPlan(
+            request_id,
+            len(prompt),
+            segments,
+            MatchPlan(matches, (), sum(len(segment) for segment in segments)),
         )
+        windows = (TokenRange(0, 256),) if len(prompt) == 256 else ()
         return SchedulerLookupMetadata(
             schema_version=1,
             request_plan=plan,
             prompt_token_ids=prompt,
             query_windows=windows,
-            lookup_plan=empty_lookup,
-            status=SchedulerLookupStatus.FULL_PREFILL_MISS,
+            lookup_plan=lookup_plan,
+            status=status,
             preemption_count=preemptions,
             allocation_generation=preemptions,
         )
@@ -573,8 +639,10 @@ class FakeSchedulerLookupRuntime:
 
 
 class FakeSchedulerResources:
-    def __init__(self) -> None:
-        self.runtime = FakeSchedulerLookupRuntime()
+    def __init__(
+        self, verified_candidate: VerifiedLmcacheCandidate | None = None
+    ) -> None:
+        self.runtime = FakeSchedulerLookupRuntime(verified_candidate)
         self.close_calls = 0
 
     def close(self) -> None:
@@ -590,15 +658,23 @@ class FakeTransferRuntime:
         self, metadata: object, adapted_blocks: object
     ) -> PreForwardOutcome:
         self.before_calls.append((metadata, adapted_blocks))
+        transfer_eligible = bool(getattr(metadata, "transfer_eligible", False))
+        candidate_count = len(getattr(metadata, "verified_candidates", ()))
         return PreForwardOutcome(
             metadata=metadata,  # type: ignore[arg-type]
-            state=TransferAttemptState.NOT_ELIGIBLE,
+            state=(
+                TransferAttemptState.SUCCEEDED
+                if transfer_eligible
+                else TransferAttemptState.NOT_ELIGIBLE
+            ),
             failure_code=None,
-            loaded_candidate_indexes=(),
+            loaded_candidate_indexes=tuple(range(candidate_count))
+            if transfer_eligible
+            else (),
             rejected_candidate_indexes=(),
-            loaded_kv_tokens=0,
+            loaded_kv_tokens=256 if transfer_eligible else 0,
             tokens_to_recompute=256,
-            position_correction_latency_seconds=0.25,
+            position_correction_latency_seconds=(0.25 if transfer_eligible else 0.0),
         )
 
     def mark_full_prefill_complete(
@@ -749,10 +825,96 @@ def test_transfer_mode_wires_full_recompute_scheduler_and_worker_hooks(
     assert reduced["lookup_latency_seconds"] >= 0
     assert reduced["transfer_latency_seconds"] >= 0
     assert reduced["position_correction_latency_seconds"] >= 0
-    assert reduced["position_correction_latency_seconds"] == pytest.approx(0.25)
     assert reduced["selective_recomputation_latency_seconds"] >= 0
     assert reduced["store_latency_seconds"] >= 0
     assert worker.get_kv_connector_stats() is None
+
+
+def test_transfer_mode_loads_verified_moved_candidate_before_full_recompute(
+    loaded_connector: tuple[ModuleType, SimpleNamespace],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module, fake = loaded_connector
+    kv_cache_config = _kv_cache_config()
+    scheduler_config = _config()
+    worker_config = _config()
+    _enable_transfer(scheduler_config, kv_cache_config)
+    _enable_transfer(worker_config, kv_cache_config)
+    transfer_config = module.parse_connector_extra_config(
+        scheduler_config.kv_transfer_config.kv_connector_extra_config
+    )
+    candidate = _verified_transfer_candidate(
+        tuple(range(256)), transfer_config.namespace
+    )
+    scheduler_resources = FakeSchedulerResources(candidate)
+    worker_resources = FakeWorkerResources()
+
+    monkeypatch.setattr(
+        module,
+        "create_scheduler_runtime_resources",
+        lambda _config: scheduler_resources,
+    )
+    monkeypatch.setattr(
+        module,
+        "create_worker_runtime_resources",
+        lambda *_args, **_kwargs: worker_resources,
+    )
+
+    scheduler = module.GptOssCacheBlendConnector(
+        scheduler_config, fake.role.SCHEDULER, kv_cache_config
+    )
+    request = SimpleNamespace(
+        request_id="moved-transfer-request",
+        prompt_token_ids=list(range(256)),
+        prompt_embeds=None,
+        num_prompt_tokens=256,
+        num_preemptions=0,
+        num_external_computed_tokens=0,
+    )
+    group_ids = (list(range(16)), list(range(16, 32)))
+    blocks = SimpleNamespace(
+        get_block_ids=lambda: group_ids,
+        blocks=tuple(
+            [SimpleNamespace(block_id=value, is_null=False) for value in group]
+            for group in group_ids
+        ),
+    )
+
+    assert scheduler.get_num_new_matched_tokens(request, 0) == (0, False)
+    scheduler.update_state_after_alloc(request, blocks, 0)
+    metadata = scheduler.build_connector_meta(
+        SimpleNamespace(num_scheduled_tokens={request.request_id: 256})
+    )
+    assert metadata.transfers[0].transfer_eligible
+    assert metadata.transfers[0].verified_candidates == (candidate,)
+
+    worker = module.GptOssCacheBlendConnector(
+        worker_config, fake.role.WORKER, kv_cache_config
+    )
+    caches = {
+        f"model.layers.{index}.attn.attn": SimpleNamespace(device="cuda:0")
+        for index in range(24)
+    }
+    worker.register_kv_caches(caches)
+    worker.bind_connector_metadata(metadata)
+    worker.start_load_kv(SimpleNamespace())
+    for layer_name, cache in caches.items():
+        worker.wait_for_layer_load(layer_name)
+        worker.save_kv_layer(layer_name, cache, object())
+    worker.wait_for_save()
+
+    stats = worker.get_kv_connector_stats()
+    assert stats is not None
+    reduced = stats.reduce()
+    assert reduced["kv_tokens_found"] == 256
+    assert reduced["kv_tokens_verified"] == 256
+    assert reduced["kv_tokens_loaded"] == 256
+    assert reduced["kv_tokens_rejected"] == 0
+    assert reduced["tokens_recomputed"] == 256
+    assert reduced["document_hit_fraction"] == 1.0
+    assert reduced["token_hit_fraction"] == 1.0
+    assert reduced["effective_saved_prefill_fraction"] == 0.0
+    assert reduced["position_correction_latency_seconds"] == pytest.approx(0.25)
 
     rebuilt = module.GptOssCacheBlendConnector.build_kv_connector_stats(
         stats.data
