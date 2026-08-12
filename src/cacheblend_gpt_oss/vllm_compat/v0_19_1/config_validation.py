@@ -328,9 +328,11 @@ def collect_transfer_100pct_config_issues(
     and executes ordinary (possibly chunked) full prefill without transfer.
 
     ``max_num_scheduled_tokens`` is the budget actually consumed by the pinned
-    V1 scheduler, while ``max_num_batched_tokens`` sizes runner buffers.  Both
-    must cover the configured staging capacity:
+    V1 scheduler when explicitly set; its public default is ``None``, in which
+    case the scheduler uses ``max_num_batched_tokens``.  The effective budget
+    and runner buffer must cover the configured staging capacity:
     https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/config/scheduler.py#L48-L63
+    https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/v1/core/sched/scheduler.py#L103-L110
 
     Eager mode disables both compilation and CUDA graphs in the finalized
     ``VllmConfig``.  That keeps the connector's Python load/save hooks visible
@@ -387,18 +389,34 @@ def collect_transfer_100pct_config_issues(
         if observed != expected:
             reject(f"transfer.scheduler.{field_name}", expected, observed)
 
-    for field_name in ("max_num_batched_tokens", "max_num_scheduled_tokens"):
-        observed = _get(scheduler, field_name)
-        if (
-            isinstance(observed, bool)
-            or not isinstance(observed, int)
-            or observed < staging_token_capacity
-        ):
-            reject(
-                f"transfer.scheduler.{field_name}",
-                f">={staging_token_capacity}",
-                observed,
-            )
+    max_num_batched_tokens = _get(scheduler, "max_num_batched_tokens")
+    if (
+        isinstance(max_num_batched_tokens, bool)
+        or not isinstance(max_num_batched_tokens, int)
+        or max_num_batched_tokens < staging_token_capacity
+    ):
+        reject(
+            "transfer.scheduler.max_num_batched_tokens",
+            f">={staging_token_capacity}",
+            max_num_batched_tokens,
+        )
+
+    configured_scheduled_tokens = _get(scheduler, "max_num_scheduled_tokens")
+    effective_scheduled_tokens = (
+        max_num_batched_tokens
+        if configured_scheduled_tokens is None
+        else configured_scheduled_tokens
+    )
+    if (
+        isinstance(effective_scheduled_tokens, bool)
+        or not isinstance(effective_scheduled_tokens, int)
+        or effective_scheduled_tokens < staging_token_capacity
+    ):
+        reject(
+            "transfer.scheduler.max_num_scheduled_tokens",
+            f"None or >={staging_token_capacity}",
+            configured_scheduled_tokens,
+        )
 
     return tuple(issues)
 

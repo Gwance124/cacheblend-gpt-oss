@@ -291,6 +291,34 @@ def test_transfer_100pct_rejects_unsafe_scheduler_or_dtype_configuration(
     assert expected_field in {issue.field for issue in error.value.issues}
 
 
+def test_transfer_100pct_accepts_pinned_scheduler_default_budget_fallback() -> None:
+    vllm_config, _ = _valid_config()
+    vllm_config.scheduler_config.max_num_scheduled_tokens = None
+
+    require_transfer_100pct_config(
+        vllm_config,
+        staging_token_capacity=4096,
+    )
+
+
+@pytest.mark.parametrize("invalid", [0, False, "4096"])
+def test_transfer_100pct_rejects_invalid_explicit_scheduled_budget(
+    invalid: object,
+) -> None:
+    vllm_config, _ = _valid_config()
+    vllm_config.scheduler_config.max_num_scheduled_tokens = invalid
+
+    with pytest.raises(UnsupportedPinnedConfigError) as error:
+        require_transfer_100pct_config(
+            vllm_config,
+            staging_token_capacity=4096,
+        )
+
+    assert "transfer.scheduler.max_num_scheduled_tokens" in {
+        issue.field for issue in error.value.issues
+    }
+
+
 @pytest.mark.parametrize("capacity", [0, -1, True, 1.0])
 def test_transfer_100pct_rejects_invalid_staging_capacity(capacity: object) -> None:
     vllm_config, _ = _valid_config()
