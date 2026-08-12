@@ -12,7 +12,9 @@ import pytest
 from cacheblend_gpt_oss.vllm_compat.v0_19_1.config_validation import (
     UnsupportedPinnedConfigError,
     collect_pinned_config_issues,
+    collect_transfer_100pct_config_issues,
     require_pinned_config,
+    require_transfer_100pct_config,
 )
 
 
@@ -56,6 +58,8 @@ def _valid_config() -> tuple[SimpleNamespace, SimpleNamespace]:
             hf_config=hf_config,
             disable_sliding_window=False,
             enable_prompt_embeds=False,
+            dtype="torch.bfloat16",
+            enforce_eager=True,
         ),
         parallel_config=SimpleNamespace(
             tensor_parallel_size=1,
@@ -68,11 +72,19 @@ def _valid_config() -> tuple[SimpleNamespace, SimpleNamespace]:
         ),
         scheduler_config=SimpleNamespace(
             disable_hybrid_kv_cache_manager=False,
+            max_num_seqs=1,
+            max_num_batched_tokens=4096,
+            max_num_scheduled_tokens=4096,
+            long_prefill_token_threshold=0,
+            async_scheduling=False,
+            scheduler_cls=None,
         ),
         cache_config=SimpleNamespace(
             block_size=16,
             kv_offloading_size=None,
             kv_sharing_fast_prefill=False,
+            enable_prefix_caching=False,
+            cache_dtype="auto",
         ),
         attention_config=SimpleNamespace(
             backend=SimpleNamespace(name="TRITON_ATTN")
@@ -192,3 +204,99 @@ def test_v2_runner_and_incomplete_hybrid_layout_are_both_reported() -> None:
     )
 
     assert {issue.field for issue in issues} >= {"runner.v2_enabled", "kv.layers"}
+
+
+def test_exact_transfer_100pct_scheduler_envelope_is_accepted() -> None:
+    vllm_config, _ = _valid_config()
+
+    assert (
+        collect_transfer_100pct_config_issues(
+            vllm_config,
+            staging_token_capacity=4096,
+        )
+        == ()
+    )
+    require_transfer_100pct_config(
+        vllm_config,
+        staging_token_capacity=4096,
+    )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_field"),
+    [
+        (
+            lambda config: setattr(config.model_config, "dtype", "torch.float16"),
+            "transfer.model.dtype",
+        ),
+        (
+            lambda config: setattr(config.model_config, "enforce_eager", False),
+            "transfer.model.enforce_eager",
+        ),
+        (
+            lambda config: setattr(config.cache_config, "enable_prefix_caching", True),
+            "transfer.cache.enable_prefix_caching",
+        ),
+        (
+            lambda config: setattr(config.cache_config, "cache_dtype", "fp8"),
+            "transfer.cache.cache_dtype",
+        ),
+        (
+            lambda config: setattr(config.scheduler_config, "max_num_seqs", 2),
+            "transfer.scheduler.max_num_seqs",
+        ),
+        (
+            lambda config: setattr(
+                config.scheduler_config, "long_prefill_token_threshold", 2048
+            ),
+            "transfer.scheduler.long_prefill_token_threshold",
+        ),
+        (
+            lambda config: setattr(config.scheduler_config, "async_scheduling", True),
+            "transfer.scheduler.async_scheduling",
+        ),
+        (
+            lambda config: setattr(
+                config.scheduler_config, "scheduler_cls", "custom.Scheduler"
+            ),
+            "transfer.scheduler.scheduler_cls",
+        ),
+        (
+            lambda config: setattr(
+                config.scheduler_config, "max_num_batched_tokens", 4095
+            ),
+            "transfer.scheduler.max_num_batched_tokens",
+        ),
+        (
+            lambda config: setattr(
+                config.scheduler_config, "max_num_scheduled_tokens", 4095
+            ),
+            "transfer.scheduler.max_num_scheduled_tokens",
+        ),
+    ],
+)
+def test_transfer_100pct_rejects_unsafe_scheduler_or_dtype_configuration(
+    mutation: Callable[[Any], None],
+    expected_field: str,
+) -> None:
+    vllm_config, _ = _valid_config()
+    mutation(vllm_config)
+
+    with pytest.raises(UnsupportedPinnedConfigError) as error:
+        require_transfer_100pct_config(
+            vllm_config,
+            staging_token_capacity=4096,
+        )
+
+    assert expected_field in {issue.field for issue in error.value.issues}
+
+
+@pytest.mark.parametrize("capacity", [0, -1, True, 1.0])
+def test_transfer_100pct_rejects_invalid_staging_capacity(capacity: object) -> None:
+    vllm_config, _ = _valid_config()
+
+    with pytest.raises(ValueError, match="positive integer"):
+        collect_transfer_100pct_config_issues(
+            vllm_config,
+            staging_token_capacity=capacity,  # type: ignore[arg-type]
+        )

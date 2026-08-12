@@ -312,9 +312,117 @@ def require_pinned_config(
         raise UnsupportedPinnedConfigError(issues)
 
 
+def collect_transfer_100pct_config_issues(
+    vllm_config: object,
+    *,
+    staging_token_capacity: int,
+) -> tuple[PinnedConfigIssue, ...]:
+    """Validate the stricter execution envelope for live KV transfer.
+
+    The control-flow connector may coexist with ordinary vLLM features because
+    it never reads or writes cache tensors.  The first live-transfer milestone
+    is intentionally narrower: exactly one request can execute at a time, a
+    prompt no larger than the staging capacity must fit in one scheduler step,
+    no local prefix may be skipped, and model execution remains eager.  Longer
+    prompts are still valid API requests, but the runtime marks them ineligible
+    and executes ordinary (possibly chunked) full prefill without transfer.
+
+    ``max_num_scheduled_tokens`` is the budget actually consumed by the pinned
+    V1 scheduler, while ``max_num_batched_tokens`` sizes runner buffers.  Both
+    must cover the configured staging capacity:
+    https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/config/scheduler.py#L48-L63
+
+    Eager mode disables both compilation and CUDA graphs in the finalized
+    ``VllmConfig``.  That keeps the connector's Python load/save hooks visible
+    during the initial correctness proof:
+    https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/config/vllm.py#L847-L853
+    """
+
+    if (
+        isinstance(staging_token_capacity, bool)
+        or not isinstance(staging_token_capacity, int)
+        or staging_token_capacity < 1
+    ):
+        raise ValueError("staging_token_capacity must be a positive integer")
+
+    issues: list[PinnedConfigIssue] = []
+
+    def reject(field: str, expected: object, observed: object) -> None:
+        issues.append(
+            PinnedConfigIssue(
+                field=field,
+                expected=_display(expected),
+                observed=_display(observed),
+            )
+        )
+
+    model = _get(vllm_config, "model_config")
+    scheduler = _get(vllm_config, "scheduler_config")
+    cache = _get(vllm_config, "cache_config")
+
+    model_dtype = _display(_get(model, "dtype"))
+    if model_dtype != "torch.bfloat16":
+        reject("transfer.model.dtype", "torch.bfloat16", model_dtype)
+    if _get(model, "enforce_eager") is not True:
+        reject("transfer.model.enforce_eager", True, _get(model, "enforce_eager"))
+
+    if _get(cache, "enable_prefix_caching") is not False:
+        reject(
+            "transfer.cache.enable_prefix_caching",
+            False,
+            _get(cache, "enable_prefix_caching"),
+        )
+    cache_dtype = _get(cache, "cache_dtype")
+    if cache_dtype not in {"auto", "bfloat16"}:
+        reject("transfer.cache.cache_dtype", "auto|bfloat16", cache_dtype)
+
+    exact_scheduler_values = (
+        ("max_num_seqs", 1),
+        ("long_prefill_token_threshold", 0),
+        ("async_scheduling", False),
+        ("scheduler_cls", None),
+    )
+    for field_name, expected in exact_scheduler_values:
+        observed = _get(scheduler, field_name)
+        if observed != expected:
+            reject(f"transfer.scheduler.{field_name}", expected, observed)
+
+    for field_name in ("max_num_batched_tokens", "max_num_scheduled_tokens"):
+        observed = _get(scheduler, field_name)
+        if (
+            isinstance(observed, bool)
+            or not isinstance(observed, int)
+            or observed < staging_token_capacity
+        ):
+            reject(
+                f"transfer.scheduler.{field_name}",
+                f">={staging_token_capacity}",
+                observed,
+            )
+
+    return tuple(issues)
+
+
+def require_transfer_100pct_config(
+    vllm_config: object,
+    *,
+    staging_token_capacity: int,
+) -> None:
+    """Reject startup outside the audited live-transfer scheduler envelope."""
+
+    issues = collect_transfer_100pct_config_issues(
+        vllm_config,
+        staging_token_capacity=staging_token_capacity,
+    )
+    if issues:
+        raise UnsupportedPinnedConfigError(issues)
+
+
 __all__ = [
     "PinnedConfigIssue",
     "UnsupportedPinnedConfigError",
     "collect_pinned_config_issues",
+    "collect_transfer_100pct_config_issues",
     "require_pinned_config",
+    "require_transfer_100pct_config",
 ]
