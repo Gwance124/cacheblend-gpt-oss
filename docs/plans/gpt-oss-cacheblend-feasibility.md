@@ -117,6 +117,16 @@ generic segmentation remain planner-level APIs. Candidates require namespace,
 cache-key, SHA-256, and exact-token verification. A token-hash object associated
 with multiple absolute K source positions is rejected as ambiguous.
 
+Admission is intentionally narrower than lookup in this milestone. The pinned
+LMCache `CB_STORE_PRE_COMPUTED` protocol accepts a compact sequence and one
+staging offset, hashes from compact position zero, and drops partial chunks, so
+the worker currently publishes only complete 256-token prefix chunks from the
+source prompt. A moved document can be found and loaded at any target offset,
+but an embedded document is not yet persisted independently of its source
+prompt prefix. Per-range gather/store admission is a later, separately gated
+milestone; no implementation should silently treat a lookup hit as proof that
+future embedded occurrences will be stored.
+
 Deliverables:
 
 - Define dependency-injected `Segmenter`, `CacheIndex`, `CacheTransport`, and

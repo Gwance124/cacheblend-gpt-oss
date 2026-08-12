@@ -201,6 +201,29 @@ The transport may be replaced by an in-memory fake or a local file fixture in
 CPU tests. That dependency injection is also the escape hatch if the pinned
 LMCache server protocol proves unsuitable.
 
+#### Current storage-admission boundary
+
+The first live transfer milestone deliberately has a narrower admission policy
+than its lookup planner. LMCache 0.4.3's pinned
+`CB_STORE_PRE_COMPUTED` handler receives one compact token sequence and one
+staging offset, computes complete-chunk hashes from compact position zero, and
+discards a partial final chunk. The worker therefore stores only complete
+256-token prefix chunks (`TokenRange(0, n)`) from a fully recomputed prompt.
+This is sufficient for the first source-document fixture, where the source
+prompt is exactly one or more reusable documents, and it is fail-closed for
+short or chunked-prefill requests.
+
+The lookup path is broader: rolling windows and absolute source ranges can
+identify a document at an arbitrary destination position. That does **not**
+mean an arbitrary document embedded in a larger source prompt is currently
+persisted as an independent LMCache record. The generic planner can represent
+such a segment, but wiring it into production admission requires a later
+per-range gather/store plan (including compact staging offsets, one or more
+LMCache store calls, absolute source-position sidecars, and atomic publication).
+Until that work is separately implemented and tested, the connector must not
+claim arbitrary embedded-document persistence or infer it from a successful
+lookup.
+
 ## Exact request lifecycle
 
 The connector follows the pinned vLLM path without mutating scheduler output:
