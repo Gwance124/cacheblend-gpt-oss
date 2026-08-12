@@ -159,6 +159,32 @@ def test_nested_counter_and_timing_tampering_is_rejected() -> None:
     with pytest.raises(ResponsesEvidenceError, match="invalid_connector_metrics"):
         responses_contract_evidence_from_dict(report)
 
+    report = _report()
+    connector = report["connector_counter_delta"]
+    assert isinstance(connector, dict)
+    connector["reusable_document_tokens_requested"] = 1
+    connector["kv_tokens_found"] = 2
+    connector["kv_tokens_loaded"] = 2
+    with pytest.raises(ResponsesEvidenceError, match="invalid_connector_metrics"):
+        responses_contract_evidence_from_dict(report)
+
+    report = _report()
+    connector = report["connector_counter_delta"]
+    assert isinstance(connector, dict)
+    connector["kv_tokens_found"] = 1
+    connector["kv_tokens_loaded"] = 2
+    connector["kv_tokens_rejected"] = 0
+    connector["reusable_document_tokens_requested"] = 2
+    with pytest.raises(ResponsesEvidenceError, match="invalid_connector_metrics"):
+        responses_contract_evidence_from_dict(report)
+
+    report = _report()
+    connector = report["connector_counter_delta"]
+    assert isinstance(connector, dict)
+    connector["reusable_document_tokens_requested"] = 812
+    with pytest.raises(ResponsesEvidenceError, match="invalid_connector_metrics"):
+        responses_contract_evidence_from_dict(report)
+
 
 def test_extra_keys_and_turn_structure_are_rejected() -> None:
     report = _report()

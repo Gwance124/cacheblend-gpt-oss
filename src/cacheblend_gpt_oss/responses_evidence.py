@@ -313,6 +313,8 @@ def _parse_connector(value: object) -> dict[str, int]:
         result["requests"] != 3
         or result["tokens_recomputed"] <= 0
         or result["prefill_tokens_avoided"] != 0
+        or result["kv_tokens_found"] > result["reusable_document_tokens_requested"]
+        or result["kv_tokens_loaded"] > result["kv_tokens_found"]
         or result["kv_tokens_found"]
         != result["kv_tokens_loaded"] + result["kv_tokens_rejected"]
     ):
@@ -425,6 +427,8 @@ def responses_contract_evidence_from_dict(data: object) -> ResponsesContractEvid
         expected_prompt_tokens=native_prompt,
     )
     if connector["tokens_recomputed"] != native_prompt:
+        _fail(ResponsesEvidenceErrorCode.INVALID_CONNECTOR_METRICS)
+    if connector["reusable_document_tokens_requested"] > native_prompt:
         _fail(ResponsesEvidenceErrorCode.INVALID_CONNECTOR_METRICS)
     native_prefill = _exact_mapping(
         root["native_prefill_work"],
