@@ -14,6 +14,9 @@ from cacheblend_gpt_oss.gpt_oss import (
     plan_token_scatter,
 )
 from cacheblend_gpt_oss.gpt_oss.selective import ForwardRowPlan
+from cacheblend_gpt_oss.gpt_oss.selective_attention import (
+    SelectiveAttentionBridge,
+)
 from cacheblend_gpt_oss.gpt_oss.selective_kv import (
     GptOssSelectiveKvSession,
     GptOssSelectiveKvUpdater,
@@ -470,3 +473,46 @@ def test_per_layer_session_late_failure_requires_request_discard() -> None:
             slot_mapping=mappings[bad],
         )
     assert error.value.code is SelectiveUpdateErrorCode.SESSION_INVALID_STATE
+
+
+def test_attention_bridge_drives_real_per_layer_session() -> None:
+    ops = FakeSelectiveOps()
+    keys, values, caches = _tensors()
+    plan = _selective_plan()
+    mappings = _slot_mappings(plan)
+    session = GptOssSelectiveKvSession(
+        GptOssSelectiveKvUpdater(ops),
+        plan=plan,
+    )
+    bridge = SelectiveAttentionBridge(session)
+    sink = object()
+    attention_layers: list[tuple[int, object]] = []
+
+    def attention(**kwargs: object) -> object:
+        layer_index = kwargs["layer_index"]
+        observed_sink = kwargs["sinks"]
+        assert isinstance(layer_index, int)
+        attention_layers.append((layer_index, observed_sink))
+        return layer_index
+
+    for layer_index in range(24):
+        name = _layer_name(layer_index)
+        assert (
+            bridge.run_layer(
+                layer_index=layer_index,
+                query=None,
+                key=keys[name],
+                value=values[name],
+                kv_cache=caches[name],
+                slot_mapping=mappings[name],
+                attn_metadata=None,
+                sinks=sink,
+                attention=attention,
+            )
+            == layer_index
+        )
+
+    receipt = bridge.finish()
+    assert [layer for layer, _ in attention_layers] == list(range(24))
+    assert all(observed_sink is sink for _, observed_sink in attention_layers)
+    assert receipt.recomputed_token_rows == plan.recompute_tokens
