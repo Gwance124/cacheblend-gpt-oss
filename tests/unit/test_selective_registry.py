@@ -210,6 +210,51 @@ def test_partial_registration_fails_closed_for_process_lifetime() -> None:
     assert fakes.models == []
 
 
+def test_non_custom_backend_token_is_rejected_before_registry_mutation() -> None:
+    fakes = FakeRegistries()
+    registrar = SelectiveExtensionRegistrar()
+
+    with pytest.raises(SelectiveRegistrationError) as error:
+        registrar.register(
+            _spec(),
+            model_register=fakes.model,
+            backend_register=fakes.backend,
+            backend_token="TRITON_ATTN",
+        )
+
+    assert error.value.code is SelectiveRegistrationErrorCode.INVALID_BACKEND_TOKEN
+    assert fakes.backends == []
+    assert fakes.models == []
+
+    receipt = registrar.register(
+        _spec(),
+        model_register=fakes.model,
+        backend_register=fakes.backend,
+        backend_token=CUSTOM_ATTENTION_BACKEND_NAME,
+    )
+    assert receipt.registered
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        type("FakeEnum", (), {"name": CUSTOM_ATTENTION_BACKEND_NAME})(),
+        type("FakeEnum", (), {"value": CUSTOM_ATTENTION_BACKEND_NAME})(),
+    ],
+)
+def test_enum_shaped_custom_token_is_accepted(token: object) -> None:
+    fakes = FakeRegistries()
+    receipt = SelectiveExtensionRegistrar().register(
+        _spec(),
+        model_register=fakes.model,
+        backend_register=fakes.backend,
+        backend_token=token,
+    )
+
+    assert receipt.registered
+    assert fakes.models == [(GPT_OSS_MODEL_ARCHITECTURE, _spec().model_class_path)]
+
+
 def test_all_true_prerequisites_without_bound_gpu_evidence_are_not_ready() -> None:
     prerequisites = SelectivePrerequisites(True, True, True, True)
     assert not prerequisites.ready

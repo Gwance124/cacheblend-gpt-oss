@@ -46,6 +46,7 @@ class SelectiveRegistrationErrorCode(str, Enum):
     INVALID_MODEL_ARCHITECTURE = "invalid_model_architecture"
     INVALID_MODEL_CLASS_PATH = "invalid_model_class_path"
     INVALID_BACKEND_CLASS_PATH = "invalid_backend_class_path"
+    INVALID_BACKEND_TOKEN = "invalid_backend_token"
     REGISTRATION_CONFLICT = "registration_conflict"
     PARTIAL_REGISTRATION = "partial_registration"
 
@@ -154,6 +155,22 @@ def _valid_backend_class_path(value: object) -> bool:
     return all(part.isidentifier() for part in value.split("."))
 
 
+def _is_custom_backend_token(value: object) -> bool:
+    """Accept only the pinned registry's ``CUSTOM`` selector.
+
+    The real vLLM value is an enum member, while CPU tests and dependency-
+    injected callers may use the stable string name.  Checking both the enum
+    name and value keeps this module free of a top-level vLLM import without
+    allowing an arbitrary backend selector to reach ``register_backend``.
+    """
+
+    if value == CUSTOM_ATTENTION_BACKEND_NAME:
+        return True
+    return getattr(value, "name", None) == CUSTOM_ATTENTION_BACKEND_NAME or getattr(
+        value, "value", None
+    ) == CUSTOM_ATTENTION_BACKEND_NAME
+
+
 @dataclass(frozen=True, slots=True)
 class SelectiveRegistrationSpec:
     """Class paths and proof required for one registration attempt."""
@@ -238,6 +255,13 @@ class SelectiveExtensionRegistrar:
                 already_registered=True,
             )
 
+        # Validate an injected selector before entering the partial-
+        # registration transaction.  A caller typo must not poison an
+        # otherwise unused registrar; only a failure after a registry call is
+        # treated as an irreversible partial registration.
+        if backend_token is not None and not _is_custom_backend_token(backend_token):
+            _fail(SelectiveRegistrationErrorCode.INVALID_BACKEND_TOKEN)
+
         try:
             if (
                 model_register is None
@@ -253,6 +277,8 @@ class SelectiveExtensionRegistrar:
             # selective model while CUSTOM is still unbound in this process.
             assert backend_register is not None
             assert backend_token is not None
+            if not _is_custom_backend_token(backend_token):
+                _fail(SelectiveRegistrationErrorCode.INVALID_BACKEND_TOKEN)
             backend_register(backend_token, spec.attention_backend_class_path)
             assert model_register is not None
             model_register(spec.model_architecture, spec.model_class_path)
