@@ -126,6 +126,10 @@ but an embedded document is not yet persisted independently of its source
 prompt prefix. Per-range gather/store admission is a later, separately gated
 milestone; no implementation should silently treat a lookup hit as proof that
 future embedded occurrences will be stored.
+The exact protocol and server behavior are pinned in
+[`protocols/blend.py`](https://github.com/LMCache/LMCache/blob/7f326118a2f1afc7801988dd02e3055bdf21ef6b/lmcache/v1/multiprocess/protocols/blend.py#L51-L66)
+and
+[`blend_server_v2.py`](https://github.com/LMCache/LMCache/blob/7f326118a2f1afc7801988dd02e3055bdf21ef6b/lmcache/v1/multiprocess/blend_server_v2.py#L534-L595).
 
 Deliverables:
 

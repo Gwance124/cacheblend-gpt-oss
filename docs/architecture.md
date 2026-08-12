@@ -209,6 +209,10 @@ than its lookup planner. LMCache 0.4.3's pinned
 staging offset, computes complete-chunk hashes from compact position zero, and
 discards a partial final chunk. The worker therefore stores only complete
 256-token prefix chunks (`TokenRange(0, n)`) from a fully recomputed prompt.
+These semantics are defined by the pinned
+[`CB_STORE_PRE_COMPUTED` wire schema](https://github.com/LMCache/LMCache/blob/7f326118a2f1afc7801988dd02e3055bdf21ef6b/lmcache/v1/multiprocess/protocols/blend.py#L51-L66)
+and
+[`BlendEngineV2.cb_store_pre_computed`](https://github.com/LMCache/LMCache/blob/7f326118a2f1afc7801988dd02e3055bdf21ef6b/lmcache/v1/multiprocess/blend_server_v2.py#L534-L595).
 This is sufficient for the first source-document fixture, where the source
 prompt is exactly one or more reusable documents, and it is fail-closed for
 short or chunked-prefill requests.
