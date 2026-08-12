@@ -17,6 +17,9 @@ selective-recomputation latency histograms. Both are explicitly zero in the
 measured values; this keeps the required observability surface stable without
 fabricating GPU measurements.
 
+The model-config gate follows vLLM's pinned GPT-OSS source field names
+(`rope_parameters`) and is intentionally separate from weight/logit evidence.
+
 Selective non-prefix computation remains conditional. The V1 connector API can
 carry an opaque plan but can only credit a contiguous cached prefix to the
 scheduler. An external GPT-OSS model override and custom attention backend must

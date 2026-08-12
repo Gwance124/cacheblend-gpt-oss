@@ -59,8 +59,11 @@ def test_pinned_gpt_oss_hybrid_model_config() -> None:
         ("sliding_attention", "full_attention") * 12
     )
 
-    rope_scaling = _mapping(getattr(config, "rope_scaling", None))
-    assert rope_scaling.get("rope_type") == "yarn"
-    assert rope_scaling.get("factor") == 32
-    assert rope_scaling.get("original_max_position_embeddings") == 4096
-    assert getattr(config, "rope_theta", None) == 150_000
+    rope_parameters = _mapping(getattr(config, "rope_parameters", None))
+    assert rope_parameters.get("rope_type") == "yarn"
+    assert rope_parameters.get("rope_theta") == 150_000
+    assert rope_parameters.get("factor") == 32
+    assert rope_parameters.get("original_max_position_embeddings") == 4096
+    assert rope_parameters.get("beta_fast") == 32
+    assert rope_parameters.get("beta_slow") == 1
+    assert rope_parameters.get("truncate") is False
