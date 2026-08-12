@@ -63,6 +63,13 @@ from cacheblend_gpt_oss.gpt_oss.selective_policy_io import (
     selection_sweep_to_dict,
     write_selection_sweep,
 )
+from cacheblend_gpt_oss.gpt_oss.selective_runtime import (
+    HiddenShapeReader,
+    SelectiveForwardBridge,
+    SelectiveForwardError,
+    SelectiveForwardErrorCode,
+    SelectiveForwardResult,
+)
 from cacheblend_gpt_oss.gpt_oss.torch_yarn import (
     GPT_OSS_KV_DTYPE,
     GPT_OSS_YARN_CONFIG,
@@ -106,6 +113,7 @@ __all__ = [
     "GptOssTorchYarnCorrector",
     "GroupBlockTable",
     "GroupTokenScatterSpan",
+    "HiddenShapeReader",
     "HybridLayoutError",
     "HybridLayoutErrorCode",
     "LayerRowSelection",
@@ -119,6 +127,10 @@ __all__ = [
     "SelectionSweepIoErrorCode",
     "SelectionSweepPoint",
     "SelectiveCacheOps",
+    "SelectiveForwardBridge",
+    "SelectiveForwardError",
+    "SelectiveForwardErrorCode",
+    "SelectiveForwardResult",
     "SelectivePlanError",
     "SelectivePlanErrorCode",
     "SelectiveUpdateError",

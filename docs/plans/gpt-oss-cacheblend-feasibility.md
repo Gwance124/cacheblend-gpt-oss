@@ -363,6 +363,11 @@ a future model override must preserve the full hidden-state row shape and the
 pinned runner's logits-index ordering. It is CPU-tested and dormant until
 M3--M5 GPU evidence permits registering a concrete model/backend.
 
+The CPU-only `gpt_oss.selective_runtime` bridge now binds a `ForwardRowPlan`
+only for the duration of an injected forward call and validates that output
+contract afterward. It is an adapter seam for the future model override, not a
+claim of selective execution; no vLLM registry or attention backend is enabled.
+
 This milestone decides the patch boundary.
 
 Deliverables:

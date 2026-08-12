@@ -121,6 +121,12 @@ runner's strictly increasing logits indices. Returning only recomputed rows is
 rejected before logits gathering. This contract is metadata-only and does not
 enable selective execution.
 
+`gpt_oss.selective_runtime` now provides the worker-local CPU seam that will
+bind a `ForwardRowPlan` only around a future model-forward call, then validate
+the full-shaped hidden output and runner logits indices before returning. It is
+still dormant: no vLLM model/backend is registered, and it does not import
+Torch or mutate KV tensors.
+
 `gpt_oss.selective_policy` is the dormant M7 check-layer planner. Given
 verified candidate ranges and injected per-row importance scores, it chooses a
 deterministic top fraction of eligible cached rows, always keeps uncached rows
