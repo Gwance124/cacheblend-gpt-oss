@@ -69,6 +69,7 @@ class LmcacheCandidateRejectionReason(str, Enum):
     NAMESPACE_MISMATCH = "namespace_mismatch"
     FINGERPRINT_MISMATCH = "fingerprint_mismatch"
     TOKEN_MISMATCH = "token_mismatch"
+    SOURCE_POSITION_AMBIGUOUS = "source_position_ambiguous"
     DUPLICATE_CANDIDATE = "duplicate_candidate"
     OVERLAPS_SELECTED_CANDIDATE = "overlaps_selected_candidate"
 
@@ -383,6 +384,28 @@ class LmcacheCandidateLookupCoordinator:
                 )
                 rejected.append(
                     (raw_index, RejectedLmcacheCandidate(candidate, reason))
+                )
+                continue
+
+            # LMCache's public Blend object identity is token-hash based.  Its
+            # candidate reports a position relative to the compact stored
+            # sequence, while our record carries the absolute position where
+            # the post-RoPE K tensor was produced.  If the same exact token
+            # object has been published from more than one absolute position,
+            # neither the cache key nor the server response identifies which K
+            # tensor is currently resident.  Choosing either position would
+            # make YaRN correction potentially wrong, so fail this candidate
+            # closed until storage identity includes a position-generation.
+            source_ranges = {record.source_range for record in valid_records}
+            if len(source_ranges) != 1:
+                rejected.append(
+                    (
+                        raw_index,
+                        RejectedLmcacheCandidate(
+                            candidate,
+                            LmcacheCandidateRejectionReason.SOURCE_POSITION_AMBIGUOUS,
+                        ),
+                    )
                 )
                 continue
 

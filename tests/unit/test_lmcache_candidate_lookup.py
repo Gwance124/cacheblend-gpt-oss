@@ -174,7 +174,7 @@ def test_sha_bucket_collision_cannot_substitute_a_different_cache_key() -> None:
     assert plan.counters.found_candidates == 0
 
 
-def test_collision_bucket_selects_deterministic_exact_record_only() -> None:
+def test_collision_bucket_selects_the_only_exact_record() -> None:
     prompt = (4, 5, 6)
     candidate = _candidate(prompt, 0, 3, b"c")
     fingerprint = SHA256_FINGERPRINTER.fingerprint(_namespace(), prompt)
@@ -185,9 +185,8 @@ def test_collision_bucket_selects_deterministic_exact_record_only() -> None:
         source_range=TokenRange(50, 53),
         cache_key=candidate.cache_key,
     )
-    later_exact = _record_for(prompt, candidate, source_start=100)
     earlier_exact = _record_for(prompt, candidate, source_start=20)
-    lookup = UntrustedLookup((later_exact, stale_tokens, earlier_exact))
+    lookup = UntrustedLookup((stale_tokens, earlier_exact))
 
     plan = LmcacheCandidateLookupCoordinator(lookup).plan(
         prompt, _namespace(), (candidate,)
@@ -197,6 +196,25 @@ def test_collision_bucket_selects_deterministic_exact_record_only() -> None:
     assert plan.counters.found_candidates == 1
     assert plan.counters.verified_candidates == 1
     assert plan.counters.rejected_candidates == 0
+
+
+def test_same_cache_object_at_multiple_source_positions_fails_closed() -> None:
+    prompt = (4, 5, 6)
+    candidate = _candidate(prompt, 0, 3, b"p")
+    earlier = _record_for(prompt, candidate, source_start=20)
+    later = _record_for(prompt, candidate, source_start=100)
+
+    plan = LmcacheCandidateLookupCoordinator(
+        InMemoryRecordIndex((later, earlier))
+    ).plan(prompt, _namespace(), (candidate,))
+
+    assert plan.verified_candidates == ()
+    assert plan.rejected_candidates[0].reason is (
+        LmcacheCandidateRejectionReason.SOURCE_POSITION_AMBIGUOUS
+    )
+    assert plan.counters.found_candidates == 1
+    assert plan.counters.verified_candidates == 0
+    assert plan.counters.rejected_candidates == 1
 
 
 @pytest.mark.parametrize(
