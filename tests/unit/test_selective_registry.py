@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 
 import pytest
 
@@ -102,6 +103,39 @@ def test_registration_conflict_is_rejected_without_second_call() -> None:
             backend_token=CUSTOM_ATTENTION_BACKEND_NAME,
         )
 
+    assert error.value.code is SelectiveRegistrationErrorCode.REGISTRATION_CONFLICT
+    assert len(fakes.models) == 1
+    assert len(fakes.backends) == 1
+
+
+def test_changed_evidence_digest_is_a_registration_conflict() -> None:
+    fakes = FakeRegistries()
+    registrar = SelectiveExtensionRegistrar()
+    first = _spec()
+    registrar.register(
+        first,
+        model_register=fakes.model,
+        backend_register=fakes.backend,
+        backend_token=CUSTOM_ATTENTION_BACKEND_NAME,
+    )
+    assert first.prerequisites.evidence is not None
+    changed_evidence = replace(
+        first.prerequisites.evidence,
+        transfer_digest="f" * 64,
+    )
+    changed = SelectiveRegistrationSpec(
+        prerequisites=replace(first.prerequisites, evidence=changed_evidence),
+        model_class_path=first.model_class_path,
+        attention_backend_class_path=first.attention_backend_class_path,
+    )
+
+    with pytest.raises(SelectiveRegistrationError) as error:
+        registrar.register(
+            changed,
+            model_register=fakes.model,
+            backend_register=fakes.backend,
+            backend_token=CUSTOM_ATTENTION_BACKEND_NAME,
+        )
     assert error.value.code is SelectiveRegistrationErrorCode.REGISTRATION_CONFLICT
     assert len(fakes.models) == 1
     assert len(fakes.backends) == 1

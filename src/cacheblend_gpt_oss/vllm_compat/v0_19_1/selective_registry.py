@@ -176,11 +176,20 @@ class SelectiveRegistrationSpec:
             _fail(SelectiveRegistrationErrorCode.INVALID_BACKEND_CLASS_PATH)
 
     @property
-    def signature(self) -> tuple[str, str, str]:
+    def signature(self) -> tuple[str, str, str, tuple[str, ...]]:
+        assert self.prerequisites.evidence is not None
+        evidence = self.prerequisites.evidence
         return (
             self.model_architecture,
             self.model_class_path,
             self.attention_backend_class_path,
+            (
+                evidence.runtime_digest,
+                evidence.full_prefill_digest,
+                evidence.transfer_digest,
+                evidence.yarn_digest,
+                evidence.hybrid_sink_digest,
+            ),
         )
 
 
@@ -204,7 +213,7 @@ class SelectiveExtensionRegistrar:
     """One-process idempotent registrar used by a future general plugin."""
 
     def __init__(self) -> None:
-        self._signature: tuple[str, str, str] | None = None
+        self._signature: tuple[str, str, str, tuple[str, ...]] | None = None
         self._partial = False
 
     def register(
