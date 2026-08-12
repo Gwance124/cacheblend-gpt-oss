@@ -180,7 +180,10 @@ def collect_pinned_config_issues(
 
     rope = _rope_parameters(hf)
     expect("rope.type", "yarn", _mapping_get(rope, "rope_type"))
-    expect("rope.theta", 150_000, _get(hf, "rope_theta"))
+    # Pinned GPT-OSS reads all RoPE values from ``config.rope_parameters``;
+    # do not accept a stale top-level ``rope_theta`` field as proof that the
+    # model will construct the same YaRN frequencies.
+    expect("rope.theta", 150_000, _mapping_get(rope, "rope_theta"))
     expect("rope.factor", 32.0, _mapping_get(rope, "factor"))
     expect(
         "rope.original_max_position_embeddings",

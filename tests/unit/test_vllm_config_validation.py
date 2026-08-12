@@ -29,6 +29,7 @@ class SlidingWindowSpec(SimpleNamespace):
 def _valid_config() -> tuple[SimpleNamespace, SimpleNamespace]:
     rope = {
         "rope_type": "yarn",
+        "rope_theta": 150_000,
         "factor": 32.0,
         "original_max_position_embeddings": 4096,
         "beta_fast": 32.0,
@@ -50,7 +51,6 @@ def _valid_config() -> tuple[SimpleNamespace, SimpleNamespace]:
         quantization_config={"quant_method": "mxfp4"},
         attention_bias=True,
         rope_parameters=rope,
-        rope_theta=150_000,
     )
     vllm_config = SimpleNamespace(
         model_config=SimpleNamespace(
@@ -156,6 +156,12 @@ def test_exact_pinned_configuration_is_accepted() -> None:
                 config.model_config.hf_config, "vocab_size", 201_087
             ),
             "model.vocab_size",
+        ),
+        (
+            lambda config, _: config.model_config.hf_config.rope_parameters.update(
+                rope_theta=149_999
+            ),
+            "rope.theta",
         ),
         (
             lambda config, _: setattr(

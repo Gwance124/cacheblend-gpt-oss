@@ -251,13 +251,13 @@ def _config() -> SimpleNamespace:
         attention_bias=True,
         rope_parameters={
             "rope_type": "yarn",
+            "rope_theta": 150_000,
             "factor": 32.0,
             "original_max_position_embeddings": 4096,
             "beta_fast": 32.0,
             "beta_slow": 1.0,
             "truncate": False,
         },
-        rope_theta=150_000,
     )
     return SimpleNamespace(
         kv_transfer_config=SimpleNamespace(kv_connector_extra_config={}),
