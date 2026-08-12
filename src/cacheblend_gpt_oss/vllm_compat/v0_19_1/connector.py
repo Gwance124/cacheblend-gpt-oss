@@ -1,9 +1,10 @@
-"""Pinned vLLM V1 connector boundary for the 100%-recompute milestone.
+"""Pinned vLLM V1 connector for instrumented transfer plus full recomputation.
 
-This module intentionally performs no KV transfer.  It proves that vLLM can
-load the project out of tree, propagate allocation metadata for every hybrid
-KV-cache group, and execute the ordinary full prefill.  Loading and saving are
-synchronous no-ops until the planner and storage data plane are connected.
+In ``transfer_100pct`` mode this module performs exact non-prefix lookup,
+synchronous KV transfer and GPT-OSS position correction, then deliberately
+recomputes every prompt token through ordinary vLLM prefill.  The transferred
+KV is instrumentation data and receives zero scheduler credit.  The default
+``control_flow`` mode retains the dependency-free no-transfer smoke path.
 
 The API references below are pinned to vLLM 0.19.1 commit
 ``b1388b1fbf5aaef47937fabe98931211684666a6``:
@@ -15,6 +16,12 @@ The API references below are pinned to vLLM 0.19.1 commit
   https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/distributed/kv_transfer/kv_connector/v1/base.py#L449-L524
 * ``KVCacheBlocks.get_block_ids`` and its grouped return value:
   https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/v1/core/kv_cache_manager.py#L22-L76
+* ``Request`` computed/external/preemption counters:
+  https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/v1/request.py#L135-L164
+* ``SchedulerOutput.num_scheduled_tokens``:
+  https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/v1/core/sched/output.py#L179-L211
+* Per-layer save hook receives the registered attention KV tensor:
+  https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/model_executor/layers/attention/kv_transfer_utils.py#L47-L57
 """
 
 from __future__ import annotations
@@ -29,19 +36,40 @@ from cacheblend_gpt_oss.connector.control_plane import (
     RequestHandoffMetadata,
     WorkerValidationReceipt,
 )
+from cacheblend_gpt_oss.gpt_oss.layout import GroupBlockTable
 from cacheblend_gpt_oss.planner import MatchPlan
 from cacheblend_gpt_oss.vllm_compat.v0_19_1.adapters import (
+    AdaptedKvCacheBlocks,
     AdaptedKvCacheConfig,
     adapt_kv_cache_blocks,
     adapt_kv_cache_config,
     copy_request_prompt_token_ids,
 )
+from cacheblend_gpt_oss.vllm_compat.v0_19_1.compatibility_digest import (
+    require_runtime_compatibility_digests,
+)
 from cacheblend_gpt_oss.vllm_compat.v0_19_1.config_validation import (
     require_pinned_config,
+    require_transfer_100pct_config,
+)
+from cacheblend_gpt_oss.vllm_compat.v0_19_1.runtime_resources import (
+    SchedulerRuntimeResources,
+    WorkerRuntimeResources,
+    create_scheduler_runtime_resources,
+    create_worker_runtime_resources,
+)
+from cacheblend_gpt_oss.vllm_compat.v0_19_1.scheduler_runtime import (
+    SchedulerLookupMetadata,
+    SchedulerLookupRequest,
 )
 from cacheblend_gpt_oss.vllm_compat.v0_19_1.transfer_config import (
-    ControlFlowTransferConfig,
+    LMCACHE_CHUNK_SIZE,
+    Transfer100PctConfig,
     parse_connector_extra_config,
+)
+from cacheblend_gpt_oss.vllm_compat.v0_19_1.transfer_runtime import (
+    PreForwardOutcome,
+    SchedulerTransferMetadata,
 )
 
 try:
@@ -97,11 +125,12 @@ def _v2_model_runner_enabled() -> bool:
 
 @dataclass(frozen=True, slots=True)
 class GptOssCacheBlendMetadata(KVConnectorMetadata):  # type: ignore[misc]
-    """Opaque immutable request handoffs for the control-flow milestone."""
+    """Opaque immutable request handoffs for one pinned scheduler step."""
 
     schema_version: int
     group_layer_names: tuple[tuple[str, ...], ...]
     handoffs: tuple[RequestHandoffMetadata, ...]
+    transfers: tuple[SchedulerTransferMetadata, ...] = ()
     transfer_enabled: bool = False
 
 
@@ -128,14 +157,24 @@ class GptOssCacheBlendWorkerMetadata(KVConnectorWorkerMetadata):  # type: ignore
         )
 
 
+@dataclass(slots=True)
+class _ActiveWorkerTransfer:
+    """One max-seq-one transfer retained across the per-layer forward hooks."""
+
+    metadata: SchedulerTransferMetadata
+    adapted_blocks: AdaptedKvCacheBlocks
+    pre_forward: PreForwardOutcome
+    saved_layer_names: set[str]
+
+
 class GptOssCacheBlendConnector(
     KVConnectorBase_V1, SupportsHMA  # type: ignore[misc]
 ):
-    """vLLM 0.19.1 connector skeleton that always performs full prefill.
+    """vLLM 0.19.1 connector that always performs ordinary full prefill.
 
-    The connector returns zero external matches, never copies or persists KV,
-    and never assumes ownership of vLLM blocks.  Any attempt to credit external
-    tokens or use the non-HMA completion hook fails closed.
+    Live transfer is limited to synchronous instrumentation in the audited
+    one-request, one-step envelope.  Any attempt to credit external tokens or
+    use the non-HMA completion hook fails closed.
     """
 
     def __init__(
@@ -186,10 +225,22 @@ class GptOssCacheBlendConnector(
         self._transfer_config = parse_connector_extra_config(
             vllm_config.kv_transfer_config.kv_connector_extra_config
         )
-        if not isinstance(self._transfer_config, ControlFlowTransferConfig):
-            raise RuntimeError(
-                "transfer_100pct configuration is parsed but connector runtime "
-                "activation remains gated on the pinned staging integration."
+        if isinstance(self._transfer_config, Transfer100PctConfig):
+            require_transfer_100pct_config(
+                vllm_config,
+                staging_token_capacity=(
+                    self._transfer_config.staging_token_capacity
+                ),
+            )
+            require_runtime_compatibility_digests(
+                vllm_config,
+                self._adapted_kv_cache_config,
+                expected_model_config_digest=(
+                    self._transfer_config.model_config_digest
+                ),
+                expected_kv_cache_config_digest=(
+                    self._transfer_config.kv_cache_config_digest
+                ),
             )
         self._group_layer_names = (
             self._adapted_kv_cache_config.control_plane_layout.layer_names_by_group
@@ -202,6 +253,17 @@ class GptOssCacheBlendConnector(
         self._pending_handoff_ids: list[str] = []
         self._pending_worker_receipts: list[WorkerValidationReceipt] = []
         self._registered_kv_caches: dict[str, torch.Tensor] = {}
+        self._scheduler_lookup_metadata: dict[str, SchedulerLookupMetadata] = {}
+        self._scheduler_resources: SchedulerRuntimeResources | None = None
+        self._worker_resources: WorkerRuntimeResources | None = None
+        self._active_worker_transfer: _ActiveWorkerTransfer | None = None
+        if (
+            isinstance(self._transfer_config, Transfer100PctConfig)
+            and role is KVConnectorRole.SCHEDULER
+        ):
+            self._scheduler_resources = create_scheduler_runtime_resources(
+                self._transfer_config
+            )
 
     def _require_role(self, expected: KVConnectorRole, operation: str) -> None:
         if self.role is not expected:
@@ -218,10 +280,53 @@ class GptOssCacheBlendConnector(
                 f"{expected} groups but received {len(block_ids)}."
             )
 
+    @property
+    def _transfer_enabled(self) -> bool:
+        return isinstance(self._transfer_config, Transfer100PctConfig)
+
+    def _adapt_handoff_blocks(
+        self, handoff: RequestHandoffMetadata
+    ) -> AdaptedKvCacheBlocks:
+        grouped = handoff.allocation.grouped_blocks
+        block_ids_by_group = grouped.block_ids_by_group
+        self._validate_group_count(block_ids_by_group)
+        if any(
+            block_id >= self._adapted_kv_cache_config.num_blocks
+            for group in block_ids_by_group
+            for block_id in group
+        ):
+            raise RuntimeError("Worker handoff contains an out-of-range block ID.")
+        tables = tuple(
+            GroupBlockTable(
+                group_id=group.group_id,
+                block_size=group.block_size,
+                block_ids=block_ids_by_group[group.group_id],
+            )
+            for group in self._adapted_kv_cache_config.gpt_oss_layout.groups
+        )
+        return AdaptedKvCacheBlocks(grouped, tables)
+
+    def _registered_cuda_device(self) -> str:
+        devices: set[str] = set()
+        for tensor in self._registered_kv_caches.values():
+            device = getattr(tensor, "device", None)
+            if device is None:
+                raise RuntimeError(
+                    "Registered KV-cache tensors must expose one CUDA device."
+                )
+            devices.add(str(device))
+        if len(devices) != 1:
+            raise RuntimeError(
+                "All registered KV-cache tensors must share one CUDA device."
+            )
+        return next(iter(devices))
+
     # Worker-side hooks. vLLM registers per-layer tensors here:
     # https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/v1/worker/gpu_model_runner.py#L6809-L6819
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]) -> None:
         self._require_role(KVConnectorRole.WORKER, "register_kv_caches")
+        if self._registered_kv_caches:
+            raise RuntimeError("KV caches were already registered on this worker.")
         expected_names = {
             name for group_names in self._group_layer_names for name in group_names
         }
@@ -233,8 +338,16 @@ class GptOssCacheBlendConnector(
                 "Registered KV-cache layers do not match KVCacheConfig; "
                 f"missing={missing}, unexpected={unexpected}."
             )
-        # Retain every layer tensor reference. No tensor is read or written yet.
         self._registered_kv_caches = dict(kv_caches)
+        if self._transfer_enabled:
+            if not isinstance(self._transfer_config, Transfer100PctConfig):
+                raise RuntimeError("Transfer configuration state is inconsistent.")
+            self._worker_resources = create_worker_runtime_resources(
+                self._transfer_config,
+                self._adapted_kv_cache_config.gpt_oss_layout,
+                self._registered_kv_caches,
+                device=self._registered_cuda_device(),
+            )
 
     def start_load_kv(self, forward_context: ForwardContext, **kwargs: Any) -> None:
         self._require_role(KVConnectorRole.WORKER, "start_load_kv")
@@ -248,10 +361,19 @@ class GptOssCacheBlendConnector(
             )
         if metadata.group_layer_names != self._group_layer_names:
             raise RuntimeError("Scheduler and worker KV-cache groups do not match.")
-        if metadata.transfer_enabled:
+        if metadata.transfer_enabled is not self._transfer_enabled:
+            raise RuntimeError("Scheduler and worker transfer modes do not match.")
+        if self._active_worker_transfer is not None:
+            raise RuntimeError("A previous CacheBlend transfer is still active.")
+        if len(metadata.transfers) > 1:
             raise RuntimeError(
-                "This connector milestone does not implement KV transfer."
+                "The 100%-recompute transfer envelope allows one request per step."
             )
+        transfers_by_request = {
+            transfer.request_id: transfer for transfer in metadata.transfers
+        }
+        if len(transfers_by_request) != len(metadata.transfers):
+            raise RuntimeError("Connector metadata contains duplicate transfers.")
         for handoff in metadata.handoffs:
             self._validate_group_count(
                 handoff.allocation.grouped_blocks.block_ids_by_group
@@ -261,12 +383,46 @@ class GptOssCacheBlendConnector(
                     "The 100%-recompute milestone cannot credit external tokens."
                 )
             self._control_plane.accept_handoff(handoff)
+            transfer = transfers_by_request.pop(handoff.plan.request_id, None)
+            if transfer is None:
+                receipt = self._control_plane.validate_worker(
+                    handoff.plan.request_id,
+                    loaded_match_indexes=(),
+                    rejected_match_indexes=range(
+                        len(handoff.plan.match_plan.matches)
+                    ),
+                )
+                self._pending_worker_receipts.append(receipt)
+                continue
+            if transfer.handoff != handoff:
+                raise RuntimeError(
+                    "Transfer metadata does not match its request handoff."
+                )
+            if self._worker_resources is None:
+                raise RuntimeError(
+                    "Worker transfer resources were not initialized by "
+                    "register_kv_caches."
+                )
+            adapted_blocks = self._adapt_handoff_blocks(handoff)
+            outcome = self._worker_resources.transfer_runtime.before_forward(
+                transfer, adapted_blocks
+            )
             receipt = self._control_plane.validate_worker(
                 handoff.plan.request_id,
-                loaded_match_indexes=(),
-                rejected_match_indexes=range(len(handoff.plan.match_plan.matches)),
+                loaded_match_indexes=outcome.loaded_candidate_indexes,
+                rejected_match_indexes=outcome.rejected_candidate_indexes,
             )
+            if receipt != outcome.to_worker_validation_receipt():
+                raise RuntimeError("Worker transfer receipt reconciliation failed.")
             self._pending_worker_receipts.append(receipt)
+            self._active_worker_transfer = _ActiveWorkerTransfer(
+                transfer,
+                adapted_blocks,
+                outcome,
+                set(),
+            )
+        if transfers_by_request:
+            raise RuntimeError("Transfer metadata has no matching request handoff.")
 
     def wait_for_layer_load(self, layer_name: str) -> None:
         self._require_role(KVConnectorRole.WORKER, "wait_for_layer_load")
@@ -281,17 +437,47 @@ class GptOssCacheBlendConnector(
         **kwargs: Any,
     ) -> None:
         self._require_role(KVConnectorRole.WORKER, "save_kv_layer")
-        del kv_layer, attn_metadata, kwargs
+        del attn_metadata, kwargs
         if layer_name not in self._registered_kv_caches:
             raise RuntimeError(f"KV cache for layer {layer_name!r} was not registered.")
+        if kv_layer is not self._registered_kv_caches[layer_name]:
+            raise RuntimeError("save_kv_layer received an unregistered tensor.")
+        active = self._active_worker_transfer
+        if active is not None:
+            if layer_name in active.saved_layer_names:
+                raise RuntimeError("A KV-cache layer was saved more than once.")
+            active.saved_layer_names.add(layer_name)
 
     def wait_for_save(self) -> None:
         self._require_role(KVConnectorRole.WORKER, "wait_for_save")
+        active = self._active_worker_transfer
+        if active is None:
+            return
+        expected_layers = set(self._registered_kv_caches)
+        if active.saved_layer_names != expected_layers:
+            raise RuntimeError(
+                "Full-prefill KV writeback did not visit every GPT-OSS layer."
+            )
+        if self._worker_resources is None:
+            raise RuntimeError("Worker transfer resources are unavailable.")
+        completion = self._worker_resources.transfer_runtime.mark_full_prefill_complete(
+            active.pre_forward,
+            recomputed_token_count=active.metadata.prompt_token_count,
+        )
+        self._worker_resources.transfer_runtime.after_forward(
+            completion, active.adapted_blocks
+        )
+        self._active_worker_transfer = None
 
     def get_finished(
         self, finished_req_ids: set[str]
     ) -> tuple[set[str] | None, set[str] | None]:
         self._require_role(KVConnectorRole.WORKER, "get_finished")
+        active = self._active_worker_transfer
+        if active is not None and active.metadata.request_id in finished_req_ids:
+            raise RuntimeError(
+                "A request finished before CacheBlend completed KV writeback."
+            )
         for request_id in finished_req_ids:
             self._control_plane.discard(request_id)
             self._known_request_ids.discard(request_id)
@@ -328,7 +514,6 @@ class GptOssCacheBlendConnector(
         num_computed_tokens: int,
     ) -> tuple[int | None, bool]:
         self._require_role(KVConnectorRole.SCHEDULER, "get_num_new_matched_tokens")
-        del num_computed_tokens
         prompt_token_ids = copy_request_prompt_token_ids(request)
         request_id = request.request_id
         raw_preemptions = getattr(request, "num_preemptions", 0)
@@ -345,12 +530,42 @@ class GptOssCacheBlendConnector(
             if raw_preemptions > previous_preemptions:
                 self._control_plane.preempt(request_id)
         self._request_preemptions[request_id] = raw_preemptions
-        self._control_plane.lookup(
-            request_id=request_id,
-            prompt_tokens=len(prompt_token_ids),
-            query_segments=(),
-            match_plan=MatchPlan((), (), 0),
-        )
+        if self._transfer_enabled:
+            if self._scheduler_resources is None:
+                raise RuntimeError("Scheduler transfer resources are unavailable.")
+            lookup = self._scheduler_resources.runtime.lookup(
+                SchedulerLookupRequest(
+                    request_id=request_id,
+                    prompt_token_ids=prompt_token_ids,
+                    sequence_count=1,
+                    scheduler_step_index=0,
+                    num_computed_tokens=num_computed_tokens,
+                    num_external_tokens=getattr(
+                        request, "num_external_computed_tokens", 0
+                    ),
+                    preemption_count=raw_preemptions,
+                )
+            )
+            if lookup.status.is_fatal:
+                raise RuntimeError(
+                    "CacheBlend scheduler lookup failed closed: "
+                    f"{lookup.status.value}."
+                )
+            plan = lookup.request_plan
+            self._control_plane.lookup(
+                request_id=plan.request_id,
+                prompt_tokens=plan.prompt_tokens,
+                query_segments=plan.query_segments,
+                match_plan=plan.match_plan,
+            )
+            self._scheduler_lookup_metadata[request_id] = lookup
+        else:
+            self._control_plane.lookup(
+                request_id=request_id,
+                prompt_tokens=len(prompt_token_ids),
+                query_segments=(),
+                match_plan=MatchPlan((), (), 0),
+            )
         self._known_request_ids.add(request_id)
         return 0, False
 
@@ -385,16 +600,70 @@ class GptOssCacheBlendConnector(
         self, scheduler_output: SchedulerOutput
     ) -> GptOssCacheBlendMetadata:
         self._require_role(KVConnectorRole.SCHEDULER, "build_connector_meta")
-        del scheduler_output
         handoffs = tuple(
             self._control_plane.handoff(request_id)
             for request_id in self._pending_handoff_ids
         )
+        transfers: list[SchedulerTransferMetadata] = []
+        if self._transfer_enabled:
+            scheduled_by_request = getattr(
+                scheduler_output, "num_scheduled_tokens", None
+            )
+            if not isinstance(scheduled_by_request, dict):
+                raise RuntimeError(
+                    "Pinned SchedulerOutput.num_scheduled_tokens is unavailable."
+                )
+            if not isinstance(self._transfer_config, Transfer100PctConfig):
+                raise RuntimeError("Transfer configuration state is inconsistent.")
+            for handoff in handoffs:
+                request_id = handoff.plan.request_id
+                lookup = self._scheduler_lookup_metadata.get(request_id)
+                scheduled_tokens = scheduled_by_request.get(request_id)
+                if lookup is None:
+                    raise RuntimeError("Transfer handoff has no scheduler lookup.")
+                if (
+                    isinstance(scheduled_tokens, bool)
+                    or not isinstance(scheduled_tokens, int)
+                    or scheduled_tokens < 0
+                    or scheduled_tokens > len(lookup.prompt_token_ids)
+                ):
+                    raise RuntimeError(
+                        "SchedulerOutput contains an invalid scheduled token count."
+                    )
+                if (
+                    handoff.allocation.allocation_generation
+                    != lookup.allocation_generation
+                ):
+                    raise RuntimeError(
+                        "Scheduler lookup and block allocation generations differ."
+                    )
+                complete_step = scheduled_tokens == len(lookup.prompt_token_ids)
+                within_staging = (
+                    len(lookup.prompt_token_ids)
+                    <= self._transfer_config.staging_token_capacity
+                )
+                if not complete_step or not within_staging:
+                    continue
+                transfers.append(
+                    SchedulerTransferMetadata(
+                        cache_namespace=self._transfer_config.namespace,
+                        prompt_token_ids=lookup.prompt_token_ids,
+                        verified_candidates=lookup.verified_candidates,
+                        handoff=handoff,
+                        num_computed_tokens_before_step=0,
+                        scheduled_token_count=scheduled_tokens,
+                        transfer_eligible=lookup.should_transfer,
+                        store_eligible=(
+                            len(lookup.prompt_token_ids) >= LMCACHE_CHUNK_SIZE
+                        ),
+                    )
+                )
         metadata = GptOssCacheBlendMetadata(
             schema_version=_METADATA_SCHEMA_VERSION,
             group_layer_names=self._group_layer_names,
             handoffs=handoffs,
-            transfer_enabled=False,
+            transfers=tuple(transfers),
+            transfer_enabled=self._transfer_enabled,
         )
         self._pending_handoff_ids.clear()
         return metadata
@@ -420,6 +689,9 @@ class GptOssCacheBlendConnector(
         self._require_role(KVConnectorRole.SCHEDULER, "request_finished_all_groups")
         self._validate_group_count(block_ids)
         request_id = request.request_id
+        if self._scheduler_resources is not None:
+            self._scheduler_resources.runtime.discard(request_id)
+        self._scheduler_lookup_metadata.pop(request_id, None)
         self._control_plane.discard(request_id)
         self._known_request_ids.discard(request_id)
         self._request_preemptions.pop(request_id, None)
@@ -437,13 +709,30 @@ class GptOssCacheBlendConnector(
         )
 
     def shutdown(self) -> None:
+        close_error: BaseException | None = None
+        if self._scheduler_resources is not None:
+            try:
+                self._scheduler_resources.close()
+            except Exception as exc:
+                close_error = exc
+            self._scheduler_resources = None
+        if self._worker_resources is not None:
+            try:
+                self._worker_resources.close()
+            except Exception as exc:
+                close_error = close_error or exc
+            self._worker_resources = None
         for request_id in tuple(self._known_request_ids):
             self._control_plane.discard(request_id)
         self._known_request_ids.clear()
         self._request_preemptions.clear()
         self._pending_handoff_ids.clear()
         self._pending_worker_receipts.clear()
+        self._scheduler_lookup_metadata.clear()
+        self._active_worker_transfer = None
         self._registered_kv_caches.clear()
+        if close_error is not None:
+            raise RuntimeError("CacheBlend resource shutdown failed.") from close_error
 
 
 __all__ = [

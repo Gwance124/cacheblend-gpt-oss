@@ -13,6 +13,29 @@ from typing import Any
 
 import pytest
 
+from cacheblend_gpt_oss.connector.control_plane import RequestPlan
+from cacheblend_gpt_oss.planner import MatchPlan, TokenRange
+from cacheblend_gpt_oss.storage.lookup import (
+    LmcacheLookupCounters,
+    LmcacheLookupPlan,
+)
+from cacheblend_gpt_oss.vllm_compat.v0_19_1.adapters import (
+    adapt_kv_cache_config,
+)
+from cacheblend_gpt_oss.vllm_compat.v0_19_1.compatibility_digest import (
+    derive_runtime_compatibility_digests,
+)
+from cacheblend_gpt_oss.vllm_compat.v0_19_1.scheduler_runtime import (
+    SchedulerLookupMetadata,
+    SchedulerLookupStatus,
+)
+from cacheblend_gpt_oss.vllm_compat.v0_19_1.transfer_runtime import (
+    FullPrefillCompletion,
+    PostForwardOutcome,
+    PreForwardOutcome,
+    TransferAttemptState,
+)
+
 MODULE_NAME = "cacheblend_gpt_oss.vllm_compat.v0_19_1.connector"
 
 
@@ -123,8 +146,17 @@ def loaded_connector(
         sys.modules.pop(MODULE_NAME, None)
 
 
+class FakeHfConfig(SimpleNamespace):
+    def to_dict(self) -> dict[str, object]:
+        return {
+            key: value
+            for key, value in vars(self).items()
+            if not callable(value)
+        }
+
+
 def _config() -> SimpleNamespace:
-    hf_config = SimpleNamespace(
+    hf_config = FakeHfConfig(
         architectures=["GptOssForCausalLM"],
         model_type="gpt_oss",
         num_hidden_layers=24,
@@ -149,13 +181,25 @@ def _config() -> SimpleNamespace:
     )
     return SimpleNamespace(
         kv_transfer_config=SimpleNamespace(kv_connector_extra_config={}),
-        scheduler_config=SimpleNamespace(disable_hybrid_kv_cache_manager=False),
+        scheduler_config=SimpleNamespace(
+            disable_hybrid_kv_cache_manager=False,
+            max_num_seqs=1,
+            long_prefill_token_threshold=0,
+            async_scheduling=False,
+            scheduler_cls=None,
+            max_num_batched_tokens=4096,
+            max_num_scheduled_tokens=4096,
+        ),
         model_config=SimpleNamespace(
             model="/models/gpt-oss-20b",
             served_model_name=["openai/gpt-oss-20b"],
             hf_config=hf_config,
             disable_sliding_window=False,
             enable_prompt_embeds=False,
+            dtype="torch.bfloat16",
+            max_model_len=131_072,
+            runner_type="generate",
+            enforce_eager=True,
         ),
         parallel_config=SimpleNamespace(
             tensor_parallel_size=1,
@@ -170,6 +214,8 @@ def _config() -> SimpleNamespace:
             block_size=16,
             kv_offloading_size=None,
             kv_sharing_fast_prefill=False,
+            enable_prefix_caching=False,
+            cache_dtype="auto",
         ),
         attention_config=SimpleNamespace(
             backend=SimpleNamespace(name="TRITON_ATTN")
@@ -343,7 +389,11 @@ def test_worker_registers_every_layer_and_rejects_transfer_claims(
         SimpleNamespace(kv_connector_worker_meta=worker_metadata)
     )
     connector.wait_for_layer_load("model.layers.0.attn.attn")
-    connector.save_kv_layer("model.layers.1.attn.attn", object(), object())
+    connector.save_kv_layer(
+        "model.layers.1.attn.attn",
+        caches["model.layers.1.attn.attn"],
+        object(),
+    )
     connector.wait_for_save()
     assert connector.get_finished(set()) == (None, None)
     assert connector.get_block_ids_with_load_errors() == set()
@@ -355,15 +405,16 @@ def test_worker_registers_every_layer_and_rejects_transfer_claims(
         transfer_enabled=True,
     )
     connector.bind_connector_metadata(bad_metadata)
-    with pytest.raises(RuntimeError, match="does not implement KV transfer"):
+    with pytest.raises(RuntimeError, match="transfer modes do not match"):
         connector.start_load_kv(SimpleNamespace())
 
 
-def test_transfer_mode_remains_startup_gated_until_runtime_is_connected(
-    loaded_connector: tuple[ModuleType, SimpleNamespace],
+def _enable_transfer(
+    config: SimpleNamespace, kv_cache_config: SimpleNamespace
 ) -> None:
-    module, fake = loaded_connector
-    config = _config()
+    digests = derive_runtime_compatibility_digests(
+        config, adapt_kv_cache_config(kv_cache_config)
+    )
     config.kv_transfer_config.kv_connector_extra_config = {
         "mode": "transfer_100pct",
         "lmcache_server_url": "tcp://127.0.0.1:5555",
@@ -376,20 +427,193 @@ def test_transfer_mode_remains_startup_gated_until_runtime_is_connected(
         },
         "model_revision": "model-revision",
         "tokenizer_revision": "tokenizer-revision",
-        "model_config_digest": "a" * 64,
-        "kv_cache_config_digest": "b" * 64,
+        "model_config_digest": digests.model_config_digest,
+        "kv_cache_config_digest": digests.kv_cache_config_digest,
         "adapter_revision": "adapter-revision",
-        "staging_token_capacity": 4096,
+        "staging_token_capacity": 256,
         "request_timeout_seconds": 10.0,
         "transfer_failure_policy": "full_prefill",
     }
 
-    with pytest.raises(RuntimeError, match="activation remains gated"):
-        module.GptOssCacheBlendConnector(
-            config,
-            fake.role.SCHEDULER,
-            _kv_cache_config(),
+
+class FakeSchedulerLookupRuntime:
+    def __init__(self) -> None:
+        self.requests: list[object] = []
+        self.discards: list[str] = []
+
+    def lookup(self, request: Any) -> SchedulerLookupMetadata:
+        self.requests.append(request)
+        request_id = request.request_id
+        prompt = request.prompt_token_ids
+        preemptions = request.preemption_count
+        plan = RequestPlan(request_id, len(prompt), (), MatchPlan((), (), 0))
+        empty_lookup = LmcacheLookupPlan(
+            (), (), LmcacheLookupCounters(0, 0, 0, 0, 0, 0, 0, 0)
         )
+        windows = (
+            (TokenRange(0, 256),) if len(prompt) == 256 else ()
+        )
+        return SchedulerLookupMetadata(
+            schema_version=1,
+            request_plan=plan,
+            prompt_token_ids=prompt,
+            query_windows=windows,
+            lookup_plan=empty_lookup,
+            status=SchedulerLookupStatus.FULL_PREFILL_MISS,
+            preemption_count=preemptions,
+            allocation_generation=preemptions,
+        )
+
+    def discard(self, request_id: str) -> None:
+        self.discards.append(request_id)
+
+
+class FakeSchedulerResources:
+    def __init__(self) -> None:
+        self.runtime = FakeSchedulerLookupRuntime()
+        self.close_calls = 0
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+
+class FakeTransferRuntime:
+    def __init__(self) -> None:
+        self.before_calls: list[tuple[object, object]] = []
+        self.after_calls: list[tuple[object, object]] = []
+
+    def before_forward(
+        self, metadata: object, adapted_blocks: object
+    ) -> PreForwardOutcome:
+        self.before_calls.append((metadata, adapted_blocks))
+        return PreForwardOutcome(
+            metadata=metadata,  # type: ignore[arg-type]
+            state=TransferAttemptState.NOT_ELIGIBLE,
+            failure_code=None,
+            loaded_candidate_indexes=(),
+            rejected_candidate_indexes=(),
+            loaded_kv_tokens=0,
+            tokens_to_recompute=256,
+        )
+
+    def mark_full_prefill_complete(
+        self, pre_forward: PreForwardOutcome, *, recomputed_token_count: int
+    ) -> FullPrefillCompletion:
+        return FullPrefillCompletion(pre_forward, recomputed_token_count)
+
+    def after_forward(
+        self, completion: FullPrefillCompletion, adapted_blocks: object
+    ) -> PostForwardOutcome:
+        self.after_calls.append((completion, adapted_blocks))
+        return PostForwardOutcome(
+            completion=completion,
+            state=TransferAttemptState.SUCCEEDED,
+            failure_code=None,
+            eligible_store_tokens=256,
+            stored_tokens=256,
+            stored_chunks=1,
+            sidecar_records_available=1,
+            sidecar_records_inserted=1,
+        )
+
+
+class FakeWorkerResources:
+    def __init__(self) -> None:
+        self.transfer_runtime = FakeTransferRuntime()
+        self.close_calls = 0
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+
+def test_transfer_mode_wires_full_recompute_scheduler_and_worker_hooks(
+    loaded_connector: tuple[ModuleType, SimpleNamespace],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module, fake = loaded_connector
+    kv_cache_config = _kv_cache_config()
+    scheduler_config = _config()
+    worker_config = _config()
+    _enable_transfer(scheduler_config, kv_cache_config)
+    _enable_transfer(worker_config, kv_cache_config)
+    scheduler_resources = FakeSchedulerResources()
+    worker_resources = FakeWorkerResources()
+    worker_factory_calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        module,
+        "create_scheduler_runtime_resources",
+        lambda _config: scheduler_resources,
+    )
+
+    def create_worker_resources(*args: object, **kwargs: object) -> object:
+        worker_factory_calls.append({"args": args, **kwargs})
+        return worker_resources
+
+    monkeypatch.setattr(
+        module, "create_worker_runtime_resources", create_worker_resources
+    )
+
+    scheduler = module.GptOssCacheBlendConnector(
+        scheduler_config, fake.role.SCHEDULER, kv_cache_config
+    )
+    prompt = list(range(256))
+    request = SimpleNamespace(
+        request_id="transfer-request",
+        prompt_token_ids=prompt,
+        prompt_embeds=None,
+        num_prompt_tokens=len(prompt),
+        num_preemptions=0,
+        num_external_computed_tokens=0,
+    )
+    group_ids = (list(range(16)), list(range(16, 32)))
+    blocks = SimpleNamespace(
+        get_block_ids=lambda: group_ids,
+        blocks=tuple(
+            [SimpleNamespace(block_id=value, is_null=False) for value in group]
+            for group in group_ids
+        ),
+    )
+
+    assert scheduler.get_num_new_matched_tokens(request, 0) == (0, False)
+    scheduler.update_state_after_alloc(request, blocks, 0)
+    metadata = scheduler.build_connector_meta(
+        SimpleNamespace(num_scheduled_tokens={request.request_id: 256})
+    )
+    assert metadata.transfer_enabled
+    assert len(metadata.transfers) == 1
+    assert not metadata.transfers[0].transfer_eligible
+    assert metadata.transfers[0].store_eligible
+
+    worker = module.GptOssCacheBlendConnector(
+        worker_config, fake.role.WORKER, kv_cache_config
+    )
+    caches = {
+        f"model.layers.{index}.attn.attn": SimpleNamespace(device="cuda:0")
+        for index in range(24)
+    }
+    worker.register_kv_caches(caches)
+    assert worker_factory_calls[0]["device"] == "cuda:0"
+    worker.bind_connector_metadata(metadata)
+    worker.start_load_kv(SimpleNamespace())
+    assert len(worker_resources.transfer_runtime.before_calls) == 1
+    for layer_name, cache in caches.items():
+        worker.wait_for_layer_load(layer_name)
+        worker.save_kv_layer(layer_name, cache, object())
+    worker.wait_for_save()
+    assert len(worker_resources.transfer_runtime.after_calls) == 1
+
+    worker_metadata = worker.build_connector_worker_meta()
+    assert worker_metadata is not None
+    scheduler.update_connector_output(
+        SimpleNamespace(kv_connector_worker_meta=worker_metadata)
+    )
+    scheduler.request_finished_all_groups(request, group_ids)
+    assert scheduler_resources.runtime.discards == [request.request_id]
+    scheduler.shutdown()
+    worker.shutdown()
+    assert scheduler_resources.close_calls == 1
+    assert worker_resources.close_calls == 1
 
 
 def test_source_contains_the_pinned_loader_class_name() -> None:
