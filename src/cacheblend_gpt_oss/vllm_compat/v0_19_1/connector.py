@@ -23,6 +23,11 @@ import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from cacheblend_gpt_oss.vllm_compat.v0_19_1.adapters import (
+    AdaptedKvCacheConfig,
+    adapt_kv_cache_blocks,
+    adapt_kv_cache_config,
+)
 from cacheblend_gpt_oss.vllm_compat.v0_19_1.config_validation import (
     require_pinned_config,
 )
@@ -144,16 +149,16 @@ class GptOssCacheBlendConnector(
             kv_cache_config=kv_cache_config,
         )
 
-        group_layer_names = tuple(
-            tuple(group.layer_names) for group in kv_cache_config.kv_cache_groups
+        # Translate the same finalized object again through the strict runtime
+        # adapter.  The configuration validator above reports operator-facing
+        # startup issues; this adapter also constructs immutable group/layout
+        # descriptors used for every later block-table translation.
+        self._adapted_kv_cache_config: AdaptedKvCacheConfig = (
+            adapt_kv_cache_config(kv_cache_config)
         )
-        if not group_layer_names or any(not names for names in group_layer_names):
-            raise RuntimeError("Every KV-cache group must contain at least one layer.")
-        flattened_names = [name for names in group_layer_names for name in names]
-        if len(flattened_names) != len(set(flattened_names)):
-            raise RuntimeError("A KV-cache layer cannot belong to multiple groups.")
-
-        self._group_layer_names = group_layer_names
+        self._group_layer_names = (
+            self._adapted_kv_cache_config.control_plane_layout.layer_names_by_group
+        )
         self._pending_allocations: dict[str, CacheBlendAllocation] = {}
         self._registered_kv_caches: dict[str, torch.Tensor] = {}
 
@@ -273,11 +278,11 @@ class GptOssCacheBlendConnector(
             raise RuntimeError(
                 "The 100%-recompute milestone must report zero external tokens."
             )
-        grouped_block_ids = blocks.get_block_ids()
-        self._validate_group_count(grouped_block_ids)
-        block_ids_by_group = tuple(
-            tuple(group_block_ids) for group_block_ids in grouped_block_ids
+        adapted_blocks = adapt_kv_cache_blocks(
+            blocks,
+            self._adapted_kv_cache_config,
         )
+        block_ids_by_group = adapted_blocks.block_ids_by_group
         self._pending_allocations[request.request_id] = CacheBlendAllocation(
             request_id=request.request_id,
             block_ids_by_group=block_ids_by_group,

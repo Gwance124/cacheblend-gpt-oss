@@ -183,6 +183,7 @@ class FullAttentionSpec(SimpleNamespace):
 
 def _kv_cache_config() -> SimpleNamespace:
     return SimpleNamespace(
+        num_blocks=128,
         kv_cache_groups=[
             SimpleNamespace(
                 layer_names=[
@@ -203,7 +204,9 @@ def _kv_cache_config() -> SimpleNamespace:
                     block_size=16,
                     num_kv_heads=8,
                     head_size=64,
+                    head_size_v=64,
                     sliding_window=None,
+                    attention_chunk_size=None,
                 ),
             ),
         ]
@@ -234,7 +237,19 @@ def test_scheduler_records_all_groups_while_recomputing_every_token(
         _config(), fake.role.SCHEDULER, _kv_cache_config()
     )
     request = SimpleNamespace(request_id="request-1")
-    blocks = SimpleNamespace(get_block_ids=lambda: ([3, 4], [11, 12]))
+    blocks = SimpleNamespace(
+        get_block_ids=lambda: ([3, 4], [11, 12]),
+        blocks=(
+            [
+                SimpleNamespace(block_id=3, is_null=False),
+                SimpleNamespace(block_id=4, is_null=False),
+            ],
+            [
+                SimpleNamespace(block_id=11, is_null=False),
+                SimpleNamespace(block_id=12, is_null=False),
+            ],
+        ),
+    )
 
     assert connector.get_num_new_matched_tokens(request, 0) == (0, False)
     connector.update_state_after_alloc(request, blocks, num_external_tokens=0)
@@ -252,6 +267,19 @@ def test_scheduler_records_all_groups_while_recomputing_every_token(
 
     with pytest.raises(RuntimeError, match="must report zero external tokens"):
         connector.update_state_after_alloc(request, blocks, num_external_tokens=1)
+    null_blocks = SimpleNamespace(
+        get_block_ids=lambda: ([3], [11]),
+        blocks=(
+            [SimpleNamespace(block_id=3, is_null=True)],
+            [SimpleNamespace(block_id=11, is_null=False)],
+        ),
+    )
+    with pytest.raises(ValueError, match="null_block_unsupported"):
+        connector.update_state_after_alloc(
+            request,
+            null_blocks,
+            num_external_tokens=0,
+        )
     assert connector.request_finished_all_groups(request, ([3], [11])) == (
         False,
         None,
