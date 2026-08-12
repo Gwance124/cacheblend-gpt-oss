@@ -91,6 +91,11 @@ cd /path/to/cacheblend-gpt-oss
 curl --fail-with-body http://127.0.0.1:8000/metrics \
   | grep 'vllm:cacheblend_' \
   > "$CACHEBLEND_RUN_DIR/responses-contract-metrics.txt"
+
+.venv/bin/python scripts/validate_responses_contract.py \
+  --input "$CACHEBLEND_RUN_DIR/responses-contract.json" \
+  --output "$CACHEBLEND_RUN_DIR/responses-contract-report.json" \
+  | tee "$CACHEBLEND_RUN_DIR/responses-contract-validation.txt"
 ```
 
 The script performs exactly three non-streaming calls:
@@ -119,6 +124,7 @@ asynchronous exporter lag from creating a false mismatch.
 Go only when:
 
 - `responses-contract.json` has `passed: true`;
+- the independent validator accepts the report and records its evidence digest;
 - all three turn structures and append-only counts are present;
 - the report's runtime identity exactly matches the M3 artifacts;
 - the connector delta has `requests == 3`, positive recomputation, zero saved

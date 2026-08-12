@@ -498,5 +498,6 @@ The manual contract gate in
 `docs/runbooks/solab-g3-responses-contract.md` replays every reasoning,
 function-call, tool-output, assistant-message, and later user item through the
 pinned Responses API. Its report deliberately excludes response/call IDs and
-all content text; it is protocol evidence, not a replacement for the M3
-full-vocabulary numerical artifact.
+all content text; `responses_evidence` independently validates the copied report
+and computes a bounded evidence digest. It is protocol evidence, not a
+replacement for the M3 full-vocabulary numerical artifact.
