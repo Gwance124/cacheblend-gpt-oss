@@ -87,6 +87,7 @@ class CacheBlendLookupObservation:
             or self.kv_tokens_verified > self.kv_tokens_found
             or self.kv_tokens_verified
             > self.reusable_document_tokens_requested
+            or self.kv_tokens_found > self.reusable_document_tokens_requested
             or self.kv_tokens_found
             != self.kv_tokens_verified + self.kv_tokens_rejected
             or self.reusable_document_tokens_requested > self.prompt_tokens

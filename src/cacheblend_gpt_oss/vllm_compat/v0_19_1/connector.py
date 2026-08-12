@@ -685,9 +685,16 @@ class GptOssCacheBlendConnector(
                     reusable_document_tokens_requested=(
                         len(prompt_token_ids) if lookup.query_windows else 0
                     ),
-                    kv_tokens_found=counters.raw_candidate_tokens,
+                    # Rolling query windows may overlap.  Export unique
+                    # prompt coverage so token-hit fractions stay bounded;
+                    # raw candidate totals remain available in the lookup
+                    # plan for diagnostics.
+                    kv_tokens_found=lookup.lookup_plan.found_target_token_count,
                     kv_tokens_verified=counters.verified_candidate_tokens,
-                    kv_tokens_rejected=counters.rejected_candidate_tokens,
+                    kv_tokens_rejected=(
+                        lookup.lookup_plan.found_target_token_count
+                        - counters.verified_candidate_tokens
+                    ),
                     latency_seconds=lookup_latency,
                 )
             )

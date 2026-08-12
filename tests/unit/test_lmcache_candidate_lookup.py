@@ -131,6 +131,7 @@ def test_moved_candidate_binds_exact_record_and_preserves_identity() -> None:
         rejected_candidates=0,
         rejected_candidate_tokens=0,
     )
+    assert plan.found_target_token_count == 3
 
 
 def test_no_sidecar_record_is_a_counted_miss() -> None:
@@ -325,6 +326,7 @@ def test_duplicate_candidates_are_memoized_counted_and_deduplicated() -> None:
         rejected_candidates=1,
         rejected_candidate_tokens=3,
     )
+    assert plan.found_target_token_count == 3
 
 
 def test_maximum_non_overlap_prefers_greater_total_token_coverage() -> None:
@@ -357,6 +359,7 @@ def test_maximum_non_overlap_prefers_greater_total_token_coverage() -> None:
     assert plan.counters.verified_candidate_tokens == 5
     assert plan.counters.rejected_candidates == 1
     assert plan.counters.rejected_candidate_tokens == 4
+    assert plan.found_target_token_count == 5
 
 
 def test_equal_coverage_tie_break_is_independent_of_input_order() -> None:

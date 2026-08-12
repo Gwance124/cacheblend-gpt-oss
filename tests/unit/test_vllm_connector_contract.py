@@ -1111,6 +1111,17 @@ def test_connector_metrics_aggregate_hits_fallbacks_and_reject_bad_data(
             kv_tokens_rejected=0,
             latency_seconds=0.1,
         )
+    with pytest.raises(ValueError, match="lookup observation"):
+        module.CacheBlendLookupObservation(
+            prompt_tokens=256,
+            reusable_segments_requested=2,
+            reusable_segments_hit=1,
+            reusable_document_tokens_requested=256,
+            kv_tokens_found=257,
+            kv_tokens_verified=256,
+            kv_tokens_rejected=1,
+            latency_seconds=0.1,
+        )
     with pytest.raises(ValueError, match="loaded or rejected"):
         stats.record_load(
             verified_tokens=256,

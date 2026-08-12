@@ -405,10 +405,10 @@ artifacts. Connector metric labels are limited to vLLM's bounded engine labels:
 | Metric | Meaning |
 |---|---|
 | `vllm:cacheblend_reusable_document_tokens_requested_total` | Prompt tokens covered by at least one planner query window |
-| `vllm:cacheblend_kv_tokens_found_total` | Raw LMCache candidate tokens; every row must finish as loaded or rejected after exact sidecar verification and transfer |
+| `vllm:cacheblend_kv_tokens_found_total` | Unique prompt-token positions covered by candidates that passed the cache-key bucket lookup; overlapping rolling windows are counted once and every covered row must finish as loaded or rejected |
 | `vllm:cacheblend_kv_tokens_verified_total` | Exact-token candidates selected in the non-overlapping plan |
 | `vllm:cacheblend_kv_tokens_loaded_total` | Fully verified tokens transferred into staging/destination KV |
-| `vllm:cacheblend_kv_tokens_rejected_total` | Raw candidate tokens rejected in aggregate; bounded reasons remain structured test data, not labels |
+| `vllm:cacheblend_kv_tokens_rejected_total` | Found prompt-token positions not loaded (including exact-verification and worker rejection); bounded reasons remain structured test data, not labels |
 | `vllm:cacheblend_tokens_recomputed_total` | Prompt rows actually recomputed by the model path |
 | `vllm:cacheblend_document_hit_fraction` | Selected verified rolling segments divided by requested rolling segments |
 | `vllm:cacheblend_token_hit_fraction` | Selected verified reusable tokens divided by requested reusable tokens |

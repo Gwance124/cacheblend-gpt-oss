@@ -25,6 +25,7 @@ from cacheblend_gpt_oss.planner.models import (
     CacheRecord,
     CandidateMatch,
     SegmentFingerprint,
+    TokenRange,
     TokenSegment,
     normalize_token_ids,
 )
@@ -79,6 +80,17 @@ _VERIFICATION_REASON_PRIORITY = {
     LmcacheCandidateRejectionReason.FINGERPRINT_MISMATCH: 1,
     LmcacheCandidateRejectionReason.TOKEN_MISMATCH: 2,
 }
+
+_FOUND_REJECTION_REASONS = frozenset(
+    {
+        LmcacheCandidateRejectionReason.NAMESPACE_MISMATCH,
+        LmcacheCandidateRejectionReason.FINGERPRINT_MISMATCH,
+        LmcacheCandidateRejectionReason.TOKEN_MISMATCH,
+        LmcacheCandidateRejectionReason.SOURCE_POSITION_AMBIGUOUS,
+        LmcacheCandidateRejectionReason.DUPLICATE_CANDIDATE,
+        LmcacheCandidateRejectionReason.OVERLAPS_SELECTED_CANDIDATE,
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,6 +163,27 @@ class LmcacheLookupPlan:
     rejected_candidates: tuple[RejectedLmcacheCandidate, ...]
     counters: LmcacheLookupCounters
 
+    @property
+    def found_target_token_count(self) -> int:
+        """Return unique prompt positions covered by found candidates.
+
+        LMCache searches rolling 256-token windows, so raw candidate lengths
+        may count the same prompt position more than once.  The raw counters
+        remain available for lookup diagnostics; connector hit fractions use
+        this unique coverage instead.
+        """
+
+        ranges = [
+            candidate.candidate.target_range
+            for candidate in self.verified_candidates
+        ]
+        ranges.extend(
+            rejected.candidate.target_range
+            for rejected in self.rejected_candidates
+            if rejected.reason in _FOUND_REJECTION_REASONS
+        )
+        return _covered_token_count(ranges)
+
 
 @dataclass(frozen=True, slots=True)
 class _PotentialCandidate:
@@ -204,6 +237,25 @@ def _record_sort_key(record: CacheRecord) -> tuple[object, ...]:
         record.token_ids,
         record.namespace.canonical_fields(),
     )
+
+
+def _covered_token_count(ranges: Iterable[TokenRange]) -> int:
+    """Count the union of bounded prompt ranges without double counting."""
+
+    ordered = sorted(ranges)
+    if not ordered:
+        return 0
+    covered = 0
+    current_start = ordered[0].start
+    current_end = ordered[0].end
+    for token_range in ordered[1:]:
+        if token_range.start <= current_end:
+            current_end = max(current_end, token_range.end)
+            continue
+        covered += current_end - current_start
+        current_start = token_range.start
+        current_end = token_range.end
+    return covered + current_end - current_start
 
 
 def _better_solution(left: _Solution, right: _Solution) -> _Solution:
