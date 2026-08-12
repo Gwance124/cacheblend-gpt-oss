@@ -319,7 +319,10 @@ layer spans by those row selections and preserves source-position metadata and
 physical destination slots. It is a structural contract for
 `do_kv_cache_update`; its injected updater preflights all model/cache views
 before any copy and records only recompute-row writes. It is not wired into the
-live attention path and is not an execution or correctness claim.
+live attention path. The pinned stock method still calls
+`triton_reshape_and_cache_flash` for every slot, so a real custom backend must
+adapt this contract and pass the M6 GPU ordering/shape gate before it can claim
+selective execution or correctness.
 
 This milestone decides the patch boundary.
 

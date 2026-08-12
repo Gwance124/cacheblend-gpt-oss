@@ -5,6 +5,18 @@ They validate the pinned environment, production BF16 YaRN correction, and the
 real Torch/CUDA full/sliding gather-scatter path. They do not load model weights
 yet.
 
+The pinned attention-boundary check is separate:
+
+```bash
+uv run pytest tests/gpu/test_selective_backend_contract.py \
+  -m "gpu and integration and not model" -vv
+```
+
+It inspects the exact sink-capable Triton backend and
+`do_kv_cache_update` signature without loading GPT-OSS. See
+`docs/runbooks/solab-g3-selective-contract.md`; this is not selective-cache
+execution evidence.
+
 After synchronizing this repository to a chosen path on `solab-g3`:
 
 ```bash

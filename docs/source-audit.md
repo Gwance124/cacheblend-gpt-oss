@@ -217,6 +217,12 @@ the first selective spike must implement. The relevant source evidence is:
   A selective implementation must therefore make its custom implementation's
   update operation skip accepted cached rows; merely waiting in the connector
   decorator is too late for overlapping load/recompute slots.
+- The stock [`TritonAttentionImpl.do_kv_cache_update`](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/v1/attention/backends/triton_attn.py#L575-L606)
+  accepts the layer, flattened post-RoPE K/V, paged cache, and slot mapping,
+  then calls `triton_reshape_and_cache_flash` for every slot. The new
+  tensor-free selective planner/updater mirrors this exact input shape and
+  physical-slot contract, but only for its recompute spans; it is not yet an
+  implementation of that vLLM class.
 - [`maybe_transfer_kv_layer`](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/model_executor/layers/attention/kv_transfer_utils.py#L14-L58)
   waits for a layer load on entry and saves it on exit. The pinned
   [`GPUModelRunner.execute_model`](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/v1/worker/gpu_model_runner.py#L4029-L4040)
