@@ -281,7 +281,9 @@ def main() -> int:
     first_payload = _request_payload(initial_input)
     first_payload["tools"] = [_TOOL]
     first_payload["tool_choice"] = {"type": "function", "name": _TOOL_NAME}
-    first = parse_completed_response(client.post_json("/v1/responses", first_payload))
+    first = parse_completed_response(
+        client.post_json("/v1/responses", first_payload), require_usage=True
+    )
     call = require_forced_tool_call(first, expected_name=_TOOL_NAME)
     city = call.arguments.get("city")
     if not isinstance(city, str) or city.casefold() != _EXPECTED_CITY.casefold():
@@ -299,7 +301,8 @@ def main() -> int:
         output=tool_output,
     )
     second = parse_completed_response(
-        client.post_json("/v1/responses", _request_payload(tool_history))
+        client.post_json("/v1/responses", _request_payload(tool_history)),
+        require_usage=True,
     )
     second_texts = require_reasoned_message(second)
     if _EXPECTED_CITY.casefold() not in " ".join(second_texts).casefold():
@@ -311,7 +314,8 @@ def main() -> int:
         user_text="Reply with only the city name from this conversation.",
     )
     third = parse_completed_response(
-        client.post_json("/v1/responses", _request_payload(final_history))
+        client.post_json("/v1/responses", _request_payload(final_history)),
+        require_usage=True,
     )
     third_texts = require_reasoned_message(third)
     if _EXPECTED_CITY.casefold() not in " ".join(third_texts).casefold():
@@ -352,6 +356,24 @@ def main() -> int:
         expected_prompt_tokens=native_prompt_tokens,
         expected_requests=3,
     )
+    responses = (first, second, third)
+    if any(response.usage is None for response in responses):
+        raise ValueError("Responses usage was not emitted for every turn")
+    usage_input_tokens = sum(
+        response.usage.input_tokens
+        for response in responses
+        if response.usage is not None
+    )
+    if usage_input_tokens != native_prompt_tokens:
+        raise ValueError("Responses usage input tokens disagree with vLLM metrics")
+    if any(
+        response.usage.cached_tokens != 0
+        for response in responses
+        if response.usage is not None
+    ):
+        raise ValueError(
+            "Responses usage reports cached input despite prefix caching being disabled"
+        )
     report = {
         "schema_version": RESPONSES_EVIDENCE_SCHEMA_VERSION,
         "contract": RESPONSES_EVIDENCE_CONTRACT,

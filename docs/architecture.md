@@ -529,5 +529,9 @@ The manual contract gate in
 function-call, tool-output, assistant-message, and later user item through the
 pinned Responses API. Its report deliberately excludes response/call IDs and
 all content text; `responses_evidence` independently validates the copied report
-and computes a bounded evidence digest. It is protocol evidence, not a
-replacement for the M3 full-vocabulary numerical artifact.
+and computes a bounded evidence digest. The live parser additionally requires
+each non-streaming response's structured usage counters to reconcile
+`input_tokens + output_tokens == total_tokens`; their summed input tokens must
+match native vLLM prompt accounting, with zero prefix-cache tokens in the
+100%-recompute configuration. It is protocol evidence, not a replacement for
+the M3 full-vocabulary numerical artifact.

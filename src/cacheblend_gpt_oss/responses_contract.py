@@ -69,6 +69,40 @@ class FunctionCallObservation:
         object.__setattr__(self, "arguments", _json_object(self.arguments, "arguments"))
 
 
+def _nonnegative_count(value: object, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"Responses {name} is invalid")
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class ResponseUsageObservation:
+    """Bounded usage counters emitted by pinned non-streaming Responses."""
+
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    cached_tokens: int
+    reasoning_tokens: int
+    tool_output_tokens: int
+
+    def __post_init__(self) -> None:
+        values = (
+            ("input tokens", self.input_tokens),
+            ("output tokens", self.output_tokens),
+            ("total tokens", self.total_tokens),
+            ("cached tokens", self.cached_tokens),
+            ("reasoning tokens", self.reasoning_tokens),
+            ("tool output tokens", self.tool_output_tokens),
+        )
+        for name, value in values:
+            _nonnegative_count(value, name)
+        if self.total_tokens != self.input_tokens + self.output_tokens:
+            raise ValueError("Responses usage total tokens do not reconcile")
+        if self.cached_tokens > self.input_tokens:
+            raise ValueError("Responses cached tokens exceed input tokens")
+
+
 @dataclass(frozen=True, slots=True)
 class ResponseObservation:
     """Validated non-streaming response with opaque items retained for replay."""
@@ -78,6 +112,7 @@ class ResponseObservation:
     reasoning_items: int
     function_calls: tuple[FunctionCallObservation, ...]
     message_texts: tuple[str, ...] = field(repr=False)
+    usage: ResponseUsageObservation | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -95,13 +130,56 @@ class ResponseObservation:
             raise ValueError("Responses reasoning item accounting is invalid")
 
 
-def parse_completed_response(data: object) -> ResponseObservation:
-    """Require a completed, nonempty pinned Responses JSON object."""
+def _parse_usage(data: object, *, required: bool) -> ResponseUsageObservation | None:
+    if data is None:
+        if required:
+            raise ValueError("Responses usage is missing")
+        return None
+    usage = _json_object(data, "usage")
+    input_details = _json_object(
+        usage.get("input_tokens_details"), "input token details"
+    )
+    output_details = _json_object(
+        usage.get("output_tokens_details"), "output token details"
+    )
+    return ResponseUsageObservation(
+        input_tokens=_nonnegative_count(
+            usage.get("input_tokens"), "input tokens"
+        ),
+        output_tokens=_nonnegative_count(
+            usage.get("output_tokens"), "output tokens"
+        ),
+        total_tokens=_nonnegative_count(
+            usage.get("total_tokens"), "total tokens"
+        ),
+        cached_tokens=_nonnegative_count(
+            input_details.get("cached_tokens"), "cached tokens"
+        ),
+        reasoning_tokens=_nonnegative_count(
+            output_details.get("reasoning_tokens"), "reasoning tokens"
+        ),
+        tool_output_tokens=_nonnegative_count(
+            output_details.get("tool_output_tokens"), "tool output tokens"
+        ),
+    )
+
+
+def parse_completed_response(
+    data: object, *, require_usage: bool = False
+) -> ResponseObservation:
+    """Require a completed, nonempty pinned Responses JSON object.
+
+    ``usage`` is optional in the pinned protocol model, so CPU fixtures may
+    omit it. The live non-streaming contract harness passes ``require_usage``
+    to prove that vLLM emitted the structured counters before accepting a
+    Harmony/tool/multi-turn response.
+    """
 
     root = _json_object(data, "response")
     _bounded_text(root.get("id"), "response ID", MAX_RESPONSE_ID_BYTES)
     if root.get("status") != "completed":
         raise ValueError("Responses request did not complete")
+    usage = _parse_usage(root.get("usage"), required=require_usage)
     raw_output = root.get("output")
     if not isinstance(raw_output, list) or not raw_output:
         raise ValueError("Responses output is empty")
@@ -159,6 +237,7 @@ def parse_completed_response(data: object) -> ResponseObservation:
         reasoning_items=reasoning_items,
         function_calls=tuple(function_calls),
         message_texts=tuple(message_texts),
+        usage=usage,
     )
 
 
@@ -240,6 +319,7 @@ __all__ = [
     "JsonObject",
     "JsonValue",
     "ResponseObservation",
+    "ResponseUsageObservation",
     "append_response_and_user",
     "append_tool_result",
     "parse_completed_response",

@@ -68,6 +68,25 @@ def _message_response(response_id: str = "resp_second") -> dict[str, object]:
     }
 
 
+def _usage() -> dict[str, object]:
+    return {
+        "input_tokens": 12,
+        "input_tokens_details": {
+            "cached_tokens": 0,
+            "input_tokens_per_turn": [12],
+            "cached_tokens_per_turn": [0],
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+            "reasoning_tokens": 3,
+            "tool_output_tokens": 0,
+            "output_tokens_per_turn": [5],
+            "tool_output_tokens_per_turn": [0],
+        },
+        "total_tokens": 17,
+    }
+
+
 def test_parse_and_append_exact_harmony_tool_turn() -> None:
     initial = [{"role": "user", "content": "Weather in Paris?"}]
     raw = _tool_response()
@@ -91,6 +110,40 @@ def test_parse_and_append_exact_harmony_tool_turn() -> None:
         "call_id": "call_first",
         "output": '{"city":"Paris","temperature_celsius":21}',
     }
+
+
+def test_required_usage_is_parsed_and_reconciled() -> None:
+    raw = _message_response()
+    raw["usage"] = _usage()
+
+    response = parse_completed_response(raw, require_usage=True)
+
+    assert response.usage is not None
+    assert response.usage.input_tokens == 12
+    assert response.usage.output_tokens == 5
+    assert response.usage.total_tokens == 17
+    assert response.usage.reasoning_tokens == 3
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda response: response.pop("usage"),
+        lambda response: response["usage"].update(total_tokens=18),
+        lambda response: response["usage"]["input_tokens_details"].update(
+            cached_tokens=True
+        ),
+    ],
+)
+def test_required_usage_failures_are_rejected(
+    mutation: Callable[[dict[str, object]], object],
+) -> None:
+    raw = _message_response()
+    raw["usage"] = _usage()
+    mutation(raw)
+
+    with pytest.raises(ValueError, match="Responses (usage|total|cached)"):
+        parse_completed_response(raw, require_usage=True)
 
 
 def test_append_only_multi_turn_preserves_prior_items() -> None:

@@ -19,6 +19,10 @@ The upstream named-tool test appends the emitted function call and a matching
 The exact GPT-OSS suite separately checks completed Responses and low-effort
 reasoning in
 [`test_harmony.py`](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/tests/entrypoints/openai/responses/test_harmony.py#L82-L105).
+The pinned response model exposes structured optional `usage` counters whose
+normal non-streaming serving path is populated from prompt/output context
+metrics ([protocol](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/entrypoints/openai/responses/protocol.py#L91-L99),
+[serving](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/entrypoints/openai/responses/serving.py#L842-L877)).
 
 This repository's harness is stricter about append-only behavior: it carries
 every output item, including Harmony reasoning, into the next input. It records
@@ -109,7 +113,10 @@ The script performs exactly three non-streaming calls:
 It fails unless every response completes, every turn emits a Harmony reasoning
 item, the first emits exactly the named function call with valid JSON
 arguments, both later turns emit nonempty message text, the fixed city survives
-both continuations, exactly three connector requests are observed, all
+both continuations, every non-streaming response includes reconciled `usage`
+input/output/total and nested detail counters, the sum of usage input tokens
+matches native vLLM prompt-token accounting, prefix-cache usage is zero, and
+exactly three connector requests are observed, all
 connector counter deltas reconcile, each pinned vLLM timing histogram records
 exactly three observations, and the native prefill-KV histogram sum equals the
 native prompt-token counter delta. The prompt-source interval must also report
