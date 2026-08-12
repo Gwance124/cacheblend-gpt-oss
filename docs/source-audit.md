@@ -245,6 +245,9 @@ The CPU-side guard for this boundary is
 `cacheblend_gpt_oss.vllm_compat.v0_19_1.selective_registry`. It is deliberately
 not an entry point: it accepts only a proof object and project-owned lazy class
 paths, and it treats a partial registry mutation as terminal for that process.
+The companion `cacheblend_gpt_oss.gpt_oss.selective_kv` planner supplies the
+row-to-slot split that a custom `do_kv_cache_update` must consume; it does not
+mutate cache tensors or alter the stock runner.
 
 ## LMCache 0.4.3 integration audit
 

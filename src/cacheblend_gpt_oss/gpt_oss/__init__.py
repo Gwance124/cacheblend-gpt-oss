@@ -26,6 +26,12 @@ from cacheblend_gpt_oss.gpt_oss.selective import (
     SelectivePlanError,
     SelectivePlanErrorCode,
 )
+from cacheblend_gpt_oss.gpt_oss.selective_kv import (
+    SelectiveWriteError,
+    SelectiveWriteErrorCode,
+    SelectiveWritePlan,
+    plan_selective_kv_writes,
+)
 from cacheblend_gpt_oss.gpt_oss.torch_yarn import (
     GPT_OSS_KV_DTYPE,
     GPT_OSS_YARN_CONFIG,
@@ -68,6 +74,9 @@ __all__ = [
     "LayerTokenScatterSpan",
     "SelectivePlanError",
     "SelectivePlanErrorCode",
+    "SelectiveWriteError",
+    "SelectiveWriteErrorCode",
+    "SelectiveWritePlan",
     "TokenScatterPlan",
     "TokenTransfer",
     "TorchYarnError",
@@ -79,6 +88,7 @@ __all__ = [
     "correct_shifted_key",
     "extract_gpt_oss_layer_index",
     "load_torch_yarn_corrector",
+    "plan_selective_kv_writes",
     "plan_token_scatter",
     "yarn_inverse_frequencies",
     "yarn_magnitude_scale",

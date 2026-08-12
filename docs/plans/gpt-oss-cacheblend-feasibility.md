@@ -314,6 +314,11 @@ must remain inside this project, `CUSTOM` is bound before the model override,
 and a partial registration fails closed for the process lifetime. It is a
 library seam only; no plugin entry point is enabled.
 
+The tensor-free `gpt_oss.selective_kv` planner now splits complete hybrid
+layer spans by those row selections and preserves source-position metadata and
+physical destination slots. It is a structural contract for
+`do_kv_cache_update`, not an execution or correctness claim.
+
 This milestone decides the patch boundary.
 
 Deliverables:

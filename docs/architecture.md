@@ -102,6 +102,12 @@ closed after a partial registration. It is intentionally not exposed as a
 `vllm.general_plugins` entry point until the pinned model/backend classes and
 GPU evidence exist.
 
+`gpt_oss.selective_kv` is the tensor-free companion for the backend boundary:
+it splits complete 24-layer hybrid spans by recompute ranges, preserves old
+source positions for YaRN correction, and computes destination physical slots
+for only the rows that may be written. It performs no copy and is not consumed
+by the current 100%-recompute connector.
+
 ### Version-scoped connector layer
 
 `cacheblend_gpt_oss.vllm_compat.v0_19_1` contains the only imports of vLLM
