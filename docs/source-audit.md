@@ -181,7 +181,8 @@ or a pinned ordering patch.
 - [`ModelRegistry.register_model`](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/model_executor/models/registry.py#L886-L938)
   explicitly registers external models and allows an existing architecture to
   be overridden lazily.
-- [`AttentionBackendEnum.CUSTOM` and `register_backend`](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/v1/attention/backends/registry.py#L34-L118)
+- [`AttentionBackendEnum.CUSTOM`](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/v1/attention/backends/registry.py#L34-L118)
+  and [`register_backend`](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/v1/attention/backends/registry.py#L205-L262)
   explicitly support a third-party backend.
 
 These justify an out-of-tree selective-recomputation spike, but do not yet prove
