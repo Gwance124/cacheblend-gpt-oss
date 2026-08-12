@@ -598,6 +598,7 @@ class FakeTransferRuntime:
             rejected_candidate_indexes=(),
             loaded_kv_tokens=0,
             tokens_to_recompute=256,
+            position_correction_latency_seconds=0.25,
         )
 
     def mark_full_prefill_complete(
@@ -748,6 +749,7 @@ def test_transfer_mode_wires_full_recompute_scheduler_and_worker_hooks(
     assert reduced["lookup_latency_seconds"] >= 0
     assert reduced["transfer_latency_seconds"] >= 0
     assert reduced["position_correction_latency_seconds"] >= 0
+    assert reduced["position_correction_latency_seconds"] == pytest.approx(0.25)
     assert reduced["selective_recomputation_latency_seconds"] >= 0
     assert reduced["store_latency_seconds"] >= 0
     assert worker.get_kv_connector_stats() is None
