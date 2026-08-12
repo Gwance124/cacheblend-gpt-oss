@@ -150,6 +150,7 @@ def test_invalid_values_have_bounded_fields_and_raise_structured_error() -> None
         selective_recomputation_latency_seconds=0.0,
         ttft_seconds=float("nan"),
         prefill_latency_seconds=0.1,
+        store_latency_seconds=-0.2,
     )
     metrics = RequestMetrics(
         counters=_full_recompute_counters(),
@@ -163,6 +164,7 @@ def test_invalid_values_have_bounded_fields_and_raise_structured_error() -> None
     assert {issue.field for issue in caught.value.issues} == {
         MetricField.LOOKUP_LATENCY_SECONDS,
         MetricField.TTFT_SECONDS,
+        MetricField.STORE_LATENCY_SECONDS,
         MetricField.MAX_ABS_LOGIT_ERROR,
     }
 
@@ -185,3 +187,52 @@ def test_zero_denominators_produce_bounded_zero_fractions() -> None:
     assert counters.loaded_token_hit_fraction == 0.0
     assert counters.effective_saved_prefill_fraction == 0.0
     assert validate_request_metrics(RequestMetrics(counters, _timers())) == ()
+
+
+def test_store_latency_is_part_of_the_structured_timer_contract() -> None:
+    timers = RequestMetricTimers(
+        lookup_latency_seconds=0.0,
+        transfer_latency_seconds=0.0,
+        position_correction_latency_seconds=0.0,
+        selective_recomputation_latency_seconds=0.0,
+        ttft_seconds=None,
+        prefill_latency_seconds=0.0,
+        store_latency_seconds=0.003,
+    )
+    assert timers.store_latency_seconds == pytest.approx(0.003)
+    assert validate_request_metrics(
+        RequestMetrics(_full_recompute_counters(), timers)
+    ) == ()
+
+
+def test_malformed_metric_types_return_bounded_issues_without_type_error() -> None:
+    counters = RequestMetricCounters(
+        prompt_tokens=True,  # type: ignore[arg-type]
+        reusable_documents_requested=0,
+        reusable_documents_hit=0,
+        reusable_document_tokens_requested=0,
+        kv_tokens_found=0,
+        kv_tokens_loaded=0,
+        kv_tokens_rejected=0,
+        tokens_recomputed=0,
+        prefill_tokens_avoided=0,
+    )
+    timers = RequestMetricTimers(
+        lookup_latency_seconds="slow",  # type: ignore[arg-type]
+        transfer_latency_seconds=0.0,
+        position_correction_latency_seconds=0.0,
+        selective_recomputation_latency_seconds=0.0,
+        ttft_seconds=None,
+        prefill_latency_seconds=0.0,
+    )
+    metrics = RequestMetrics(
+        counters,
+        timers,
+        RequestCorrectnessMetrics(max_abs_logit_error="unknown"),  # type: ignore[arg-type]
+    )
+    issues = validate_request_metrics(metrics)
+    assert {issue.code for issue in issues} >= {
+        MetricInvariantCode.INVALID_COUNTER_TYPE,
+        MetricInvariantCode.INVALID_TIMER_TYPE,
+        MetricInvariantCode.INVALID_ERROR_TYPE,
+    }

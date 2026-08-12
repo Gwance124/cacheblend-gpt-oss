@@ -27,6 +27,7 @@ class MetricField(str, Enum):
     )
     TTFT_SECONDS = "ttft_seconds"
     PREFILL_LATENCY_SECONDS = "prefill_latency_seconds"
+    STORE_LATENCY_SECONDS = "store_latency_seconds"
     MAX_ABS_LOGIT_ERROR = "max_abs_logit_error"
     MEAN_ABS_LOGIT_ERROR = "mean_abs_logit_error"
 
@@ -35,6 +36,9 @@ class MetricInvariantCode(str, Enum):
     """Stable, bounded request metric invariant failures."""
 
     NEGATIVE_COUNTER = "negative_counter"
+    INVALID_COUNTER_TYPE = "invalid_counter_type"
+    INVALID_TIMER_TYPE = "invalid_timer_type"
+    INVALID_ERROR_TYPE = "invalid_error_type"
     NONFINITE_OR_NEGATIVE_TIMER = "nonfinite_or_negative_timer"
     NONFINITE_OR_NEGATIVE_ERROR = "nonfinite_or_negative_error"
     DOCUMENT_HITS_EXCEED_REQUESTS = "document_hits_exceed_requests"
@@ -105,6 +109,7 @@ class RequestMetricTimers:
     selective_recomputation_latency_seconds: float
     ttft_seconds: float | None
     prefill_latency_seconds: float
+    store_latency_seconds: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,6 +150,10 @@ def _fraction(numerator: int, denominator: int) -> float:
     return numerator / denominator if denominator > 0 else 0.0
 
 
+def _valid_counter(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def validate_request_metrics(
     metrics: RequestMetrics,
 ) -> tuple[MetricInvariantIssue, ...]:
@@ -171,7 +180,14 @@ def validate_request_metrics(
         (MetricField.PREFILL_TOKENS_AVOIDED, counters.prefill_tokens_avoided),
     )
     for counter_field, counter_value in counter_fields:
-        if counter_value < 0:
+        if isinstance(counter_value, bool) or not isinstance(counter_value, int):
+            issues.append(
+                MetricInvariantIssue(
+                    code=MetricInvariantCode.INVALID_COUNTER_TYPE,
+                    field=counter_field,
+                )
+            )
+        elif counter_value < 0:
             issues.append(
                 MetricInvariantIssue(
                     code=MetricInvariantCode.NEGATIVE_COUNTER,
@@ -198,10 +214,21 @@ def validate_request_metrics(
             MetricField.PREFILL_LATENCY_SECONDS,
             metrics.timers.prefill_latency_seconds,
         ),
+        (MetricField.STORE_LATENCY_SECONDS, metrics.timers.store_latency_seconds),
     )
     for timer_field, timer_value in timer_fields:
         if timer_value is not None and (
-            not math.isfinite(timer_value) or timer_value < 0.0
+            isinstance(timer_value, bool)
+            or not isinstance(timer_value, int | float)
+        ):
+            issues.append(
+                MetricInvariantIssue(
+                    code=MetricInvariantCode.INVALID_TIMER_TYPE,
+                    field=timer_field,
+                )
+            )
+        elif timer_value is not None and (
+            not math.isfinite(float(timer_value)) or float(timer_value) < 0.0
         ):
             issues.append(
                 MetricInvariantIssue(
@@ -219,7 +246,17 @@ def validate_request_metrics(
     )
     for error_field, error_value in error_fields:
         if error_value is not None and (
-            not math.isfinite(error_value) or error_value < 0.0
+            isinstance(error_value, bool)
+            or not isinstance(error_value, int | float)
+        ):
+            issues.append(
+                MetricInvariantIssue(
+                    code=MetricInvariantCode.INVALID_ERROR_TYPE,
+                    field=error_field,
+                )
+            )
+        elif error_value is not None and (
+            not math.isfinite(float(error_value)) or float(error_value) < 0.0
         ):
             issues.append(
                 MetricInvariantIssue(
@@ -228,50 +265,78 @@ def validate_request_metrics(
                 )
             )
 
-    if counters.reusable_documents_hit > counters.reusable_documents_requested:
+    if (
+        _valid_counter(counters.reusable_documents_hit)
+        and _valid_counter(counters.reusable_documents_requested)
+        and counters.reusable_documents_hit > counters.reusable_documents_requested
+    ):
         issues.append(
             MetricInvariantIssue(
                 code=MetricInvariantCode.DOCUMENT_HITS_EXCEED_REQUESTS,
                 field=MetricField.REUSABLE_DOCUMENTS_HIT,
             )
         )
-    if counters.reusable_document_tokens_requested > counters.prompt_tokens:
+    if (
+        _valid_counter(counters.reusable_document_tokens_requested)
+        and _valid_counter(counters.prompt_tokens)
+        and counters.reusable_document_tokens_requested > counters.prompt_tokens
+    ):
         issues.append(
             MetricInvariantIssue(
                 code=MetricInvariantCode.REUSABLE_TOKENS_EXCEED_PROMPT,
                 field=MetricField.REUSABLE_DOCUMENT_TOKENS_REQUESTED,
             )
         )
-    if counters.kv_tokens_found > counters.reusable_document_tokens_requested:
+    if (
+        _valid_counter(counters.kv_tokens_found)
+        and _valid_counter(counters.reusable_document_tokens_requested)
+        and counters.kv_tokens_found > counters.reusable_document_tokens_requested
+    ):
         issues.append(
             MetricInvariantIssue(
                 code=MetricInvariantCode.FOUND_TOKENS_EXCEED_REQUESTED,
                 field=MetricField.KV_TOKENS_FOUND,
             )
         )
-    if counters.kv_tokens_loaded > counters.kv_tokens_found:
+    if (
+        _valid_counter(counters.kv_tokens_loaded)
+        and _valid_counter(counters.kv_tokens_found)
+        and counters.kv_tokens_loaded > counters.kv_tokens_found
+    ):
         issues.append(
             MetricInvariantIssue(
                 code=MetricInvariantCode.LOADED_TOKENS_EXCEED_FOUND,
                 field=MetricField.KV_TOKENS_LOADED,
             )
         )
-    if counters.kv_tokens_found != (
-        counters.kv_tokens_loaded + counters.kv_tokens_rejected
+    if (
+        _valid_counter(counters.kv_tokens_found)
+        and _valid_counter(counters.kv_tokens_loaded)
+        and _valid_counter(counters.kv_tokens_rejected)
+        and counters.kv_tokens_found
+        != counters.kv_tokens_loaded + counters.kv_tokens_rejected
     ):
         issues.append(
             MetricInvariantIssue(
                 code=MetricInvariantCode.REJECTED_TOKEN_RECONCILIATION_FAILED,
             )
         )
-    if counters.tokens_recomputed > counters.prompt_tokens:
+    if (
+        _valid_counter(counters.tokens_recomputed)
+        and _valid_counter(counters.prompt_tokens)
+        and counters.tokens_recomputed > counters.prompt_tokens
+    ):
         issues.append(
             MetricInvariantIssue(
                 code=MetricInvariantCode.RECOMPUTED_TOKENS_EXCEED_PROMPT,
                 field=MetricField.TOKENS_RECOMPUTED,
             )
         )
-    if counters.prefill_tokens_avoided > counters.prompt_tokens:
+    if (
+        _valid_counter(counters.prefill_tokens_avoided)
+        and _valid_counter(counters.prompt_tokens)
+        and counters.prefill_tokens_avoided > counters.prompt_tokens
+    ):
         issues.append(
             MetricInvariantIssue(
                 code=MetricInvariantCode.SAVED_TOKENS_EXCEED_PROMPT,
@@ -279,9 +344,15 @@ def validate_request_metrics(
             )
         )
 
-    expected_saved_tokens = counters.prompt_tokens - counters.tokens_recomputed
+    expected_saved_tokens = (
+        counters.prompt_tokens - counters.tokens_recomputed
+        if _valid_counter(counters.prompt_tokens)
+        and _valid_counter(counters.tokens_recomputed)
+        else -1
+    )
     if expected_saved_tokens >= 0 and (
-        counters.prefill_tokens_avoided != expected_saved_tokens
+        _valid_counter(counters.prefill_tokens_avoided)
+        and counters.prefill_tokens_avoided != expected_saved_tokens
     ):
         issues.append(
             MetricInvariantIssue(
