@@ -32,7 +32,7 @@ class CorrectnessRunMode(str, Enum):
     CACHEBLEND_100PCT = "cacheblend_100pct"
 
 
-def _require_text(name: str, value: str, *, maximum: int = 256) -> None:
+def _require_text(name: str, value: object, *, maximum: int = 256) -> None:
     if (
         not isinstance(value, str)
         or not value
@@ -43,8 +43,17 @@ def _require_text(name: str, value: str, *, maximum: int = 256) -> None:
         raise ValueError(f"invalid correctness artifact {name}")
 
 
-def _require_count(name: str, value: int) -> None:
+def _require_count(name: str, value: object) -> None:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"invalid correctness artifact {name}")
+
+
+def _require_digest(
+    name: str, value: object, pattern: re.Pattern[str]
+) -> None:
+    """Reject malformed JSON scalar types before applying a regex."""
+
+    if not isinstance(value, str) or pattern.fullmatch(value) is None:
         raise ValueError(f"invalid correctness artifact {name}")
 
 
@@ -79,14 +88,12 @@ class CorrectnessRuntimeIdentity:
             raise ValueError("correctness artifact is outside the pinned runtime")
         _require_text("model_revision", self.model_revision)
         _require_text("tokenizer_revision", self.tokenizer_revision)
-        if _HEX_40.fullmatch(self.plugin_commit) is None:
-            raise ValueError("invalid correctness artifact plugin_commit")
+        _require_digest("plugin_commit", self.plugin_commit, _HEX_40)
         for name, digest in (
             ("model_config_digest", self.model_config_digest),
             ("kv_cache_config_digest", self.kv_cache_config_digest),
         ):
-            if _HEX_64.fullmatch(digest) is None:
-                raise ValueError(f"invalid correctness artifact {name}")
+            _require_digest(name, digest, _HEX_64)
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,8 +106,9 @@ class ReusableSegmentIdentity:
     target_start: int
 
     def __post_init__(self) -> None:
-        if _HEX_64.fullmatch(self.token_digest) is None:
-            raise ValueError("invalid correctness artifact reusable token digest")
+        _require_digest(
+            "reusable token digest", self.token_digest, _HEX_64
+        )
         for name, value in (
             ("tokens", self.tokens),
             ("source_start", self.source_start),
@@ -129,8 +137,7 @@ class PromptCaseIdentity:
             ("source_prompt_digest", self.source_prompt_digest),
             ("target_prompt_digest", self.target_prompt_digest),
         ):
-            if _HEX_64.fullmatch(digest) is None:
-                raise ValueError(f"invalid correctness artifact {name}")
+            _require_digest(name, digest, _HEX_64)
         for name, value in (
             ("source_prompt_tokens", self.source_prompt_tokens),
             ("target_prompt_tokens", self.target_prompt_tokens),

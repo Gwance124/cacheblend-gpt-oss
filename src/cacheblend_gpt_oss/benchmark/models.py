@@ -123,6 +123,14 @@ def _require_id(value: object, code: BenchmarkErrorCode) -> str:
     return value
 
 
+def _require_digest(value: object, code: BenchmarkErrorCode) -> str:
+    """Validate the JSON scalar type before applying the digest regex."""
+
+    if not isinstance(value, str) or _HEX_64.fullmatch(value) is None:
+        _fail(code)
+    return value
+
+
 def _validate_arm_case(arm: BenchmarkArm, case: CorrectnessCase) -> None:
     expected: dict[BenchmarkArm, tuple[CorrectnessCase, ...]] = {
         BenchmarkArm.VLLM_PREFIX_EXACT: (CorrectnessCase.EXACT_PREFIX,),
@@ -242,11 +250,11 @@ class BenchmarkTrial:
             _fail(BenchmarkErrorCode.INVALID_METRICS)
         if not isinstance(self.correctness_passed, bool):
             _fail(BenchmarkErrorCode.CORRECTNESS_MISSING)
-        if self.correctness_artifact_digest is not None and (
-            not isinstance(self.correctness_artifact_digest, str)
-            or _HEX_64.fullmatch(self.correctness_artifact_digest) is None
-        ):
-            _fail(BenchmarkErrorCode.INVALID_DIGEST)
+        if self.correctness_artifact_digest is not None:
+            _require_digest(
+                self.correctness_artifact_digest,
+                BenchmarkErrorCode.INVALID_DIGEST,
+            )
         if self.correctness_passed and self.correctness_artifact_digest is None:
             _fail(BenchmarkErrorCode.CORRECTNESS_MISSING)
         if self.correctness_passed and (
@@ -258,11 +266,11 @@ class BenchmarkTrial:
             # readiness must remain tied to the deterministic logit/hidden
             # state comparison recorded in the request metrics.
             _fail(BenchmarkErrorCode.CORRECTNESS_MISSING)
-        if self.transfer_evidence_digest is not None and (
-            not isinstance(self.transfer_evidence_digest, str)
-            or _HEX_64.fullmatch(self.transfer_evidence_digest) is None
-        ):
-            _fail(BenchmarkErrorCode.INVALID_DIGEST)
+        if self.transfer_evidence_digest is not None:
+            _require_digest(
+                self.transfer_evidence_digest,
+                BenchmarkErrorCode.INVALID_DIGEST,
+            )
         if (
             self.arm
             in {
@@ -328,11 +336,10 @@ class BenchmarkArtifact:
             or self.prompt_tokens > BENCHMARK_MAX_MODEL_LEN
         ):
             _fail(BenchmarkErrorCode.INVALID_PROMPT_TOKENS)
-        if (
-            not isinstance(self.prompt_fixture_digest, str)
-            or _HEX_64.fullmatch(self.prompt_fixture_digest) is None
-        ):
-            _fail(BenchmarkErrorCode.INVALID_DIGEST)
+        _require_digest(
+            self.prompt_fixture_digest,
+            BenchmarkErrorCode.INVALID_DIGEST,
+        )
         _require_id(self.host_id, BenchmarkErrorCode.INVALID_IDENTITY)
         if self.attention_backend != BENCHMARK_ATTENTION_BACKEND:
             _fail(BenchmarkErrorCode.INVALID_IDENTITY)

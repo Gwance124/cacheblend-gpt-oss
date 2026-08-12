@@ -366,6 +366,13 @@ def test_invalid_runtime_distribution_and_tolerance_binding_are_rejected() -> No
                 "vllm_version": "0.20.0",
             }
         )
+    malformed_runtime = artifact_to_dict(_baseline())["runtime"]
+    malformed_runtime["plugin_commit"] = None
+    with pytest.raises(ValueError, match="plugin_commit"):
+        CorrectnessRuntimeIdentity(**malformed_runtime)
+    segment = build_moved_document_fixture().prompt_identity.reusable_segments[0]
+    with pytest.raises(ValueError, match="reusable token digest"):
+        replace(segment, token_digest=None)
     with pytest.raises(ValueError, match="wrong size"):
         FullVocabularyLogprobs((0.0,), 0)
 

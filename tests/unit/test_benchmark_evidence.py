@@ -484,6 +484,22 @@ def test_root_and_nested_schema_tampering_is_bounded() -> None:
         benchmark_artifact_from_dict(payload)
     assert caught.value.code is BenchmarkErrorCode.INVALID_METRICS
 
+    payload = benchmark_artifact_to_dict(
+        _artifact(_trial(BenchmarkArm.FULL_PREFILL))
+    )
+    payload["prompt_fixture_digest"] = None
+    with pytest.raises(BenchmarkError) as caught:
+        benchmark_artifact_from_dict(payload)
+    assert caught.value.code is BenchmarkErrorCode.INVALID_DIGEST
+
+    payload = benchmark_artifact_to_dict(
+        _artifact(_trial(BenchmarkArm.FULL_PREFILL))
+    )
+    payload["trials"][0]["correctness_artifact_digest"] = None  # type: ignore[index]
+    with pytest.raises(BenchmarkError) as caught:
+        benchmark_artifact_from_dict(payload)
+    assert caught.value.code is BenchmarkErrorCode.CORRECTNESS_MISSING
+
 
 def test_invalid_json_is_bounded(tmp_path) -> None:
     path = tmp_path / "broken.json"
