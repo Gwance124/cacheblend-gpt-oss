@@ -18,7 +18,11 @@ is:
   `solab-g3`**.
 - Selective non-prefix recomputation: **not expressible by the connector API
   alone**. First exhaust a registered GPT-OSS model override and custom
-  sink-aware attention backend. A pinned vLLM patch is only a gated fallback.
+  sink-aware attention backend. The pinned follow-up audit confirms those
+  registration seams are public, but also shows that split Triton cache update
+  runs before the connector's per-layer wait; the custom implementation must
+  mask accepted cached rows in `do_kv_cache_update`. A pinned vLLM patch is
+  only a gated fallback after the M3--M5 GPU evidence.
 
 The evidence behind each statement is in [the pinned source audit](source-audit.md).
 

@@ -26,7 +26,7 @@ be tested before deciding whether a pinned vLLM patch is necessary.
 | M3. 100% recomputation transfer proof | Implemented; GPU/logit gate pending | Candidate KV is transferred, verified, then fully overwritten | No patch |
 | M4. GPT-OSS YaRN correction | Implemented; CUDA gate pending | Shifted cached K matches direct target-position K | No patch |
 | M5. Hybrid groups and sinks | CPU layout/data-plane complete; model gate pending | Full/sliding layers map correctly and sink behavior is unchanged | No patch |
-| M6. Out-of-tree selective-data-plane spike | Planned | Registered model/backend skips selected rows while preserving runner output shape | Decide at gate |
+| M6. Out-of-tree selective-data-plane spike | Pinned boundary audited; implementation waits for M3--M5 GPU evidence | Registered model/backend must skip selected rows while preserving runner output shape | Decide at gate |
 | M7. Reduced recomputation correctness | Planned | Error curves at successively lower ratios | No optimization yet |
 | M8. Responses/Harmony/multi-turn validation | Planned | Transparent validated endpoint | Patch only for proven API blocker |
 | M9. Controlled benchmark | Planned | Full-prefill and prefix-cache comparisons with complete metrics | Optimize only after correctness |
@@ -286,6 +286,21 @@ Stop criteria:
 - Do not treat request-final block tables as complete evidence for sliding KV.
 
 ## M6: out-of-tree selective-data-plane spike
+
+Follow-up audit of the exact pinned source is complete. The public registries
+are sufficient to load a lazy GPT-OSS model override and a `CUSTOM` attention
+backend, but the stock split-update path calls `unified_kv_cache_update` before
+the decorated attention wait. The custom implementation must therefore make
+`do_kv_cache_update` plan-aware; a connector-only wait cannot protect
+overlapping loaded/recomputed rows. Triton remains the sink-capable target and
+its paged KV shape and sink argument must be preserved. See the
+[follow-up source audit](../source-audit.md#follow-up-attention-ordering-audit-2026-08-12)
+for the pinned line evidence.
+
+No general-plugin entry point is enabled yet. It would execute in every API,
+engine, and worker process and could silently activate incomplete classes. The
+entry point is a deliverable only after M3--M5 provide real baseline, transfer,
+YaRN, hybrid-group, and sink results on `solab-g3`.
 
 This milestone decides the patch boundary.
 

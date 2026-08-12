@@ -188,6 +188,58 @@ These justify an out-of-tree selective-recomputation spike, but do not yet prove
 that sparse hidden-state/output invariants work. No patch should be written
 until that spike reaches its stop/go gate.
 
+### Follow-up attention ordering audit (2026-08-12)
+
+The registry seam is real, but the pinned attention call order determines what
+the first selective spike must implement. The relevant source evidence is:
+
+- [`AttentionBackend`](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/v1/attention/backend.py#L46-L91)
+  requires a backend name, implementation class, metadata-builder class, and
+  KV-cache shape. Its default
+  [`supports_sink`](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/v1/attention/backend.py#L199-L205)
+  is false, and
+  [`validate_configuration`](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/v1/attention/backend.py#L250-L308)
+  rejects a sink-enabled configuration unless the selected backend explicitly
+  supports sinks.
+- [`TritonAttentionBackend`](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/v1/attention/backends/triton_attn.py#L257-L355)
+  is the pinned sink-capable A100 path. It sets
+  `forward_includes_kv_cache_update=False`, uses the paged shape
+  `[blocks, 2, block, kv_heads, head_dim]`, and advertises sink support.
+  [`TritonAttentionImpl`](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/v1/attention/backends/triton_attn.py#L357-L495)
+  receives the learned sink tensor and passes it to the unified attention
+  operation; sinks are not cache rows.
+- In [`Attention.forward`](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/model_executor/layers/attention/attention.py#L452-L500),
+  the split-update path calls `unified_kv_cache_update` before
+  `unified_attention_with_output`. That update invokes
+  `impl.do_kv_cache_update` through
+  [`unified_kv_cache_update`](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/model_executor/layers/attention/attention.py#L662-L684).
+  A selective implementation must therefore make its custom implementation's
+  update operation skip accepted cached rows; merely waiting in the connector
+  decorator is too late for overlapping load/recompute slots.
+- [`maybe_transfer_kv_layer`](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/model_executor/layers/attention/kv_transfer_utils.py#L14-L58)
+  waits for a layer load on entry and saves it on exit. The pinned
+  [`GPUModelRunner.execute_model`](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/v1/worker/gpu_model_runner.py#L4029-L4040)
+  enters the connector context before `_model_forward`, so the current
+  100%-recompute connector can complete its synchronous load before any stock
+  Triton update. This does not provide a sparse-row mask.
+
+This evidence changes the M6 boundary as follows:
+
+1. Registration of a model override and a `CUSTOM` backend remains completely
+   out of tree; no vLLM patch is needed to load either class.
+2. The first custom backend must preserve the exact Triton constructor,
+   metadata, sink, and paged-layout contracts while replacing the cache-update
+   operation with a plan-aware implementation. A model override must preserve
+   full-shaped hidden-state/logit outputs and runner sampling indices.
+3. No general-plugin entry point is enabled yet. Registering incomplete classes
+   in every vLLM process would turn an unvalidated experiment into an implicit
+   serving default. The entry point is added only after the M3--M5 GPU gates
+   supply the baseline and transfer evidence.
+4. There is no evidence for a patch at this point. If the pinned single-request
+   model/backend spike fails an output-shape, slot-mapping, or ordering
+   invariant after these public registries are exhausted, record that failure
+   and design a version-scoped patch before writing one.
+
 ## LMCache 0.4.3 integration audit
 
 ### Ordinary V1 connector and engine
