@@ -235,8 +235,10 @@ recomputed, and saved prefill remained zero. This store-counter wait prevents re
 completion from racing the source sidecar/LMCache publication; the capture also
 reconciles each request's eligible/completed chunk count and requires zero store
 fallbacks. Native prompt/timing names are taken from the pinned
-[`PrometheusStatLogger`](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/v1/metrics/loggers.py#L580-L889),
-and TTFT is never estimated from client wall time.
+[`PrometheusStatLogger`](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/v1/metrics/loggers.py#L580-L903),
+and TTFT is never estimated from client wall time. The wait also requires the
+native histogram observation milestones before taking each interval snapshot,
+so asynchronous exporter lag cannot produce a false mismatch.
 
 ```bash
 .venv/bin/python scripts/capture_moved_document.py \

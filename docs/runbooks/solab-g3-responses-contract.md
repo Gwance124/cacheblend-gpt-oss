@@ -110,7 +110,9 @@ exactly three observations, and the native prefill-KV histogram sum equals the
 native prompt-token counter delta. Recomputed tokens must be nonzero and saved
 prefill must be zero. The report stores native prompt/prefill work plus count,
 sum, and mean for TTFT, end-to-end, queue, prefill, and decode latency; TTFT is
-never inferred from client wall time.
+never inferred from client wall time. The request wait requires those native
+observation milestones before taking its final interval scrape, preventing
+asynchronous exporter lag from creating a false mismatch.
 
 ## Stop/go decision
 

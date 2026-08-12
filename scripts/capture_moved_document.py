@@ -169,6 +169,8 @@ def _wait_for_request_counter(
     wait_seconds: float,
     *,
     minimum_store_tokens: int | None = None,
+    minimum_timing_count: int | None = None,
+    minimum_prefill_observations: int | None = None,
 ) -> tuple[dict[str, int], dict[str, int], str]:
     if wait_seconds <= 0:
         raise ValueError("metric wait must be positive")
@@ -177,12 +179,33 @@ def _wait_for_request_counter(
         metrics = client.get_text("/metrics")
         snapshot = parse_connector_counter_snapshot(metrics)
         stores = parse_connector_store_counter_snapshot(metrics)
+        native_timing_ready = True
+        if minimum_timing_count is not None:
+            timing = parse_vllm_timing_snapshot(metrics)
+            native_timing_ready = all(
+                summary.count >= minimum_timing_count
+                for summary in (
+                    timing.ttft_seconds,
+                    timing.end_to_end_latency_seconds,
+                    timing.queue_latency_seconds,
+                    timing.prefill_latency_seconds,
+                    timing.decode_latency_seconds,
+                )
+            )
+        native_prefill_ready = True
+        if minimum_prefill_observations is not None:
+            prefill_work = parse_vllm_prefill_work_snapshot(metrics)
+            native_prefill_ready = (
+                prefill_work.observations >= minimum_prefill_observations
+            )
         if (
             snapshot["requests"] >= minimum
             and (
                 minimum_store_tokens is None
                 or stores["store_tokens_completed"] >= minimum_store_tokens
             )
+            and native_timing_ready
+            and native_prefill_ready
         ):
             return snapshot, stores, metrics
         if time.monotonic() >= deadline:
@@ -197,6 +220,9 @@ def _wait_for_prompt_counter(
     client: LocalVllmClient,
     minimum: int,
     wait_seconds: float,
+    *,
+    minimum_timing_count: int | None = None,
+    minimum_prefill_observations: int | None = None,
 ) -> tuple[dict[str, int], str]:
     """Wait for one native vLLM prompt-token counter milestone."""
 
@@ -206,7 +232,30 @@ def _wait_for_prompt_counter(
     while True:
         metrics = client.get_text("/metrics")
         snapshot = parse_vllm_prompt_counter_snapshot(metrics)
-        if snapshot["prompt_tokens"] >= minimum:
+        native_timing_ready = True
+        if minimum_timing_count is not None:
+            timing = parse_vllm_timing_snapshot(metrics)
+            native_timing_ready = all(
+                summary.count >= minimum_timing_count
+                for summary in (
+                    timing.ttft_seconds,
+                    timing.end_to_end_latency_seconds,
+                    timing.queue_latency_seconds,
+                    timing.prefill_latency_seconds,
+                    timing.decode_latency_seconds,
+                )
+            )
+        native_prefill_ready = True
+        if minimum_prefill_observations is not None:
+            prefill_work = parse_vllm_prefill_work_snapshot(metrics)
+            native_prefill_ready = (
+                prefill_work.observations >= minimum_prefill_observations
+            )
+        if (
+            snapshot["prompt_tokens"] >= minimum
+            and native_timing_ready
+            and native_prefill_ready
+        ):
             return snapshot, metrics
         if time.monotonic() >= deadline:
             raise TimeoutError("vLLM prompt-token metrics did not reach the expected")
@@ -277,6 +326,8 @@ def main() -> int:
                 minimum_store_tokens=(
                     initial_store["store_tokens_completed"] + source_store_tokens
                 ),
+                minimum_timing_count=initial_timing.ttft_seconds.count + 1,
+                minimum_prefill_observations=initial_prefill_work.observations + 1,
             )
         )
         target_response = client.post_json(
@@ -292,6 +343,16 @@ def main() -> int:
                     initial_store["store_tokens_completed"]
                     + source_store_tokens
                     + target_store_tokens
+                ),
+                minimum_timing_count=(
+                    parse_vllm_timing_snapshot(after_source_metrics)
+                    .ttft_seconds.count
+                    + 1
+                ),
+                minimum_prefill_observations=(
+                    parse_vllm_prefill_work_snapshot(after_source_metrics)
+                    .observations
+                    + 1
                 ),
             )
         )
@@ -372,6 +433,8 @@ def main() -> int:
             client,
             initial_prompt["prompt_tokens"] + len(fixture.target_prompt_token_ids),
             args.metric_wait_seconds,
+            minimum_timing_count=initial_timing.ttft_seconds.count + 1,
+            minimum_prefill_observations=initial_prefill_work.observations + 1,
         )
         target_prompt_tokens_processed = vllm_prompt_counter_delta(
             initial_prompt, after_prompt

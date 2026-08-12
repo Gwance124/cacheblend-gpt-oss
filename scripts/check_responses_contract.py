@@ -174,14 +174,34 @@ def _wait_for_requests(
     client: LocalVllmClient,
     minimum: int,
     wait_seconds: float,
+    *,
+    minimum_timing_count: int | None = None,
+    minimum_prefill_observations: int | None = None,
 ) -> tuple[dict[str, int], str]:
     if wait_seconds <= 0:
         raise ValueError("metric wait must be positive")
     deadline = time.monotonic() + wait_seconds
     while True:
-        snapshot = parse_connector_counter_snapshot(client.get_text("/metrics"))
-        if snapshot["requests"] >= minimum:
-            metrics = client.get_text("/metrics")
+        metrics = client.get_text("/metrics")
+        snapshot = parse_connector_counter_snapshot(metrics)
+        timing_ready = True
+        if minimum_timing_count is not None:
+            timing = parse_vllm_timing_snapshot(metrics)
+            timing_ready = all(
+                summary.count >= minimum_timing_count
+                for summary in (
+                    timing.ttft_seconds,
+                    timing.end_to_end_latency_seconds,
+                    timing.queue_latency_seconds,
+                    timing.prefill_latency_seconds,
+                    timing.decode_latency_seconds,
+                )
+            )
+        prefill_ready = True
+        if minimum_prefill_observations is not None:
+            prefill = parse_vllm_prefill_work_snapshot(metrics)
+            prefill_ready = prefill.observations >= minimum_prefill_observations
+        if snapshot["requests"] >= minimum and timing_ready and prefill_ready:
             return parse_connector_counter_snapshot(metrics), metrics
         if time.monotonic() >= deadline:
             raise TimeoutError("connector metrics did not reach three requests")
@@ -271,6 +291,8 @@ def main() -> int:
         client,
         before["requests"] + 3,
         args.metric_wait_seconds,
+        minimum_timing_count=before_timing.ttft_seconds.count + 3,
+        minimum_prefill_observations=before_prefill_work.observations + 3,
     )
     delta = connector_counter_delta(before, after)
     _require_metric_delta(delta)
