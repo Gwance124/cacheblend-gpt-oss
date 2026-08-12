@@ -229,7 +229,9 @@ target where the exact document starts at position 17. It refuses to write a
 CacheBlend artifact unless the target interval contains exactly one connector
 request, all 256 reusable tokens were loaded, all 280 prompt tokens were
 recomputed, and saved prefill remained zero. This store-counter wait prevents
-request completion from racing the source sidecar/LMCache publication.
+request completion from racing the source sidecar/LMCache publication; the
+capture also reconciles each request's eligible/completed chunk count and
+requires zero store fallbacks.
 
 ```bash
 .venv/bin/python scripts/capture_moved_document.py \

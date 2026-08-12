@@ -32,6 +32,7 @@ from cacheblend_gpt_oss.correctness import (
     CorrectnessRuntimeIdentity,
     build_correctness_fixture,
     connector_evidence_from_snapshots,
+    connector_store_counter_delta,
     has_connector_metric_surface,
     parse_completion_distribution,
     parse_connector_counter_snapshot,
@@ -152,7 +153,7 @@ def _wait_for_request_counter(
     wait_seconds: float,
     *,
     minimum_store_tokens: int | None = None,
-) -> dict[str, int]:
+) -> tuple[dict[str, int], dict[str, int]]:
     if wait_seconds <= 0:
         raise ValueError("metric wait must be positive")
     deadline = time.monotonic() + wait_seconds
@@ -167,7 +168,7 @@ def _wait_for_request_counter(
                 or stores["store_tokens_completed"] >= minimum_store_tokens
             )
         ):
-            return snapshot
+            return snapshot, stores
         if time.monotonic() >= deadline:
             raise TimeoutError(
                 "connector request/store metrics did not reach the expected "
@@ -221,7 +222,7 @@ def main() -> int:
             "/v1/completions",
             _completion_payload(fixture.source_prompt_token_ids, full=False),
         )
-        after_source = _wait_for_request_counter(
+        after_source, after_source_store = _wait_for_request_counter(
             client,
             initial["requests"] + 1,
             args.metric_wait_seconds,
@@ -233,7 +234,7 @@ def main() -> int:
             "/v1/completions",
             _completion_payload(fixture.target_prompt_token_ids, full=True),
         )
-        after_target = _wait_for_request_counter(
+        after_target, after_target_store = _wait_for_request_counter(
             client,
             after_source["requests"] + 1,
             args.metric_wait_seconds,
@@ -243,6 +244,24 @@ def main() -> int:
                 + target_store_tokens
             ),
         )
+        source_store_delta = connector_store_counter_delta(
+            initial_store, after_source_store
+        )
+        target_store_delta = connector_store_counter_delta(
+            after_source_store, after_target_store
+        )
+        for label, delta, expected_tokens in (
+            ("source", source_store_delta, source_store_tokens),
+            ("target", target_store_delta, target_store_tokens),
+        ):
+            if (
+                delta["store_tokens_eligible"] != expected_tokens
+                or delta["store_tokens_completed"] != expected_tokens
+                or delta["store_fallbacks"] != 0
+            ):
+                raise ValueError(
+                    f"{label} connector store counters do not reconcile"
+                )
         connector = connector_evidence_from_snapshots(after_source, after_target)
     else:
         _require_connector_metric_surface(client.get_text("/metrics"), expected=False)

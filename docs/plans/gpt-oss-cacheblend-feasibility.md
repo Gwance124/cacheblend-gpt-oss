@@ -194,7 +194,8 @@ the CUDA probe still must provide real digest values.
 The moved-document capture script also waits for the pinned connector's
 `store_tokens_completed` counter after each source/target request. A request
 counter alone is not sufficient evidence that the source document is visible
-to the next lookup.
+to the next lookup; each request's eligible/completed chunk deltas must also
+match and its store-fallback delta must be zero.
 
 GPU correctness sequence:
 
