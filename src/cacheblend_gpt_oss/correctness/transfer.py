@@ -167,7 +167,11 @@ class TransferEvidence:
     layers: tuple[LayerTransferEvidence, ...]
 
     def __post_init__(self) -> None:
-        if self.schema_version != TRANSFER_EVIDENCE_SCHEMA_VERSION:
+        if (
+            isinstance(self.schema_version, bool)
+            or not isinstance(self.schema_version, int)
+            or self.schema_version != TRANSFER_EVIDENCE_SCHEMA_VERSION
+        ):
             _fail(TransferEvidenceErrorCode.INVALID_SCHEMA)
         _require_digest(self.source_prompt_digest)
         _require_digest(self.target_prompt_digest)

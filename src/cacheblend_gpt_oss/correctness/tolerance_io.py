@@ -38,7 +38,11 @@ def tolerance_to_dict(
 def tolerance_from_dict(data: object) -> FrozenFullPrefillTolerance:
     if not isinstance(data, dict) or set(data) != _FIELDS:
         raise ValueError("invalid frozen tolerance schema")
-    if data["schema_version"] != TOLERANCE_SCHEMA_VERSION:
+    if (
+        isinstance(data["schema_version"], bool)
+        or not isinstance(data["schema_version"], int)
+        or data["schema_version"] != TOLERANCE_SCHEMA_VERSION
+    ):
         raise ValueError("unsupported frozen tolerance schema")
     values: dict[str, Any] = dict(data)
     del values["schema_version"]

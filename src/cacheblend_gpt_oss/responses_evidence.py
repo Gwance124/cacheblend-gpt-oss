@@ -405,7 +405,11 @@ def responses_contract_evidence_from_dict(data: object) -> ResponsesContractEvid
         ),
         ResponsesEvidenceErrorCode.INVALID_SCHEMA,
     )
-    if root["schema_version"] != RESPONSES_EVIDENCE_SCHEMA_VERSION:
+    if (
+        isinstance(root["schema_version"], bool)
+        or not isinstance(root["schema_version"], int)
+        or root["schema_version"] != RESPONSES_EVIDENCE_SCHEMA_VERSION
+    ):
         _fail(ResponsesEvidenceErrorCode.INVALID_SCHEMA)
     if root["contract"] != RESPONSES_EVIDENCE_CONTRACT:
         _fail(ResponsesEvidenceErrorCode.INVALID_SCHEMA)

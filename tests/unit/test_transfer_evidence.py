@@ -184,6 +184,10 @@ def test_canonical_round_trip_and_digest_are_stable(tmp_path: Path) -> None:
     ("mutation", "code"),
     [
         (
+            lambda evidence: replace(evidence, schema_version=True),
+            TransferEvidenceErrorCode.INVALID_SCHEMA,
+        ),
+        (
             lambda evidence: replace(
                 evidence, layers=evidence.layers[:-1]
             ),

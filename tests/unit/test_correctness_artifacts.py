@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -35,6 +36,8 @@ from cacheblend_gpt_oss.correctness import (
     parse_connector_store_counter_snapshot,
     read_artifact,
     read_frozen_tolerance,
+    tolerance_from_dict,
+    tolerance_to_dict,
     write_artifact,
     write_frozen_tolerance,
 )
@@ -304,6 +307,9 @@ def test_cacheblend_artifact_requires_exact_fixture_transfer_coverage(
 
 def test_artifact_identity_and_schema_mismatches_fail_closed(tmp_path: Path) -> None:
     artifact = _baseline()
+    with pytest.raises(ValueError, match="unsupported correctness artifact schema"):
+        replace(artifact, schema_version=True)
+
     malformed = artifact_to_dict(artifact)
     malformed["unexpected"] = True
     with pytest.raises(ValueError, match="root schema"):
@@ -344,6 +350,10 @@ def test_frozen_tolerance_round_trip_is_canonical(tmp_path: Path) -> None:
 
     assert read_frozen_tolerance(path) == tolerance
     assert '"schema_version": 1' in path.read_text(encoding="utf-8")
+    malformed = tolerance_to_dict(tolerance)
+    malformed["schema_version"] = True
+    with pytest.raises(ValueError, match="unsupported frozen tolerance schema"):
+        tolerance_from_dict(malformed)
     with pytest.raises(FileExistsError):
         write_frozen_tolerance(path, tolerance)
 

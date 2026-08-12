@@ -268,7 +268,11 @@ class CorrectnessArtifact:
     connector: ConnectorCorrectnessEvidence | None = None
 
     def __post_init__(self) -> None:
-        if self.schema_version != ARTIFACT_SCHEMA_VERSION:
+        if (
+            isinstance(self.schema_version, bool)
+            or not isinstance(self.schema_version, int)
+            or self.schema_version != ARTIFACT_SCHEMA_VERSION
+        ):
             raise ValueError("unsupported correctness artifact schema")
         if (
             not isinstance(self.run_mode, CorrectnessRunMode)

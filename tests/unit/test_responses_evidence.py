@@ -106,6 +106,7 @@ def test_valid_report_is_decoded_and_digest_is_stable() -> None:
         ("passed", False, "not_passed"),
         ("contract", "other", "invalid_schema"),
         ("schema_version", 1, "invalid_schema"),
+        ("schema_version", True, "invalid_schema"),
         ("native_prompt_tokens_processed", 810, "invalid_prompt_source_metrics"),
     ],
 )
