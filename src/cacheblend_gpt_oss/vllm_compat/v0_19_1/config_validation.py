@@ -118,9 +118,11 @@ def _served_model_names(model_config: object) -> tuple[str, ...]:
     if isinstance(names, str):
         return (names,)
     if isinstance(names, list | tuple):
-        return tuple(str(name) for name in names)
+        if not all(isinstance(name, str) for name in names):
+            return ()
+        return tuple(names)
     model = _get(model_config, "model")
-    return (str(model),) if model is not None else ()
+    return (model,) if isinstance(model, str) else ()
 
 
 def _rope_parameters(hf_config: object) -> object:
@@ -130,7 +132,9 @@ def _rope_parameters(hf_config: object) -> object:
     return _get(hf_config, "rope_scaling", {})
 
 
-def _layer_index(layer_name: str) -> int | None:
+def _layer_index(layer_name: object) -> int | None:
+    if not isinstance(layer_name, str):
+        return None
     prefix = "model.layers."
     suffix = ".attn.attn"
     if not layer_name.startswith(prefix) or not layer_name.endswith(suffix):
@@ -314,7 +318,7 @@ def collect_pinned_config_issues(
             )
 
         for layer_name in tuple(_get(group, "layer_names", ())):
-            index = _layer_index(str(layer_name))
+            index = _layer_index(layer_name)
             if index is None:
                 expect(
                     f"kv.groups.{group_index}.layer_name",

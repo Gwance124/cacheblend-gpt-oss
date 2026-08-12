@@ -26,6 +26,11 @@ class SlidingWindowSpec(SimpleNamespace):
     pass
 
 
+class _StringLike:
+    def __str__(self) -> str:
+        return "openai/gpt-oss-20b"
+
+
 def _valid_config() -> tuple[SimpleNamespace, SimpleNamespace]:
     rope = {
         "rope_type": "yarn",
@@ -187,6 +192,42 @@ def test_vllm_rope_normalization_shape_is_accepted() -> None:
         )
         == ()
     )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_field"),
+    [
+        (
+            lambda config, _: setattr(
+                config.model_config,
+                "served_model_name",
+                [_StringLike()],
+            ),
+            "model.served_name",
+        ),
+        (
+            lambda _, cache: cache.kv_cache_groups[0].layer_names.__setitem__(
+                0, _StringLike()
+            ),
+            "kv.groups.0.layer_name",
+        ),
+    ],
+)
+def test_pinned_config_does_not_coerce_object_names_to_strings(
+    mutation: Callable[[Any, Any], None],
+    expected_field: str,
+) -> None:
+    vllm_config, kv_cache_config = deepcopy(_valid_config())
+    mutation(vllm_config, kv_cache_config)
+
+    with pytest.raises(UnsupportedPinnedConfigError) as error:
+        require_pinned_config(
+            vllm_config,
+            kv_cache_config,
+            v2_model_runner_enabled=False,
+        )
+
+    assert expected_field in {issue.field for issue in error.value.issues}
 
 
 @pytest.mark.parametrize(
