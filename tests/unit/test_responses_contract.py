@@ -153,6 +153,31 @@ def test_invalid_function_arguments_and_wrong_forced_name_are_rejected() -> None
         require_forced_tool_call(parsed, expected_name="another_tool")
 
 
+def test_unknown_items_and_non_harmony_order_are_rejected() -> None:
+    unknown = _message_response()
+    output = unknown["output"]
+    assert isinstance(output, list)
+    output.append({"type": "custom_tool_call", "status": "completed"})
+    with pytest.raises(ValueError, match="item type is unsupported"):
+        parse_completed_response(unknown)
+
+    misplaced = _tool_response()
+    misplaced_output = misplaced["output"]
+    assert isinstance(misplaced_output, list)
+    misplaced_output.insert(0, {"type": "message", "content": []})
+    parsed = parse_completed_response(misplaced)
+    with pytest.raises(ValueError, match="structurally incomplete"):
+        require_forced_tool_call(parsed, expected_name="get_weather")
+
+    misplaced_message = _message_response()
+    message_output = misplaced_message["output"]
+    assert isinstance(message_output, list)
+    message_output.insert(0, {"type": "message", "content": []})
+    parsed_message = parse_completed_response(misplaced_message)
+    with pytest.raises(ValueError, match="structurally incomplete"):
+        require_reasoned_message(parsed_message)
+
+
 def test_tool_result_must_match_a_call_in_the_response() -> None:
     parsed = parse_completed_response(_tool_response())
     mismatched = FunctionCallObservation(

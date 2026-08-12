@@ -67,6 +67,7 @@ _RUNTIME_KEYS = frozenset(
         "dtype",
     }
 )
+_HARMONY_OUTPUT_TYPES = frozenset({"reasoning", "function_call", "message"})
 
 
 class ResponsesEvidenceErrorCode(str, Enum):
@@ -213,6 +214,7 @@ def _parse_turns(value: object) -> tuple[ResponsesTurnEvidence, ...]:
                 not isinstance(item, str) or not item or len(item) > 128
                 for item in output_types
             )
+            or any(item not in _HARMONY_OUTPUT_TYPES for item in output_types)
         ):
             _fail(ResponsesEvidenceErrorCode.INVALID_TURNS)
         reasoning_items = _bounded_count(
@@ -232,6 +234,7 @@ def _parse_turns(value: object) -> tuple[ResponsesTurnEvidence, ...]:
                 function_calls != 1
                 or function_calls != output_types.count("function_call")
                 or output_types[-1] != "function_call"
+                or any(item != "reasoning" for item in output_types[:-1])
             ):
                 _fail(ResponsesEvidenceErrorCode.INVALID_TURNS)
             turns.append(
@@ -247,6 +250,7 @@ def _parse_turns(value: object) -> tuple[ResponsesTurnEvidence, ...]:
                 message_text_parts < 1
                 or "function_call" in output_types
                 or output_types[-1] != "message"
+                or any(item != "reasoning" for item in output_types[:-1])
             ):
                 _fail(ResponsesEvidenceErrorCode.INVALID_TURNS)
             turns.append(

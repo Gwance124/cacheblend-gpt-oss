@@ -28,6 +28,7 @@ JsonObject: TypeAlias = dict[str, JsonValue]
 MAX_RESPONSE_ID_BYTES = 256
 MAX_ITEM_TYPE_BYTES = 128
 MAX_CALL_FIELD_BYTES = 1_024
+_HARMONY_OUTPUT_TYPES = frozenset({"reasoning", "function_call", "message"})
 
 
 def _json_object(value: object, name: str) -> JsonObject:
@@ -115,6 +116,8 @@ def parse_completed_response(data: object) -> ResponseObservation:
         item_type = _bounded_text(
             item.get("type"), "output item type", MAX_ITEM_TYPE_BYTES
         )
+        if item_type not in _HARMONY_OUTPUT_TYPES:
+            raise ValueError("Responses output item type is unsupported")
         output_items.append(item)
         output_types.append(item_type)
         if item_type == "reasoning":
@@ -170,6 +173,7 @@ def require_forced_tool_call(
         response.reasoning_items < 1
         or len(response.function_calls) != 1
         or response.output_types[-1] != "function_call"
+        or any(item_type != "reasoning" for item_type in response.output_types[:-1])
     ):
         raise ValueError("Responses forced tool turn is structurally incomplete")
     call = response.function_calls[0]
@@ -186,6 +190,7 @@ def require_reasoned_message(response: ResponseObservation) -> tuple[str, ...]:
         or response.function_calls
         or not response.message_texts
         or response.output_types[-1] != "message"
+        or any(item_type != "reasoning" for item_type in response.output_types[:-1])
     ):
         raise ValueError("Responses reasoned message turn is structurally incomplete")
     return response.message_texts

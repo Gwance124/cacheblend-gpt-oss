@@ -176,6 +176,28 @@ def test_extra_keys_and_turn_structure_are_rejected() -> None:
     report = deepcopy(_report())
     turns = report["turns"]
     assert isinstance(turns, list)
+    turns[1]["output_types"] = [  # type: ignore[index]
+        "reasoning",
+        "custom_tool_call",
+        "message",
+    ]
+    with pytest.raises(ResponsesEvidenceError, match="invalid_turns"):
+        responses_contract_evidence_from_dict(report)
+
+    report = deepcopy(_report())
+    turns = report["turns"]
+    assert isinstance(turns, list)
+    turns[0]["output_types"] = [  # type: ignore[index]
+        "message",
+        "reasoning",
+        "function_call",
+    ]
+    with pytest.raises(ResponsesEvidenceError, match="invalid_turns"):
+        responses_contract_evidence_from_dict(report)
+
+    report = deepcopy(_report())
+    turns = report["turns"]
+    assert isinstance(turns, list)
     turns[0]["reasoning_items"] = 2  # type: ignore[index]
     with pytest.raises(ResponsesEvidenceError, match="invalid_turns"):
         responses_contract_evidence_from_dict(report)
