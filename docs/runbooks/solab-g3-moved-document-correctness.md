@@ -245,6 +245,10 @@ native prompt, prompt-source, and histogram observation milestones before taking
 each interval snapshot, so asynchronous exporter lag cannot produce a false
 mismatch.
 
+The capture command's JSON summary retains the target native prompt-token,
+prompt-source, prefill-work, and timing deltas alongside the artifact path;
+preserve that summary from the `tee` output with the server metrics and logs.
+
 ```bash
 .venv/bin/python scripts/capture_moved_document.py \
   --mode cacheblend_100pct \
