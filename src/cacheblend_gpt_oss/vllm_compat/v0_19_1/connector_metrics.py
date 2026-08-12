@@ -47,6 +47,8 @@ _COUNTER_KEYS = (
 _LATENCY_KEYS = (
     "lookup_latency_seconds",
     "transfer_latency_seconds",
+    "position_correction_latency_seconds",
+    "selective_recomputation_latency_seconds",
     "store_latency_seconds",
 )
 _ALL_KEYS = (*_COUNTER_KEYS, *_LATENCY_KEYS)
@@ -200,6 +202,8 @@ class GptOssCacheBlendStats(KVConnectorStats):  # type: ignore[misc]
         recomputed_tokens: int,
         fallback: bool,
         latency_seconds: float,
+        position_correction_latency_seconds: float = 0.0,
+        selective_recomputation_latency_seconds: float = 0.0,
     ) -> None:
         if verified_tokens != loaded_tokens + rejected_tokens:
             raise ValueError("verified KV tokens must be loaded or rejected")
@@ -209,6 +213,14 @@ class GptOssCacheBlendStats(KVConnectorStats):  # type: ignore[misc]
         self._append("prefill_tokens_avoided", 0)
         self._append("load_fallbacks", int(fallback))
         self._append("transfer_latency_seconds", latency_seconds)
+        self._append(
+            "position_correction_latency_seconds",
+            position_correction_latency_seconds,
+        )
+        self._append(
+            "selective_recomputation_latency_seconds",
+            selective_recomputation_latency_seconds,
+        )
 
     def record_store(
         self,

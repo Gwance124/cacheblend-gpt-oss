@@ -731,6 +731,12 @@ def test_transfer_mode_wires_full_recompute_scheduler_and_worker_hooks(
         "transfer_latency_seconds": pytest.approx(
             reduced["transfer_latency_seconds"]
         ),
+        "position_correction_latency_seconds": pytest.approx(
+            reduced["position_correction_latency_seconds"]
+        ),
+        "selective_recomputation_latency_seconds": pytest.approx(
+            reduced["selective_recomputation_latency_seconds"]
+        ),
         "store_latency_seconds": pytest.approx(
             reduced["store_latency_seconds"]
         ),
@@ -740,6 +746,8 @@ def test_transfer_mode_wires_full_recompute_scheduler_and_worker_hooks(
     }
     assert reduced["lookup_latency_seconds"] >= 0
     assert reduced["transfer_latency_seconds"] >= 0
+    assert reduced["position_correction_latency_seconds"] >= 0
+    assert reduced["selective_recomputation_latency_seconds"] >= 0
     assert reduced["store_latency_seconds"] >= 0
     assert worker.get_kv_connector_stats() is None
 
@@ -869,3 +877,23 @@ def test_source_contains_the_pinned_loader_class_name() -> None:
     assert "class GptOssCacheBlendConnector" in source
     assert "KVConnectorBase_V1, SupportsHMA" in source
     assert "return 0, False" in source
+
+
+def test_connector_metrics_expose_future_position_and_selective_timers(
+    loaded_connector: tuple[ModuleType, SimpleNamespace],
+) -> None:
+    module, _fake = loaded_connector
+    stats = module.GptOssCacheBlendStats()
+    stats.record_load(
+        verified_tokens=0,
+        loaded_tokens=0,
+        rejected_tokens=0,
+        recomputed_tokens=16,
+        fallback=False,
+        latency_seconds=0.5,
+        position_correction_latency_seconds=0.2,
+        selective_recomputation_latency_seconds=0.3,
+    )
+    reduced = stats.reduce()
+    assert reduced["position_correction_latency_seconds"] == 0.2
+    assert reduced["selective_recomputation_latency_seconds"] == 0.3

@@ -11,6 +11,12 @@ metrics are wired through vLLM 0.19.1's public stats/Prometheus hooks. The next
 gate is manual CUDA and connector/model execution on `solab-g3`; no such pass
 is claimed yet.
 
+The connector stats schema now includes separate position-correction and
+selective-recomputation latency histograms. Both are explicitly zero in the
+100%-recompute path and can become nonzero only when a future worker supplies
+measured values; this keeps the required observability surface stable without
+fabricating GPU measurements.
+
 Selective non-prefix computation remains conditional. The V1 connector API can
 carry an opaque plan but can only credit a contiguous cached prefix to the
 scheduler. An external GPT-OSS model override and custom attention backend must
