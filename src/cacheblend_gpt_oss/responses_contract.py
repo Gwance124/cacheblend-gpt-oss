@@ -200,6 +200,8 @@ def append_tool_result(
 ) -> list[JsonObject]:
     """Append every server output item and its exact matching tool result."""
 
+    if call not in response.function_calls:
+        raise ValueError("function call is not present in the response")
     tool_output = _bounded_text(output, "function output", 1_000_000)
     history = [_json_object(item, "input item") for item in initial_input]
     history.extend(_json_object(item, "output item") for item in response.output_items)

@@ -6,6 +6,7 @@ from copy import deepcopy
 import pytest
 
 from cacheblend_gpt_oss.responses_contract import (
+    FunctionCallObservation,
     append_response_and_user,
     append_tool_result,
     parse_completed_response,
@@ -150,6 +151,22 @@ def test_invalid_function_arguments_and_wrong_forced_name_are_rejected() -> None
     parsed = parse_completed_response(_tool_response())
     with pytest.raises(ValueError, match="name does not match"):
         require_forced_tool_call(parsed, expected_name="another_tool")
+
+
+def test_tool_result_must_match_a_call_in_the_response() -> None:
+    parsed = parse_completed_response(_tool_response())
+    mismatched = FunctionCallObservation(
+        call_id="other_call",
+        name="get_weather",
+        arguments={"city": "Paris"},
+    )
+    with pytest.raises(ValueError, match="not present"):
+        append_tool_result(
+            [{"role": "user", "content": "Weather?"}],
+            parsed,
+            mismatched,
+            output="21 C",
+        )
 
 
 def test_missing_reasoning_or_message_text_fails_closed() -> None:
