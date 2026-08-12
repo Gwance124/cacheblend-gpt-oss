@@ -400,6 +400,15 @@ live connector. Its descending ratio sweep exposes a work curve locally while
 requiring explicit externally supplied measurements before exposing error or
 latency curves; it does not fabricate GPU evidence.
 
+`gpt_oss.selective_policy_io` now provides a strict, non-sensitive JSON
+artifact for this sweep. It records the ratio, verified cached/recomputed row
+ranges, and the work curve. Error and latency fields are either present for
+every point or absent for every point; a partial measurement set is rejected.
+The artifact digest and the `scripts/validate_selection_sweep.py` report make
+future `solab-g3` results reproducible without storing prompts, token IDs,
+fingerprints, or request identifiers. This remains an experiment artifact and
+does not connect the dormant policy to the serving connector.
+
 Deliverables:
 
 - Implement an injected selection policy modeled on CacheBlend's check-layer
@@ -407,6 +416,8 @@ Deliverables:
 - Evaluate successively lower ratios; do not preselect a production ratio.
 - Record exactly which token rows are recomputed at each layer/check point.
 - Emit an error curve and latency/work curve for every test case.
+- Write one selection-sweep artifact per test case and validate it on the
+  authoring workstation before comparing ratios across runs.
 
 Go criteria for each lower ratio:
 
