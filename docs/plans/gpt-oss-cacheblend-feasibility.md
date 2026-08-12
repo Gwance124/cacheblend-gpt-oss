@@ -362,6 +362,11 @@ Stop criteria:
 
 ## M8: `/v1/responses`, Harmony, tools, and multi-turn
 
+Implementation status: the dependency-free response-item validator, exact
+three-turn append-only harness, bounded structural report, and manual
+`solab-g3` commands are implemented. No model/API run has been supplied, so M8
+remains pending. See `docs/runbooks/solab-g3-responses-contract.md`.
+
 Required API scenarios:
 
 - Plain response with Harmony reasoning summary and final message.

@@ -17,6 +17,7 @@ from cacheblend_gpt_oss.correctness import (
     artifact_from_dict,
     artifact_to_dict,
     build_moved_document_fixture,
+    connector_counter_delta,
     connector_evidence_from_snapshots,
     evaluate_cacheblend_100pct,
     freeze_full_prefill_tolerance,
@@ -373,3 +374,4 @@ def test_partial_completion_or_ambiguous_metric_interval_is_rejected() -> None:
     two_requests["requests"] = 2
     with pytest.raises(ValueError, match="exactly one target request"):
         connector_evidence_from_snapshots(empty, two_requests)
+    assert connector_counter_delta(empty, two_requests)["requests"] == 2

@@ -1,6 +1,7 @@
 """Pinned GPT-OSS correctness artifacts and numerical gates."""
 
 from cacheblend_gpt_oss.correctness.capture import (
+    connector_counter_delta,
     connector_evidence_from_snapshots,
     has_connector_metric_surface,
     parse_completion_distribution,
@@ -65,6 +66,7 @@ __all__ = [
     "artifact_to_dict",
     "build_moved_document_fixture",
     "compare_distributions",
+    "connector_counter_delta",
     "connector_evidence_from_snapshots",
     "digest_token_ids",
     "evaluate_cacheblend_100pct",

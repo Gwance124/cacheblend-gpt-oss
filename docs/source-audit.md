@@ -360,6 +360,16 @@ Artifacts label this representation precisely and freeze the BF16
 full-prefill-versus-full-prefill envelope before CacheBlend is run. Harmony and
 tool correctness must still be checked separately on `/v1/responses`.
 
+The pinned [`ResponsesRequest.input`](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/entrypoints/openai/responses/protocol.py#L119-L154)
+accepts both input and prior output items. The upstream
+[`test_named_tool_use`](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/tests/entrypoints/openai/responses/test_function_call.py#L111-L169)
+provides direct evidence for replaying a function call followed by matching
+`function_call_output`; the exact GPT-OSS
+[`test_harmony.py`](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/tests/entrypoints/openai/responses/test_harmony.py#L82-L105)
+provides the completed-response and low-effort reasoning contract. The local
+manual harness follows those pinned surfaces while retaining every prior output
+item to match the external RAG client's append-only history model.
+
 ## Patch conclusion
 
 No vLLM patch is supported by current evidence for connector loading,

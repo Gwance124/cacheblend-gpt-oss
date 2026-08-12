@@ -128,6 +128,18 @@ def connector_evidence_from_snapshots(
 ) -> ConnectorCorrectnessEvidence:
     """Build exact per-request deltas and require one target lookup."""
 
+    delta = connector_counter_delta(before, after)
+    if delta.pop("requests") != 1:
+        raise ValueError("metric interval must contain exactly one target request")
+    return ConnectorCorrectnessEvidence(**delta)
+
+
+def connector_counter_delta(
+    before: Mapping[str, int],
+    after: Mapping[str, int],
+) -> dict[str, int]:
+    """Return a monotonic delta for the exact bounded connector counters."""
+
     if set(before) != set(_COUNTER_METRICS) or set(after) != set(_COUNTER_METRICS):
         raise ValueError("connector counter snapshot schema mismatch")
     delta: dict[str, int] = {}
@@ -144,12 +156,11 @@ def connector_evidence_from_snapshots(
         ):
             raise ValueError("connector counters are invalid or moved backwards")
         delta[key] = new_value - old_value
-    if delta.pop("requests") != 1:
-        raise ValueError("metric interval must contain exactly one target request")
-    return ConnectorCorrectnessEvidence(**delta)
+    return delta
 
 
 __all__ = [
+    "connector_counter_delta",
     "connector_evidence_from_snapshots",
     "has_connector_metric_surface",
     "parse_completion_distribution",

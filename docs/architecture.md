@@ -406,3 +406,10 @@ experiment metadata containing at least the CacheBlend commit SHA, model
 revision, serving-stack versions, connector/config digest, and deployment ID.
 Those proposed changes must be documented here before separate authorization to
 edit `rag-system`.
+
+The manual contract gate in
+`docs/runbooks/solab-g3-responses-contract.md` replays every reasoning,
+function-call, tool-output, assistant-message, and later user item through the
+pinned Responses API. Its report deliberately excludes response/call IDs and
+all content text; it is protocol evidence, not a replacement for the M3
+full-vocabulary numerical artifact.
