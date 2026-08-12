@@ -136,6 +136,15 @@ the full-shaped hidden output and runner logits indices before returning. It is
 still dormant: no vLLM model/backend is registered, and it does not import
 Torch or mutate KV tensors.
 
+`GptOssSelectiveModelAdapter` is the model-side companion. It mirrors the
+audited `GptOssForCausalLM.forward(input_ids, positions,
+intermediate_tensors=None, inputs_embeds=None)` signature through an injected
+callable, requires token IDs and positions, rejects prompt embeddings, and
+delegates full-shaped output validation to `SelectiveForwardBridge`. This
+keeps token-identity cache verification separate from any embedding path and
+gives a future lazy model override one bounded call surface without importing
+vLLM or Torch today.
+
 `gpt_oss.selective_kv.GptOssSelectiveKvSession` mirrors the pinned vLLM
 0.19.1 callback granularity. The stock Triton implementation invokes
 `AttentionImpl.do_kv_cache_update` once for each layer immediately before that

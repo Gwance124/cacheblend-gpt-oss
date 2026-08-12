@@ -405,6 +405,12 @@ only for the duration of an injected forward call and validates that output
 contract afterward. It is an adapter seam for the future model override, not a
 claim of selective execution; no vLLM registry or attention backend is enabled.
 
+`GptOssSelectiveModelAdapter` now supplies the corresponding model-call
+boundary. It mirrors the pinned GPT-OSS forward arguments, requires token IDs
+and positions, rejects prompt embeddings, and delegates to the full-shaped
+output bridge. It remains dependency-injected and unregistered until the
+M3--M5 GPU/model gates pass.
+
 This milestone decides the patch boundary.
 
 Deliverables:

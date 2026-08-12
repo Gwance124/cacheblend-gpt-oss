@@ -11,6 +11,11 @@ It deliberately does not import vLLM, Torch, or CUDA and is not a serving
 registration point.  The concrete model override and sink-aware attention
 backend remain gated on the M3--M5 ``solab-g3`` evidence described in
 ``docs/plans/gpt-oss-cacheblend-feasibility.md``.
+
+The model-call adapter follows the exact pinned GPT-OSS forward signature:
+https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/model_executor/models/gpt_oss.py#L218-L240
+It accepts token IDs and positions only; prompt embeddings are outside the
+first validated CacheBlend envelope and fail closed.
 """
 
 from __future__ import annotations
@@ -40,6 +45,9 @@ class SelectiveForwardErrorCode(str, Enum):
     FORWARD_FAILED = "forward_failed"
     INVALID_OUTPUT = "invalid_output"
     ACTIVE_CONTEXT = "active_context"
+    INPUT_IDS_REQUIRED = "input_ids_required"
+    POSITIONS_REQUIRED = "positions_required"
+    PROMPT_EMBEDS_UNSUPPORTED = "prompt_embeds_unsupported"
 
 
 class SelectiveForwardError(RuntimeError):
@@ -59,6 +67,20 @@ class HiddenShapeReader(Protocol):
 
     def __call__(self, output: object) -> Sequence[object]:
         """Return ``(rows, hidden_size)`` without retaining tensor data."""
+
+
+class GptOssModelForward(Protocol):
+    """The pinned ``GptOssForCausalLM.forward`` call surface."""
+
+    def __call__(
+        self,
+        *,
+        input_ids: object,
+        positions: object,
+        intermediate_tensors: object | None = None,
+        inputs_embeds: object | None = None,
+    ) -> object:
+        """Run one ordinary GPT-OSS model forward."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,7 +145,62 @@ class SelectiveForwardBridge:
         return SelectiveForwardResult(output=output, contract=contract)
 
 
+class GptOssSelectiveModelAdapter:
+    """Bind the exact GPT-OSS model-forward arguments to the row bridge.
+
+    This is the model-side seam a future vLLM registry override can delegate
+    to. It keeps the runner's full-shaped output contract while making the
+    first target envelope explicit: token IDs and positions are required, and
+    ``inputs_embeds`` is rejected rather than silently mixing a prompt-
+    embedding path with token-identity-based cache records.
+    """
+
+    def __init__(self, forward_bridge: SelectiveForwardBridge | None = None) -> None:
+        self._bridge = forward_bridge or SelectiveForwardBridge()
+
+    def run(
+        self,
+        plan: ForwardRowPlan,
+        *,
+        input_ids: object | None,
+        positions: object | None,
+        intermediate_tensors: object | None = None,
+        inputs_embeds: object | None = None,
+        expected_rows: object,
+        hidden_size: object,
+        logits_indices: Sequence[object],
+        model_forward: GptOssModelForward,
+        hidden_shape: HiddenShapeReader,
+    ) -> SelectiveForwardResult:
+        """Run a token-ID GPT-OSS forward under one bounded row plan."""
+
+        if input_ids is None:
+            _fail(SelectiveForwardErrorCode.INPUT_IDS_REQUIRED)
+        if positions is None:
+            _fail(SelectiveForwardErrorCode.POSITIONS_REQUIRED)
+        if inputs_embeds is not None:
+            _fail(SelectiveForwardErrorCode.PROMPT_EMBEDS_UNSUPPORTED)
+        if not callable(model_forward):
+            _fail(SelectiveForwardErrorCode.INVALID_FORWARD)
+
+        return self._bridge.run(
+            plan,
+            expected_rows=expected_rows,
+            hidden_size=hidden_size,
+            logits_indices=logits_indices,
+            forward=lambda: model_forward(
+                input_ids=input_ids,
+                positions=positions,
+                intermediate_tensors=intermediate_tensors,
+                inputs_embeds=None,
+            ),
+            hidden_shape=hidden_shape,
+        )
+
+
 __all__ = [
+    "GptOssModelForward",
+    "GptOssSelectiveModelAdapter",
     "HiddenShapeReader",
     "SelectiveForwardBridge",
     "SelectiveForwardError",

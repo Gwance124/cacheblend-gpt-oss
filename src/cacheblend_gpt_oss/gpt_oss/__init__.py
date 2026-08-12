@@ -73,6 +73,8 @@ from cacheblend_gpt_oss.gpt_oss.selective_policy_io import (
     write_selection_sweep,
 )
 from cacheblend_gpt_oss.gpt_oss.selective_runtime import (
+    GptOssModelForward,
+    GptOssSelectiveModelAdapter,
     HiddenShapeReader,
     SelectiveForwardBridge,
     SelectiveForwardError,
@@ -118,8 +120,10 @@ __all__ = [
     "ForwardRowPlan",
     "ForwardRowPlanContext",
     "GptOssHybridCacheLayout",
+    "GptOssModelForward",
     "GptOssSelectiveKvSession",
     "GptOssSelectiveKvUpdater",
+    "GptOssSelectiveModelAdapter",
     "GptOssTorchYarnCorrector",
     "GroupBlockTable",
     "GroupTokenScatterSpan",
