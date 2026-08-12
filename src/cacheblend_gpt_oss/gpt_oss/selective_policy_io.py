@@ -32,6 +32,7 @@ from cacheblend_gpt_oss.gpt_oss.selective import ForwardRowPlan
 from cacheblend_gpt_oss.gpt_oss.selective_policy import (
     SelectionMeasurement,
     SelectionPolicyError,
+    SelectionPolicyErrorCode,
     SelectionPolicyResult,
     SelectionSweep,
     SelectionSweepPoint,
@@ -362,7 +363,11 @@ def selection_sweep_from_dict(data: object) -> SelectionSweep:
         points.append(SelectionSweepPoint(result, _measurement(point["measurement"])))
     try:
         sweep = SelectionSweep(tuple(points))
-    except (TypeError, ValueError, SelectionPolicyError):
+    except SelectionPolicyError as error:
+        if error.code is SelectionPolicyErrorCode.INCONSISTENT_SWEEP:
+            _fail(SelectionSweepIoErrorCode.INCONSISTENT_SWEEP)
+        _fail(SelectionSweepIoErrorCode.INVALID_POINT)
+    except (TypeError, ValueError):
         _fail(SelectionSweepIoErrorCode.INVALID_POINT)
     _validate_sweep_context(sweep)
     return sweep

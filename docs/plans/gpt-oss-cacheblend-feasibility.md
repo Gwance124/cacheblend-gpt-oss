@@ -437,6 +437,8 @@ latency curves; it does not fabricate GPU evidence.
 artifact for this sweep. It records the ratio, verified cached/recomputed row
 ranges, and the work curve. Error and latency fields are either present for
 every point or absent for every point; a partial measurement set is rejected.
+The underlying immutable sweep also rejects points with different prompt,
+check-layer, suffix, or candidate-range context before any curve is exposed.
 The artifact digest and the `scripts/validate_selection_sweep.py` report make
 future `solab-g3` results reproducible without storing prompts, token IDs,
 fingerprints, or request identifiers. This remains an experiment artifact and

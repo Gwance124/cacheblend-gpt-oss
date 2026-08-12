@@ -142,7 +142,8 @@ and a configured suffix in recomputation, and emits a full 24-layer
 its ratio must remain gated by measured GPU correctness. Its ratio-sweep
 artifact reports deterministic recomputation work immediately, but refuses to
 expose an error or latency curve until an external runner attaches finite
-measurements for every ratio.
+measurements for every ratio. The sweep itself rejects mixed prompt/check-layer,
+suffix, or candidate-range contexts before exposing a work curve.
 
 ### Version-scoped connector layer
 

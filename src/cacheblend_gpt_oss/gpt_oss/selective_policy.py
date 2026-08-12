@@ -46,6 +46,7 @@ class SelectionPolicyErrorCode(str, Enum):
     OVERLAPPING_CACHE_RANGES = "overlapping_cache_ranges"
     CACHE_RANGE_OUT_OF_BOUNDS = "cache_range_out_of_bounds"
     INVALID_RATIO_SWEEP = "invalid_ratio_sweep"
+    INCONSISTENT_SWEEP = "inconsistent_sweep"
     INVALID_MEASUREMENT = "invalid_measurement"
     MEASUREMENT_MISMATCH = "measurement_mismatch"
 
@@ -219,6 +220,24 @@ class SelectionSweep:
         ratios = tuple(point.ratio for point in points)
         if any(left <= right for left, right in pairwise(ratios)):
             _fail(SelectionPolicyErrorCode.INVALID_RATIO_SWEEP)
+        first = points[0].result
+        context = (
+            first.prompt_tokens,
+            first.check_layer,
+            first.suffix_tokens,
+            first.candidate_cached_ranges,
+        )
+        if any(
+            (
+                point.result.prompt_tokens,
+                point.result.check_layer,
+                point.result.suffix_tokens,
+                point.result.candidate_cached_ranges,
+            )
+            != context
+            for point in points[1:]
+        ):
+            _fail(SelectionPolicyErrorCode.INCONSISTENT_SWEEP)
         object.__setattr__(self, "points", points)
 
     @property

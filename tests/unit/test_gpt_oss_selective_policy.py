@@ -11,6 +11,8 @@ from cacheblend_gpt_oss.gpt_oss.selective_policy import (
     SelectionMeasurement,
     SelectionPolicyError,
     SelectionPolicyErrorCode,
+    SelectionSweep,
+    SelectionSweepPoint,
 )
 from cacheblend_gpt_oss.planner.models import TokenRange
 
@@ -306,6 +308,29 @@ def test_ratio_sweep_rejects_duplicate_or_ascending_ratios() -> None:
             suffix_tokens=0,
         )
     assert caught.value.code is SelectionPolicyErrorCode.INVALID_RATIO_SWEEP
+
+
+def test_ratio_sweep_rejects_mixed_prompt_context_before_reporting_work() -> None:
+    policy = CacheBlendSelectionPolicy()
+    first = policy.select(
+        prompt_tokens=4,
+        cache_ranges=(TokenRange(0, 4),),
+        importance_scores=_scores(4),
+        check_layer=0,
+        recompute_ratio=1.0,
+        suffix_tokens=0,
+    )
+    second = policy.select(
+        prompt_tokens=5,
+        cache_ranges=(TokenRange(0, 5),),
+        importance_scores=_scores(5),
+        check_layer=0,
+        recompute_ratio=0.5,
+        suffix_tokens=0,
+    )
+    with pytest.raises(SelectionPolicyError) as caught:
+        SelectionSweep((SelectionSweepPoint(first), SelectionSweepPoint(second)))
+    assert caught.value.code is SelectionPolicyErrorCode.INCONSISTENT_SWEEP
 
 
 def test_measurement_mismatch_is_bounded() -> None:
