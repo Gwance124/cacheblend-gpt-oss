@@ -20,4 +20,4 @@ def test_pinned_solab_g3_runtime() -> None:
     assert torch.__version__ == PINNED_TARGET.torch_version
     assert torch.version.cuda == PINNED_TARGET.cuda_runtime
     assert torch.cuda.get_device_name(0) == PINNED_TARGET.gpu_name
-
+    assert torch.cuda.get_device_capability(0) == (8, 0)
