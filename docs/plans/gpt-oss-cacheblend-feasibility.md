@@ -488,11 +488,16 @@ controlled-trial evidence boundary. A trial records one arm, cache state,
 reconciled request counters/timers, peak memory, recomputation ratio, and a
 digest of its independent correctness artifact. CacheBlend arms also require a
 transfer-evidence digest, while one prompt-fixture digest binds all arms in a
-case. Artifacts pin the model and software identity, Triton attention backend,
-hybrid-cache requirement, block
-size, context limit, deterministic sampling settings, and TP/PP=1. The host
-validator computes per-arm means, medians, and 95% confidence intervals from
-repeated raw trials. It reports `benchmark_ready=false` until both the ordinary
+case. The ordinary `full_prefill` arm is additionally required to recompute
+every prompt row with zero reusable-document/KV counters; it cannot silently
+become a cached baseline. Artifacts pin the model and software identity,
+Triton attention backend, hybrid-cache requirement, block size, context limit,
+deterministic sampling settings, and TP/PP=1. The host validator computes
+per-arm means, medians, and 95% confidence intervals from repeated raw trials.
+Summaries retain reusable-document and found/loaded/rejected-KV counts,
+document/candidate/loaded hit fractions, lookup/transfer/correction/selective/
+store timings, native serving timings, recomputed/avoided rows, and absolute/
+mean logit error. It reports `benchmark_ready=false` until both the ordinary
 full-prefill and CacheBlend-100%-recompute control arms exist and every
 recorded trial has passing correctness evidence.
 
