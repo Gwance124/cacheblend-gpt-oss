@@ -166,6 +166,20 @@ curl --fail-with-body http://127.0.0.1:8000/v1/responses \
 Save the full server log, identity output, response JSON, and `/metrics`
 snapshot. Return those artifacts before marking M1 as passed.
 
+After at least one response, retain a filtered connector-metric view as well:
+
+```bash
+curl --fail-with-body http://127.0.0.1:8000/metrics \
+  | grep 'vllm:cacheblend_'
+```
+
+For this 100%-recompute milestone, the scrape must show recomputed prompt
+tokens and `vllm:cacheblend_effective_saved_prefill_fraction` equal to zero.
+A miss may legitimately show zero requested/found/loaded rows. The metric must
+not contain a request ID, prompt/token content, document identity, fingerprint,
+path, or server URL as a label. TTFT and prefill latency remain vLLM-native
+server metrics; do not estimate TTFT from the non-streaming client response.
+
 ## Required negative check
 
 Stop the server and remove `--no-disable-hybrid-kv-cache-manager` from the same

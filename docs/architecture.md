@@ -13,6 +13,9 @@ is:
   GPU correctness pending**.
 - GPT-OSS YaRN correction and group-aware staging/scatter: **implemented and
   CPU-fake tested; real CUDA tests pending on `solab-g3`**.
+- Aggregate connector lookup/load/recompute/store metrics: **implemented through
+  vLLM's public stats and Prometheus hooks; live exporter evidence pending on
+  `solab-g3`**.
 - Selective non-prefix recomputation: **not expressible by the connector API
   alone**. First exhaust a registered GPT-OSS model override and custom
   sink-aware attention backend. A pinned vLLM patch is only a gated fallback.
@@ -156,7 +159,8 @@ The connector follows the pinned vLLM path without mutating scheduler output:
    and zero external tokens. This is where the plan becomes bound to actual
    destination blocks.
 5. `build_connector_meta` serializes immutable ranges, group mappings, cache
-   identity, expected digests, and metrics correlation into opaque metadata.
+   identity, expected digests, and identifier-free lookup observations into
+   opaque metadata.
 6. The worker model runner prepares ordinary contiguous input IDs, positions,
    slot mappings, and attention metadata, then binds connector metadata.
 7. `start_load_kv` performs the already-planned transfer. Lookup happened on
@@ -179,9 +183,11 @@ The connector follows the pinned vLLM path without mutating scheduler output:
     response.
 
 This first path demonstrates transport, not acceleration. Immutable request
-accounting enforces positive found/loaded counts when a hit exists, full
-recomputed count, and zero effective saved-prefill fraction. Exporting the full
-metric set to Prometheus is still pending.
+accounting distinguishes found, verified, loaded, and rejected candidate rows;
+enforces the full recomputed count; and reports zero effective saved-prefill
+fraction. The connector implements vLLM 0.19.1's serializable stats and
+Prometheus factory hooks. A live exporter scrape is still pending on
+`solab-g3`.
 
 ## Position-independent segmentation and identity
 
@@ -348,24 +354,26 @@ test.
 
 ## Metrics contract
 
-The initial stable metrics are Prometheus counters/histograms and structured
-test artifacts. Names are provisional until the first implementation, but their
-semantics are fixed:
+The initial stable metrics are connector-owned Prometheus counters,
+histograms/gauges, vLLM-native serving metrics, and structured correctness
+artifacts. Connector metric labels are limited to vLLM's bounded engine labels:
 
 | Metric | Meaning |
 |---|---|
-| `cacheblend_reusable_document_tokens_requested_total` | Tokens in planner-designated reusable segments |
-| `cacheblend_kv_tokens_found_total` | Tokens returned as storage/matcher candidates before final acceptance |
-| `cacheblend_kv_tokens_loaded_total` | Fully verified tokens transferred into staging/destination KV |
-| `cacheblend_kv_tokens_rejected_total` | Candidate tokens rejected, with a bounded reason label |
-| `cacheblend_tokens_recomputed_total` | Prompt rows actually recomputed by the model path |
-| `cacheblend_document_hit_fraction` | Fully verified requested segments divided by requested segments |
-| `cacheblend_token_hit_fraction` | Verified loaded reusable tokens divided by requested reusable tokens |
-| `cacheblend_effective_saved_prefill_fraction` | Verified reusable prompt rows not recomputed divided by baseline prompt rows; zero in the 100% phase |
-| `cacheblend_lookup_seconds` | Scheduler-side matching/storage lookup wall time |
-| `cacheblend_transfer_seconds` | Accepted KV transport plus staging time |
-| `cacheblend_position_correction_seconds` | YaRN shifted-key correction time |
-| `cacheblend_selective_recomputation_seconds` | Model time spent on selected rows, separately from planning/transfer |
+| `vllm:cacheblend_reusable_document_tokens_requested_total` | Prompt tokens covered by at least one planner query window |
+| `vllm:cacheblend_kv_tokens_found_total` | Exact-sidecar-key candidate tokens found before final non-overlap selection |
+| `vllm:cacheblend_kv_tokens_verified_total` | Exact-token candidates selected in the non-overlapping plan |
+| `vllm:cacheblend_kv_tokens_loaded_total` | Fully verified tokens transferred into staging/destination KV |
+| `vllm:cacheblend_kv_tokens_rejected_total` | Raw candidate tokens rejected in aggregate; bounded reasons remain structured test data, not labels |
+| `vllm:cacheblend_tokens_recomputed_total` | Prompt rows actually recomputed by the model path |
+| `vllm:cacheblend_document_hit_fraction` | Selected verified rolling segments divided by requested rolling segments |
+| `vllm:cacheblend_token_hit_fraction` | Selected verified reusable tokens divided by requested reusable tokens |
+| `vllm:cacheblend_effective_saved_prefill_fraction` | Prompt rows not recomputed divided by baseline prompt rows; structurally zero in the 100% phase |
+| `vllm:cacheblend_lookup_latency_seconds` | Scheduler-side matching/storage lookup wall time |
+| `vllm:cacheblend_transfer_latency_seconds` | Load preflight, transport, staging, correction, and scatter wall time |
+| `vllm:cacheblend_store_latency_seconds` | Post-prefill gather, LMCache store, and atomic sidecar publication wall time |
+| Position-correction latency | Currently included in transfer latency; a separate timer is required before reduced recomputation |
+| Selective-recomputation latency | Not emitted in the 100% phase; required before M6 can pass |
 | vLLM TTFT/prefill metrics | Server-measured TTFT and total prefill latency; the non-streaming client cannot infer TTFT |
 
 Correctness artifacts record baseline and CacheBlend logits/hidden-state dtype,

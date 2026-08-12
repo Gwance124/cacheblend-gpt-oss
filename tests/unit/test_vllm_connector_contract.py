@@ -6,6 +6,7 @@ import builtins
 import importlib
 import inspect
 import sys
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -37,6 +38,9 @@ from cacheblend_gpt_oss.vllm_compat.v0_19_1.transfer_runtime import (
 )
 
 MODULE_NAME = "cacheblend_gpt_oss.vllm_compat.v0_19_1.connector"
+METRICS_MODULE_NAME = (
+    "cacheblend_gpt_oss.vllm_compat.v0_19_1.connector_metrics"
+)
 
 
 def test_import_without_vllm_fails_with_actionable_message(
@@ -76,6 +80,64 @@ def _install_fake_vllm(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     class FakeSupportsHMA:
         pass
 
+    @dataclass
+    class FakeKVConnectorStats:
+        data: dict[str, Any] = field(default_factory=dict)
+
+    class FakeMetric:
+        def __init__(
+            self,
+            *,
+            name: str,
+            documentation: str,
+            labelnames: list[str],
+            buckets: tuple[float, ...] = (),
+        ) -> None:
+            self.name = name
+            self.documentation = documentation
+            self.labelnames = tuple(labelnames)
+            self.buckets = buckets
+            self.label_values: list[tuple[object, ...]] = []
+            self.increments: list[int | float] = []
+            self.observations: list[int | float] = []
+            self.values: list[int | float] = []
+
+        def labels(self, *values: object) -> FakeMetric:
+            self.label_values.append(values)
+            return self
+
+        def inc(self, value: int | float) -> None:
+            self.increments.append(value)
+
+        def observe(self, value: int | float) -> None:
+            self.observations.append(value)
+
+        def set(self, value: int | float) -> None:
+            self.values.append(value)
+
+    class FakeGauge(FakeMetric):
+        pass
+
+    class FakeCounter(FakeMetric):
+        pass
+
+    class FakeHistogram(FakeMetric):
+        pass
+
+    class FakeKVConnectorPromMetrics:
+        def __init__(
+            self,
+            vllm_config: Any,
+            metric_types: dict[type[Any], type[Any]],
+            labelnames: list[str],
+            per_engine_labelvalues: dict[int, list[object]],
+        ) -> None:
+            del vllm_config, labelnames
+            self._gauge_cls = metric_types[FakeGauge]
+            self._counter_cls = metric_types[FakeCounter]
+            self._histogram_cls = metric_types[FakeHistogram]
+            self.per_engine_labelvalues = per_engine_labelvalues
+
     class FakeKVConnectorBase:
         def __init__(self, vllm_config: Any, role: Any, kv_cache_config: Any) -> None:
             self._vllm_config = vllm_config
@@ -108,6 +170,9 @@ def _install_fake_vllm(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
         "vllm.distributed.kv_transfer.kv_connector.v1.base": ModuleType(
             "vllm.distributed.kv_transfer.kv_connector.v1.base"
         ),
+        "vllm.distributed.kv_transfer.kv_connector.v1.metrics": ModuleType(
+            "vllm.distributed.kv_transfer.kv_connector.v1.metrics"
+        ),
     }
     modules["vllm"].__version__ = "0.19.1"  # type: ignore[attr-defined]
     for name, module in modules.items():
@@ -122,6 +187,13 @@ def _install_fake_vllm(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
         FakeKVConnectorWorkerMetadata
     )
     base.SupportsHMA = FakeSupportsHMA  # type: ignore[attr-defined]
+    metrics = modules["vllm.distributed.kv_transfer.kv_connector.v1.metrics"]
+    metrics.KVConnectorStats = FakeKVConnectorStats  # type: ignore[attr-defined]
+    metrics.KVConnectorPromMetrics = (  # type: ignore[attr-defined]
+        FakeKVConnectorPromMetrics
+    )
+    metrics.PromMetric = FakeGauge | FakeCounter | FakeHistogram  # type: ignore[attr-defined]
+    metrics.PromMetricT = object  # type: ignore[attr-defined]
     for name, module in modules.items():
         monkeypatch.setitem(sys.modules, name, module)
 
@@ -130,6 +202,11 @@ def _install_fake_vllm(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
         metadata=FakeKVConnectorMetadata,
         role=FakeKVConnectorRole,
         supports_hma=FakeSupportsHMA,
+        stats=FakeKVConnectorStats,
+        prom=FakeKVConnectorPromMetrics,
+        gauge=FakeGauge,
+        counter=FakeCounter,
+        histogram=FakeHistogram,
     )
 
 
@@ -138,12 +215,14 @@ def loaded_connector(
     monkeypatch: pytest.MonkeyPatch,
 ) -> tuple[ModuleType, SimpleNamespace]:
     monkeypatch.delitem(sys.modules, MODULE_NAME, raising=False)
+    monkeypatch.delitem(sys.modules, METRICS_MODULE_NAME, raising=False)
     fake = _install_fake_vllm(monkeypatch)
     module = importlib.import_module(MODULE_NAME)
     try:
         yield module, fake
     finally:
         sys.modules.pop(MODULE_NAME, None)
+        sys.modules.pop(METRICS_MODULE_NAME, None)
 
 
 class FakeHfConfig(SimpleNamespace):
@@ -626,6 +705,71 @@ def test_transfer_mode_wires_full_recompute_scheduler_and_worker_hooks(
     worker.wait_for_save()
     assert len(worker_resources.transfer_runtime.after_calls) == 1
 
+    stats = worker.get_kv_connector_stats()
+    assert stats is not None
+    assert isinstance(stats, fake.stats)
+    reduced = stats.reduce()
+    assert reduced == {
+        "requests": 1,
+        "reusable_segments_requested": 1,
+        "reusable_segments_hit": 0,
+        "reusable_document_tokens_requested": 256,
+        "kv_tokens_found": 0,
+        "kv_tokens_verified": 0,
+        "kv_tokens_rejected": 0,
+        "kv_tokens_loaded": 0,
+        "tokens_recomputed": 256,
+        "prefill_tokens_avoided": 0,
+        "store_tokens_eligible": 256,
+        "store_tokens_completed": 256,
+        "load_fallbacks": 0,
+        "store_fallbacks": 0,
+        "lookup_latency_seconds": pytest.approx(
+            reduced["lookup_latency_seconds"]
+        ),
+        "transfer_latency_seconds": pytest.approx(
+            reduced["transfer_latency_seconds"]
+        ),
+        "store_latency_seconds": pytest.approx(
+            reduced["store_latency_seconds"]
+        ),
+        "document_hit_fraction": 0.0,
+        "token_hit_fraction": 0.0,
+        "effective_saved_prefill_fraction": 0.0,
+    }
+    assert reduced["lookup_latency_seconds"] >= 0
+    assert reduced["transfer_latency_seconds"] >= 0
+    assert reduced["store_latency_seconds"] >= 0
+    assert worker.get_kv_connector_stats() is None
+
+    rebuilt = module.GptOssCacheBlendConnector.build_kv_connector_stats(
+        stats.data
+    )
+    assert rebuilt.reduce() == reduced
+    prom = module.GptOssCacheBlendConnector.build_prom_metrics(
+        worker_config,
+        {
+            fake.gauge: fake.gauge,
+            fake.counter: fake.counter,
+            fake.histogram: fake.histogram,
+        },
+        ["engine"],
+        {0: ["0"]},
+    )
+    assert isinstance(prom, fake.prom)
+    prom.observe(stats.data)
+    assert prom._counters["tokens_recomputed"].increments == [256]
+    assert prom._gauges["effective_saved_prefill_fraction"].values == [0.0]
+    assert prom._histograms["lookup_latency_seconds"].observations
+    assert all(
+        metric.labelnames == ("engine",)
+        for metric in (
+            *prom._counters.values(),
+            *prom._gauges.values(),
+            *prom._histograms.values(),
+        )
+    )
+
     worker_metadata = worker.build_connector_worker_meta()
     assert worker_metadata is not None
     scheduler.update_connector_output(
@@ -637,6 +781,71 @@ def test_transfer_mode_wires_full_recompute_scheduler_and_worker_hooks(
     worker.shutdown()
     assert scheduler_resources.close_calls == 1
     assert worker_resources.close_calls == 1
+
+
+def test_connector_metrics_aggregate_hits_fallbacks_and_reject_bad_data(
+    loaded_connector: tuple[ModuleType, SimpleNamespace],
+) -> None:
+    module, _fake = loaded_connector
+    stats = module.GptOssCacheBlendStats()
+    stats.record_lookup(
+        module.CacheBlendLookupObservation(
+            prompt_tokens=768,
+            reusable_segments_requested=513,
+            reusable_segments_hit=2,
+            reusable_document_tokens_requested=768,
+            kv_tokens_found=768,
+            kv_tokens_verified=512,
+            kv_tokens_rejected=256,
+            latency_seconds=0.25,
+        )
+    )
+    stats.record_load(
+        loaded_tokens=512,
+        recomputed_tokens=768,
+        fallback=False,
+        latency_seconds=0.5,
+    )
+    stats.record_store(
+        eligible_tokens=768,
+        stored_tokens=0,
+        fallback=True,
+        latency_seconds=0.75,
+    )
+
+    other = module.GptOssCacheBlendStats()
+    other.record_load(
+        loaded_tokens=0,
+        recomputed_tokens=256,
+        fallback=True,
+        latency_seconds=1.5,
+    )
+    assert stats.aggregate(other) is stats
+    reduced = stats.reduce()
+    assert reduced["kv_tokens_loaded"] == 512
+    assert reduced["tokens_recomputed"] == 1024
+    assert reduced["load_fallbacks"] == 1
+    assert reduced["store_fallbacks"] == 1
+    assert reduced["document_hit_fraction"] == pytest.approx(2 / 513, abs=1e-6)
+    assert reduced["token_hit_fraction"] == pytest.approx(2 / 3, abs=1e-6)
+    assert reduced["effective_saved_prefill_fraction"] == 0.0
+    assert reduced["transfer_latency_seconds"] == 1.0
+
+    with pytest.raises(ValueError, match="lookup observation"):
+        module.CacheBlendLookupObservation(
+            prompt_tokens=256,
+            reusable_segments_requested=1,
+            reusable_segments_hit=1,
+            reusable_document_tokens_requested=256,
+            kv_tokens_found=255,
+            kv_tokens_verified=256,
+            kv_tokens_rejected=0,
+            latency_seconds=0.1,
+        )
+    malformed = {key: list(values) for key, values in stats.data.items()}
+    malformed["requests"] = [1.5]
+    with pytest.raises(ValueError, match="stats value"):
+        module.GptOssCacheBlendStats(data=malformed)
 
 
 def test_source_contains_the_pinned_loader_class_name() -> None:

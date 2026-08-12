@@ -6,8 +6,10 @@ The exact pinned source audit is complete. The result remains a **go** for an
 out-of-tree connector and a **no-patch** decision for the 100%-recomputation
 transfer proof. The connector, scheduler lookup, LMCache transport, persistent
 sidecar, worker staging bridge, YaRN corrector, and full/sliding scatter-gather
-path are now implemented and CPU-tested. The next gate is manual CUDA and
-connector/model execution on `solab-g3`; no such pass is claimed yet.
+path are now implemented and CPU-tested. Identifier-free aggregate connector
+metrics are wired through vLLM 0.19.1's public stats/Prometheus hooks. The next
+gate is manual CUDA and connector/model execution on `solab-g3`; no such pass
+is claimed yet.
 
 Selective non-prefix computation remains conditional. The V1 connector API can
 carry an opaque plan but can only credit a contiguous cached prefix to the

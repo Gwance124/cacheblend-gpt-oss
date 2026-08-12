@@ -320,9 +320,10 @@ The external workload already provides the desired transparent boundary:
 - Harmony reasoning, messages, function calls, normalized MCP-style calls, and
   forced-decision recovery are all above the connector boundary.
 - Existing metrics already normalize prefix hits, CacheBlend-hit/recomputed
-  tokens when supplied, TTFT, and prefill/decode/queue latency. The additional
-  metrics in this project need a stable endpoint schema before any future RAG
-  change.
+  tokens when supplied, TTFT, and prefill/decode/queue latency. This project now
+  exposes its aggregate transfer metrics through vLLM's `/metrics` endpoint;
+  no RAG request-schema change is needed. A future per-request artifact schema
+  remains a separate gate before changing RAG analysis code.
 
 No RAG runtime dependency or prompt change is needed for a transparent
 CacheBlend-enabled endpoint. Future work should only configure that endpoint

@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from time import perf_counter
 from typing import TYPE_CHECKING, Any
 
 from cacheblend_gpt_oss.connector.control_plane import (
@@ -72,6 +73,7 @@ from cacheblend_gpt_oss.vllm_compat.v0_19_1.transfer_config import (
 from cacheblend_gpt_oss.vllm_compat.v0_19_1.transfer_runtime import (
     PreForwardOutcome,
     SchedulerTransferMetadata,
+    TransferAttemptState,
 )
 
 try:
@@ -83,6 +85,12 @@ try:
         KVConnectorWorkerMetadata,
         SupportsHMA,
     )
+
+    from cacheblend_gpt_oss.vllm_compat.v0_19_1.connector_metrics import (
+        CacheBlendLookupObservation,
+        GptOssCacheBlendPromMetrics,
+        GptOssCacheBlendStats,
+    )
 except ImportError as exc:  # pragma: no cover - exact message tested in isolation
     raise RuntimeError(
         "GptOssCacheBlendConnector requires the pinned vLLM==0.19.1 runtime; "
@@ -92,6 +100,12 @@ except ImportError as exc:  # pragma: no cover - exact message tested in isolati
 if TYPE_CHECKING:
     import torch  # type: ignore[import-not-found]
     from vllm.config import VllmConfig  # type: ignore[import-not-found]
+    from vllm.distributed.kv_transfer.kv_connector.v1.metrics import (  # type: ignore[import-not-found]
+        KVConnectorPromMetrics,
+        KVConnectorStats,
+        PromMetric,
+        PromMetricT,
+    )
     from vllm.forward_context import ForwardContext  # type: ignore[import-not-found]
     from vllm.v1.attention.backend import (  # type: ignore[import-not-found]
         AttentionMetadata,
@@ -133,6 +147,7 @@ class GptOssCacheBlendMetadata(KVConnectorMetadata):  # type: ignore[misc]
     group_layer_names: tuple[tuple[str, ...], ...]
     handoffs: tuple[RequestHandoffMetadata, ...]
     transfers: tuple[SchedulerTransferMetadata, ...] = ()
+    lookup_observations: tuple[CacheBlendLookupObservation, ...] = ()
     transfer_enabled: bool = False
 
 
@@ -265,6 +280,10 @@ class GptOssCacheBlendConnector(
         self._pending_worker_receipts: list[WorkerValidationReceipt] = []
         self._registered_kv_caches: dict[str, torch.Tensor] = {}
         self._scheduler_lookup_metadata: dict[str, SchedulerLookupMetadata] = {}
+        self._scheduler_lookup_observations: dict[
+            str, CacheBlendLookupObservation
+        ] = {}
+        self._stats = GptOssCacheBlendStats()
         self._scheduler_resources: SchedulerRuntimeResources | None = None
         self._worker_resources: WorkerRuntimeResources | None = None
         self._active_worker_transfer: _ActiveWorkerTransfer | None = None
@@ -380,6 +399,18 @@ class GptOssCacheBlendConnector(
             raise RuntimeError(
                 "The 100%-recompute transfer envelope allows one request per step."
             )
+        if metadata.transfer_enabled:
+            if len(metadata.lookup_observations) != len(metadata.handoffs):
+                raise RuntimeError(
+                    "Transfer metadata must carry one lookup observation per "
+                    "request handoff."
+                )
+        elif metadata.lookup_observations:
+            raise RuntimeError(
+                "Control-flow metadata cannot claim transfer lookup observations."
+            )
+        for observation in metadata.lookup_observations:
+            self._stats.record_lookup(observation)
         transfers_by_request = {
             transfer.request_id: transfer for transfer in metadata.transfers
         }
@@ -415,8 +446,17 @@ class GptOssCacheBlendConnector(
                     "register_kv_caches."
                 )
             adapted_blocks = self._adapt_handoff_blocks(handoff)
+            started_at = perf_counter()
             outcome = self._worker_resources.transfer_runtime.before_forward(
                 transfer, adapted_blocks
+            )
+            self._stats.record_load(
+                loaded_tokens=outcome.loaded_kv_tokens,
+                recomputed_tokens=outcome.tokens_to_recompute,
+                fallback=(
+                    outcome.state is TransferAttemptState.FULL_PREFILL_FALLBACK
+                ),
+                latency_seconds=perf_counter() - started_at,
             )
             receipt = self._control_plane.validate_worker(
                 handoff.plan.request_id,
@@ -475,8 +515,18 @@ class GptOssCacheBlendConnector(
             active.pre_forward,
             recomputed_token_count=active.metadata.prompt_token_count,
         )
-        self._worker_resources.transfer_runtime.after_forward(
+        started_at = perf_counter()
+        post_forward = self._worker_resources.transfer_runtime.after_forward(
             completion, active.adapted_blocks
+        )
+        self._stats.record_store(
+            eligible_tokens=post_forward.eligible_store_tokens,
+            stored_tokens=post_forward.stored_tokens,
+            fallback=(
+                post_forward.state
+                is TransferAttemptState.FULL_PREFILL_FALLBACK
+            ),
+            latency_seconds=perf_counter() - started_at,
         )
         self._active_worker_transfer = None
 
@@ -510,11 +560,37 @@ class GptOssCacheBlendConnector(
         self._require_role(KVConnectorRole.WORKER, "get_block_ids_with_load_errors")
         return set()
 
-    def get_kv_connector_stats(self) -> None:
-        """Return no vLLM connector stats until project metrics are connected."""
-
+    def get_kv_connector_stats(self) -> KVConnectorStats | None:
+        """Return and atomically reset identifier-free worker observations."""
         self._require_role(KVConnectorRole.WORKER, "get_kv_connector_stats")
-        return None
+        if self._stats.is_empty():
+            return None
+        return self._stats.clone_and_reset()
+
+    @classmethod
+    def build_kv_connector_stats(
+        cls, data: dict[str, Any] | None = None
+    ) -> KVConnectorStats:
+        """Rebuild the serializable stats object in vLLM's logger process."""
+
+        return GptOssCacheBlendStats(data={} if data is None else data)
+
+    @classmethod
+    def build_prom_metrics(
+        cls,
+        vllm_config: VllmConfig,
+        metric_types: dict[type[PromMetric], type[PromMetricT]],
+        labelnames: list[str],
+        per_engine_labelvalues: dict[int, list[object]],
+    ) -> KVConnectorPromMetrics:
+        """Register the pinned connector's bounded Prometheus metrics."""
+
+        return GptOssCacheBlendPromMetrics(
+            vllm_config,
+            metric_types,
+            labelnames,
+            per_engine_labelvalues,
+        )
 
     # Scheduler-side hooks. update_state_after_alloc is called even when the
     # external count is zero:
@@ -544,6 +620,7 @@ class GptOssCacheBlendConnector(
         if self._transfer_enabled:
             if self._scheduler_resources is None:
                 raise RuntimeError("Scheduler transfer resources are unavailable.")
+            started_at = perf_counter()
             lookup = self._scheduler_resources.runtime.lookup(
                 SchedulerLookupRequest(
                     request_id=request_id,
@@ -557,6 +634,7 @@ class GptOssCacheBlendConnector(
                     preemption_count=raw_preemptions,
                 )
             )
+            lookup_latency = perf_counter() - started_at
             if lookup.status.is_fatal:
                 raise RuntimeError(
                     "CacheBlend scheduler lookup failed closed: "
@@ -570,6 +648,21 @@ class GptOssCacheBlendConnector(
                 match_plan=plan.match_plan,
             )
             self._scheduler_lookup_metadata[request_id] = lookup
+            counters = lookup.lookup_plan.counters
+            self._scheduler_lookup_observations[request_id] = (
+                CacheBlendLookupObservation(
+                    prompt_tokens=len(prompt_token_ids),
+                    reusable_segments_requested=len(lookup.query_windows),
+                    reusable_segments_hit=counters.verified_candidates,
+                    reusable_document_tokens_requested=(
+                        len(prompt_token_ids) if lookup.query_windows else 0
+                    ),
+                    kv_tokens_found=counters.found_candidate_tokens,
+                    kv_tokens_verified=counters.verified_candidate_tokens,
+                    kv_tokens_rejected=counters.rejected_candidate_tokens,
+                    latency_seconds=lookup_latency,
+                )
+            )
         else:
             self._control_plane.lookup(
                 request_id=request_id,
@@ -674,6 +767,16 @@ class GptOssCacheBlendConnector(
             group_layer_names=self._group_layer_names,
             handoffs=handoffs,
             transfers=tuple(transfers),
+            lookup_observations=(
+                tuple(
+                    self._scheduler_lookup_observations[
+                        handoff.plan.request_id
+                    ]
+                    for handoff in handoffs
+                )
+                if self._transfer_enabled
+                else ()
+            ),
             transfer_enabled=self._transfer_enabled,
         )
         self._pending_handoff_ids.clear()
@@ -703,6 +806,7 @@ class GptOssCacheBlendConnector(
         if self._scheduler_resources is not None:
             self._scheduler_resources.runtime.discard(request_id)
         self._scheduler_lookup_metadata.pop(request_id, None)
+        self._scheduler_lookup_observations.pop(request_id, None)
         self._control_plane.discard(request_id)
         self._known_request_ids.discard(request_id)
         self._request_preemptions.pop(request_id, None)
@@ -740,6 +844,7 @@ class GptOssCacheBlendConnector(
         self._pending_handoff_ids.clear()
         self._pending_worker_receipts.clear()
         self._scheduler_lookup_metadata.clear()
+        self._scheduler_lookup_observations.clear()
         self._active_worker_transfer = None
         self._registered_kv_caches.clear()
         if close_error is not None:
