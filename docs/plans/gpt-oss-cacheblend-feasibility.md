@@ -378,6 +378,15 @@ the injected updater requires one validated vector for every layer, so the
 future backend cannot silently skip the check. It does not replace the
 required real CUDA/backend test.
 
+Because the pinned callback is per-layer, `GptOssSelectiveKvSession` now
+provides the corresponding dormant adapter seam. It accepts only the 24
+canonical layer callbacks in order, applies the validated recompute spans for
+each layer, and becomes terminal after an incomplete or failed forward. A
+partial-write failure therefore requires request-KV discard; it is never
+converted into reusable cache state. This remains a CPU-tested contract only;
+the live connector still recomputes 100% and the session is not registered as a
+custom backend.
+
 The companion `gpt_oss.forward_output` contract guards the model-runner side:
 a future model override must preserve the full hidden-state row shape and the
 pinned runner's logits-index ordering. It is CPU-tested and dormant until

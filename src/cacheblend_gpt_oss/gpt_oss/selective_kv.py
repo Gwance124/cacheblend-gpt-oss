@@ -489,6 +489,8 @@ class GptOssSelectiveKvUpdater:
         cache_dtype = self._safe_dtype(cache)
         if key_dtype != value_dtype or key_dtype != cache_dtype:
             _fail_update(SelectiveUpdateErrorCode.DTYPE_MISMATCH)
+        if key_dtype != "torch.bfloat16":
+            _fail_update(SelectiveUpdateErrorCode.DTYPE_MISMATCH)
         key_device = self._safe_device(key)
         value_device = self._safe_device(value)
         cache_device = self._safe_device(cache)
