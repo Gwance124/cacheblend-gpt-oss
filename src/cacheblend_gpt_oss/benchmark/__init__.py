@@ -24,6 +24,7 @@ from cacheblend_gpt_oss.benchmark.models import (
     BenchmarkFailureCode,
     BenchmarkTrial,
     ConfidenceInterval,
+    merge_benchmark_artifacts,
     summarize_benchmark,
 )
 
@@ -47,6 +48,7 @@ __all__ = [
     "benchmark_artifact_from_dict",
     "benchmark_artifact_to_dict",
     "canonical_benchmark_bytes",
+    "merge_benchmark_artifacts",
     "read_benchmark_artifact",
     "summarize_benchmark",
     "write_benchmark_artifact",

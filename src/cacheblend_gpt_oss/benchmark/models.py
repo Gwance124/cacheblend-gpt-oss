@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
 from math import sqrt
@@ -87,6 +88,7 @@ class BenchmarkErrorCode(str, Enum):
     TRANSFER_EVIDENCE_MISSING = "transfer_evidence_missing"
     DUPLICATE_TRIAL = "duplicate_trial"
     INCONSISTENT_TRIAL = "inconsistent_trial"
+    INCOMPATIBLE_ARTIFACTS = "incompatible_artifacts"
     EMPTY_TRIALS = "empty_trials"
     FILE_EXISTS = "file_exists"
     FILE_ERROR = "file_error"
@@ -391,6 +393,8 @@ class BenchmarkArmSummary:
     saved_prefill_fraction: ConfidenceInterval
     peak_memory_bytes: ConfidenceInterval
     staging_overhead_bytes: ConfidenceInterval
+    failure_count: int
+    failure_codes: tuple[BenchmarkFailureCode, ...]
 
 
 def _confidence(values: list[float]) -> ConfidenceInterval:
@@ -492,9 +496,90 @@ def summarize_benchmark(artifact: BenchmarkArtifact) -> tuple[BenchmarkArmSummar
                 staging_overhead_bytes=_confidence(
                     [float(trial.staging_overhead_bytes) for trial in trials]
                 ),
+                failure_count=sum(trial.failure is not None for trial in trials),
+                failure_codes=tuple(
+                    failure
+                    for failure in BenchmarkFailureCode
+                    if any(trial.failure is failure for trial in trials)
+                ),
             )
         )
     return tuple(summaries)
+
+
+def merge_benchmark_artifacts(
+    artifacts: Sequence[BenchmarkArtifact],
+) -> BenchmarkArtifact:
+    """Merge separately captured arms only when all controls are identical."""
+
+    try:
+        normalized = tuple(artifacts)
+    except TypeError:
+        _fail(BenchmarkErrorCode.INCOMPATIBLE_ARTIFACTS)
+    if not normalized or any(
+        not isinstance(artifact, BenchmarkArtifact) for artifact in normalized
+    ):
+        _fail(BenchmarkErrorCode.INCOMPATIBLE_ARTIFACTS)
+    first = normalized[0]
+    identity = (
+        first.schema_version,
+        first.runtime,
+        first.case,
+        first.prompt_tokens,
+        first.prompt_fixture_digest,
+        first.host_id,
+        first.attention_backend,
+        first.hybrid_kv_cache_enabled,
+        first.block_size,
+        first.max_model_len,
+        first.tensor_parallel_size,
+        first.pipeline_parallel_size,
+        first.sampling_seed,
+        first.temperature,
+        first.top_p,
+    )
+    if any(
+        (
+            artifact.schema_version,
+            artifact.runtime,
+            artifact.case,
+            artifact.prompt_tokens,
+            artifact.prompt_fixture_digest,
+            artifact.host_id,
+            artifact.attention_backend,
+            artifact.hybrid_kv_cache_enabled,
+            artifact.block_size,
+            artifact.max_model_len,
+            artifact.tensor_parallel_size,
+            artifact.pipeline_parallel_size,
+            artifact.sampling_seed,
+            artifact.temperature,
+            artifact.top_p,
+        )
+        != identity
+        for artifact in normalized[1:]
+    ):
+        _fail(BenchmarkErrorCode.INCOMPATIBLE_ARTIFACTS)
+    return BenchmarkArtifact(
+        schema_version=first.schema_version,
+        runtime=first.runtime,
+        case=first.case,
+        prompt_tokens=first.prompt_tokens,
+        prompt_fixture_digest=first.prompt_fixture_digest,
+        host_id=first.host_id,
+        attention_backend=first.attention_backend,
+        hybrid_kv_cache_enabled=first.hybrid_kv_cache_enabled,
+        block_size=first.block_size,
+        max_model_len=first.max_model_len,
+        tensor_parallel_size=first.tensor_parallel_size,
+        pipeline_parallel_size=first.pipeline_parallel_size,
+        sampling_seed=first.sampling_seed,
+        temperature=first.temperature,
+        top_p=first.top_p,
+        trials=tuple(
+            trial for artifact in normalized for trial in artifact.trials
+        ),
+    )
 
 
 __all__ = [
@@ -513,5 +598,6 @@ __all__ = [
     "BenchmarkFailureCode",
     "BenchmarkTrial",
     "ConfidenceInterval",
+    "merge_benchmark_artifacts",
     "summarize_benchmark",
 ]

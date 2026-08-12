@@ -50,6 +50,10 @@ def _report(artifact: BenchmarkArtifact) -> dict[str, object]:
                 "end_to_end_latency_seconds": _confidence(
                     summary.end_to_end_latency_seconds
                 ),
+                "failure_codes": [
+                    failure.value for failure in summary.failure_codes
+                ],
+                "failure_count": summary.failure_count,
                 "decode_latency_seconds": _confidence(
                     summary.decode_latency_seconds
                 ),

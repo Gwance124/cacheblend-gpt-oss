@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -18,6 +19,7 @@ from cacheblend_gpt_oss.benchmark import (
     benchmark_artifact_digest,
     benchmark_artifact_from_dict,
     benchmark_artifact_to_dict,
+    merge_benchmark_artifacts,
     read_benchmark_artifact,
     summarize_benchmark,
     write_benchmark_artifact,
@@ -180,7 +182,10 @@ def test_missing_correctness_makes_report_not_ready_but_remains_recordable() -> 
         _trial(BenchmarkArm.CACHEBLEND_100PCT, passed=False),
     )
     assert not artifact.benchmark_ready
-    assert not summarize_benchmark(artifact)[1].correctness_passed
+    summary = summarize_benchmark(artifact)[1]
+    assert not summary.correctness_passed
+    assert summary.failure_count == 1
+    assert summary.failure_codes == (BenchmarkFailureCode.CORRECTNESS_FAILED,)
 
 
 def test_missing_latency_is_not_reported_as_zero_or_ready() -> None:
@@ -329,3 +334,20 @@ def test_invalid_json_is_bounded(tmp_path) -> None:
     with pytest.raises(BenchmarkError) as caught:
         read_benchmark_artifact(path)
     assert caught.value.code is BenchmarkErrorCode.INVALID_JSON
+
+
+def test_separate_arms_merge_only_with_identical_controls() -> None:
+    full = _artifact(_trial(BenchmarkArm.FULL_PREFILL))
+    control = _artifact(_trial(BenchmarkArm.CACHEBLEND_100PCT))
+    merged = merge_benchmark_artifacts((full, control))
+    assert merged.benchmark_ready
+    assert len(merged.trials) == 2
+
+    incompatible = replace(control, prompt_fixture_digest="a" * 64)
+    with pytest.raises(BenchmarkError) as caught:
+        merge_benchmark_artifacts((full, incompatible))
+    assert caught.value.code is BenchmarkErrorCode.INCOMPATIBLE_ARTIFACTS
+
+    with pytest.raises(BenchmarkError) as caught:
+        merge_benchmark_artifacts((full, full))
+    assert caught.value.code is BenchmarkErrorCode.DUPLICATE_TRIAL
