@@ -143,6 +143,52 @@ def test_exact_pinned_configuration_is_accepted() -> None:
     )
 
 
+def test_finalized_rope_parameters_must_contain_theta() -> None:
+    """Do not treat raw top-level rope_theta as the model-consumed value.
+
+    The pinned vLLM loader patches legacy ``rope_theta`` and ``rope_scaling``
+    fields into ``hf_config.rope_parameters`` before GPT-OSS construction.
+    This fixture models a pre-patch/raw config and must fail closed rather than
+    silently accepting a value that the model adapter will not read.
+    """
+
+    vllm_config, kv_cache_config = _valid_config()
+    raw_rope_scaling = dict(vllm_config.model_config.hf_config.rope_parameters)
+    raw_rope_scaling.pop("rope_theta")
+    vllm_config.model_config.hf_config.rope_parameters = None
+    vllm_config.model_config.hf_config.rope_scaling = raw_rope_scaling
+    vllm_config.model_config.hf_config.rope_theta = 150_000
+
+    issues = collect_pinned_config_issues(
+        vllm_config,
+        kv_cache_config,
+        v2_model_runner_enabled=False,
+    )
+
+    assert "rope.theta" in {issue.field for issue in issues}
+
+
+def test_vllm_rope_normalization_shape_is_accepted() -> None:
+    """A vLLM-finalized flat rope_parameters mapping is the accepted shape."""
+
+    vllm_config, kv_cache_config = _valid_config()
+    finalized = dict(vllm_config.model_config.hf_config.rope_parameters)
+    vllm_config.model_config.hf_config.rope_parameters = finalized
+    vllm_config.model_config.hf_config.rope_scaling = {
+        key: value for key, value in finalized.items() if key != "rope_theta"
+    }
+    vllm_config.model_config.hf_config.rope_theta = 150_000
+
+    assert (
+        collect_pinned_config_issues(
+            vllm_config,
+            kv_cache_config,
+            v2_model_runner_enabled=False,
+        )
+        == ()
+    )
+
+
 @pytest.mark.parametrize(
     ("mutation", "expected_field"),
     [

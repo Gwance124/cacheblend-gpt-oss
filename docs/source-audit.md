@@ -161,6 +161,17 @@ only [`copy_kv_blocks`](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aae
 - GPT-OSS caches post-RoPE K and ordinary V. A moved key therefore needs exact
   old-to-new YaRN correction; V does not. Sinks remain model/backend inputs and
   are never cache tokens.
+- The released checkpoint's raw `config.json` uses top-level `rope_theta` plus
+  a `rope_scaling` mapping. Before vLLM constructs `OAIAttention`, its pinned
+  `get_config()` path calls
+  [`patch_rope_parameters`](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/transformers_utils/config.py#L377-L426),
+  which merges those legacy fields into the finalized flat
+  `hf_config.rope_parameters` mapping. GPT-OSS then reads that mapping directly
+  ([`gpt_oss.py`](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/model_executor/models/gpt_oss.py#L80-L99)).
+  The startup validator therefore checks the finalized mapping and deliberately
+  rejects a raw/unpatched object even if it still exposes top-level
+  `rope_theta`; accepting the latter could validate a value the model will not
+  consume.
 - On A100, the pinned FlashAttention backend rejects learned sinks below compute
   capability 9.0, while the Triton backend supports them. The plugin must check
   the selected backend at startup rather than assume it.
