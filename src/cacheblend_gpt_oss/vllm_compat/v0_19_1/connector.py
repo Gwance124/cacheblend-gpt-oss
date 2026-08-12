@@ -666,13 +666,21 @@ class GptOssCacheBlendConnector(
         self._require_role(KVConnectorRole.SCHEDULER, "get_num_new_matched_tokens")
         prompt_token_ids = copy_request_prompt_token_ids(request)
         request_id = request.request_id
-        raw_preemptions = getattr(request, "num_preemptions", 0)
+        # These fields are present on the pinned vLLM 0.19.1 ``Request``.
+        # Do not default them to zero: doing so would silently treat an API
+        # drift (or a malformed request object) as an eligible zero-credit
+        # transfer.  The scheduler's external-token counter is especially
+        # safety-critical because every CacheBlend transfer in this milestone
+        # must still be fully recomputed.
+        raw_preemptions = getattr(request, "num_preemptions", None)
         if (
             isinstance(raw_preemptions, bool)
             or not isinstance(raw_preemptions, int)
             or raw_preemptions < 0
         ):
-            raise RuntimeError("Request preemption count is invalid.")
+            raise RuntimeError(
+                "Pinned vLLM Request.num_preemptions is missing or invalid."
+            )
         previous_preemptions = self._request_preemptions.get(request_id)
         if previous_preemptions is not None:
             if raw_preemptions < previous_preemptions:
@@ -691,9 +699,7 @@ class GptOssCacheBlendConnector(
                     sequence_count=1,
                     scheduler_step_index=0,
                     num_computed_tokens=num_computed_tokens,
-                    num_external_tokens=getattr(
-                        request, "num_external_computed_tokens", 0
-                    ),
+                    num_external_tokens=self._request_external_tokens(request),
                     preemption_count=raw_preemptions,
                 )
             )
@@ -742,6 +748,18 @@ class GptOssCacheBlendConnector(
             )
         self._known_request_ids.add(request_id)
         return 0, False
+
+    @staticmethod
+    def _request_external_tokens(request: Request) -> int:
+        """Read the pinned scheduler counter without a compatibility default."""
+
+        value = getattr(request, "num_external_computed_tokens", None)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise RuntimeError(
+                "Pinned vLLM Request.num_external_computed_tokens is missing "
+                "or invalid."
+            )
+        return value
 
     def update_state_after_alloc(
         self,

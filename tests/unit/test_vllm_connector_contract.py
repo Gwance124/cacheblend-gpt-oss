@@ -843,6 +843,44 @@ def test_transfer_mode_wires_full_recompute_scheduler_and_worker_hooks(
     assert worker.get_kv_connector_stats() is None
 
 
+def test_transfer_mode_rejects_missing_pinned_request_counters(
+    loaded_connector: tuple[ModuleType, SimpleNamespace],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Counter API drift must not become an implicit zero-credit transfer."""
+
+    module, fake = loaded_connector
+    kv_cache_config = _kv_cache_config()
+    scheduler_config = _config()
+    _enable_transfer(scheduler_config, kv_cache_config)
+    scheduler_resources = FakeSchedulerResources()
+    monkeypatch.setattr(
+        module,
+        "create_scheduler_runtime_resources",
+        lambda _config: scheduler_resources,
+    )
+    connector = module.GptOssCacheBlendConnector(
+        scheduler_config, fake.role.SCHEDULER, kv_cache_config
+    )
+    request = SimpleNamespace(
+        request_id="missing-counter-request",
+        prompt_token_ids=list(range(256)),
+        prompt_embeds=None,
+        num_prompt_tokens=256,
+        # Both fields intentionally omitted to model an unsupported Request
+        # shape.  The connector must fail before performing lookup or claiming
+        # that the prompt is eligible for the zero-credit transfer path.
+    )
+
+    with pytest.raises(RuntimeError, match="num_preemptions"):
+        connector.get_num_new_matched_tokens(request, 0)
+
+    request.num_preemptions = 0
+    with pytest.raises(RuntimeError, match="num_external_computed_tokens"):
+        connector.get_num_new_matched_tokens(request, 0)
+    assert scheduler_resources.runtime.requests == []
+
+
 def test_transfer_mode_loads_verified_moved_candidate_before_full_recompute(
     loaded_connector: tuple[ModuleType, SimpleNamespace],
     monkeypatch: pytest.MonkeyPatch,
