@@ -7,9 +7,16 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import sys
 from pathlib import Path
 
-from cacheblend_gpt_oss.correctness import (
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from _bootstrap import ensure_source_path
+
+ensure_source_path()
+
+from cacheblend_gpt_oss.correctness import (  # noqa: E402
     CorrectnessArtifact,
     CorrectnessCase,
     artifact_digest,

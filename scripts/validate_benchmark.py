@@ -6,10 +6,20 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
-from cacheblend_gpt_oss.benchmark import BenchmarkError, read_benchmark_artifact
-from cacheblend_gpt_oss.benchmark.report import build_benchmark_report
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from _bootstrap import ensure_source_path
+
+ensure_source_path()
+
+from cacheblend_gpt_oss.benchmark import (  # noqa: E402
+    BenchmarkError,
+    read_benchmark_artifact,
+)
+from cacheblend_gpt_oss.benchmark.report import build_benchmark_report  # noqa: E402
 
 
 def main() -> int:

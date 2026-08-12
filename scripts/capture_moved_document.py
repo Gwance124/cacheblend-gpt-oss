@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
 from importlib.metadata import version
 from pathlib import Path
@@ -27,7 +28,13 @@ from typing import Any
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
-from cacheblend_gpt_oss.correctness import (
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from _bootstrap import ensure_source_path
+
+ensure_source_path()
+
+from cacheblend_gpt_oss.correctness import (  # noqa: E402
     ARTIFACT_SCHEMA_VERSION,
     GPT_OSS_VOCAB_SIZE,
     CorrectnessArtifact,
@@ -62,8 +69,8 @@ from cacheblend_gpt_oss.correctness import (
     vllm_timing_snapshot_delta,
     write_artifact,
 )
-from cacheblend_gpt_oss.storage.lmcache_types import LMCACHE_CHUNK_SIZE
-from cacheblend_gpt_oss.targets import PINNED_TARGET
+from cacheblend_gpt_oss.storage.lmcache_types import LMCACHE_CHUNK_SIZE  # noqa: E402
+from cacheblend_gpt_oss.targets import PINNED_TARGET  # noqa: E402
 
 
 def _parser() -> argparse.ArgumentParser:

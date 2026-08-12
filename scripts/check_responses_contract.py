@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
 from dataclasses import asdict
 from importlib.metadata import version
@@ -23,7 +24,13 @@ from typing import Any
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
-from cacheblend_gpt_oss.correctness import (
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from _bootstrap import ensure_source_path
+
+ensure_source_path()
+
+from cacheblend_gpt_oss.correctness import (  # noqa: E402
     CorrectnessRuntimeIdentity,
     connector_counter_delta,
     has_connector_metric_surface,
@@ -44,7 +51,7 @@ from cacheblend_gpt_oss.correctness import (
     vllm_prompt_source_delta,
     vllm_timing_snapshot_delta,
 )
-from cacheblend_gpt_oss.responses_contract import (
+from cacheblend_gpt_oss.responses_contract import (  # noqa: E402
     JsonObject,
     append_response_and_user,
     append_tool_result,
@@ -52,11 +59,11 @@ from cacheblend_gpt_oss.responses_contract import (
     require_forced_tool_call,
     require_reasoned_message,
 )
-from cacheblend_gpt_oss.responses_evidence import (
+from cacheblend_gpt_oss.responses_evidence import (  # noqa: E402
     RESPONSES_EVIDENCE_CONTRACT,
     RESPONSES_EVIDENCE_SCHEMA_VERSION,
 )
-from cacheblend_gpt_oss.targets import PINNED_TARGET
+from cacheblend_gpt_oss.targets import PINNED_TARGET  # noqa: E402
 
 _TOOL_NAME = "get_weather"
 _EXPECTED_CITY = "Paris"

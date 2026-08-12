@@ -6,9 +6,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
-from cacheblend_gpt_oss.vllm_compat.v0_19_1.transfer_config import (
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from _bootstrap import ensure_source_path
+
+ensure_source_path()
+
+from cacheblend_gpt_oss.vllm_compat.v0_19_1.transfer_config import (  # noqa: E402
     LMCACHE_BLEND_PROTOCOL,
     LMCACHE_HASH_ALGORITHM,
     LMCACHE_SOURCE_COMMIT,

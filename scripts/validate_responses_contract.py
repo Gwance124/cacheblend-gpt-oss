@@ -6,9 +6,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
-from cacheblend_gpt_oss.responses_evidence import (
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from _bootstrap import ensure_source_path
+
+ensure_source_path()
+
+from cacheblend_gpt_oss.responses_evidence import (  # noqa: E402
     RESPONSES_EVIDENCE_CONTRACT,
     RESPONSES_EVIDENCE_SCHEMA_VERSION,
     ResponsesEvidenceError,
