@@ -258,8 +258,15 @@ validate it independently before accepting the final-distribution result:
 ```bash
 .venv/bin/python scripts/validate_transfer_evidence.py \
   --input "$CACHEBLEND_RUN_DIR/transfer-evidence.json" \
+  --correctness-artifact "$CACHEBLEND_RUN_DIR/cacheblend-100pct.json" \
   --output "$CACHEBLEND_RUN_DIR/transfer-evidence-report.json"
 ```
+
+When `--correctness-artifact` is supplied, validation additionally requires
+the sidecar source/target prompt digests, target length, loaded-token count,
+recomputed-token count, and zero-savings counter to match that exact
+CacheBlend artifact. A sidecar that is valid in isolation but belongs to a
+different request fails this binding check.
 
 The report must show 12 sliding and 12 full layers, all layers loaded and
 overwritten, and zero prefill tokens avoided. This command is read-only with

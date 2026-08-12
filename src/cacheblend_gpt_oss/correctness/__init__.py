@@ -62,6 +62,7 @@ from cacheblend_gpt_oss.correctness.transfer import (
     transfer_evidence_digest,
     transfer_evidence_from_dict,
     transfer_evidence_to_dict,
+    validate_transfer_evidence_binding,
     write_transfer_evidence,
 )
 
@@ -113,6 +114,7 @@ __all__ = [
     "transfer_evidence_digest",
     "transfer_evidence_from_dict",
     "transfer_evidence_to_dict",
+    "validate_transfer_evidence_binding",
     "write_artifact",
     "write_frozen_tolerance",
     "write_transfer_evidence",

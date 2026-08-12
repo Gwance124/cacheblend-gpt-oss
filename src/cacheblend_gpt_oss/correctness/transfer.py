@@ -24,6 +24,11 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, NoReturn
 
+from cacheblend_gpt_oss.correctness.models import (
+    ConnectorCorrectnessEvidence,
+    CorrectnessArtifact,
+    CorrectnessRunMode,
+)
 from cacheblend_gpt_oss.gpt_oss.layout import (
     GPT_OSS_NUM_LAYERS,
     AttentionKind,
@@ -47,6 +52,7 @@ class TransferEvidenceErrorCode(str, Enum):
     OVERWRITE_NOT_OBSERVED = "overwrite_not_observed"
     SOURCE_MISMATCH = "source_mismatch"
     PREFILL_MISMATCH = "prefill_mismatch"
+    ARTIFACT_BINDING_MISMATCH = "artifact_binding_mismatch"
     INVALID_JSON = "invalid_json"
     FILE_EXISTS = "file_exists"
 
@@ -210,6 +216,38 @@ class TransferEvidence:
         return len(self.layers) == GPT_OSS_NUM_LAYERS
 
 
+def validate_transfer_evidence_binding(
+    artifact: CorrectnessArtifact,
+    evidence: TransferEvidence,
+) -> None:
+    """Bind a layer sidecar to one exact CacheBlend correctness artifact.
+
+    The sidecar's own schema proves that every layer observed a load followed
+    by a full-prefill overwrite.  It does not, by itself, prove that the
+    sampled prompt, connector counter interval, and output distribution came
+    from the same request.  This explicit binding closes that evidence
+    substitution gap without storing prompt text or token IDs.
+    """
+
+    if not isinstance(artifact, CorrectnessArtifact) or not isinstance(
+        evidence, TransferEvidence
+    ):
+        _fail(TransferEvidenceErrorCode.ARTIFACT_BINDING_MISMATCH)
+    connector = artifact.connector
+    if (
+        artifact.run_mode is not CorrectnessRunMode.CACHEBLEND_100PCT
+        or not isinstance(connector, ConnectorCorrectnessEvidence)
+        or evidence.source_prompt_digest != artifact.prompt.source_prompt_digest
+        or evidence.target_prompt_digest != artifact.prompt.target_prompt_digest
+        or evidence.target_prompt_tokens != artifact.prompt.target_prompt_tokens
+        or evidence.loaded_tokens != connector.kv_tokens_loaded
+        or evidence.recomputed_tokens != connector.tokens_recomputed
+        or evidence.prefill_tokens_avoided
+        != connector.prefill_tokens_avoided
+    ):
+        _fail(TransferEvidenceErrorCode.ARTIFACT_BINDING_MISMATCH)
+
+
 def transfer_evidence_to_dict(evidence: TransferEvidence) -> dict[str, Any]:
     """Return the canonical JSON representation."""
 
@@ -364,5 +402,6 @@ __all__ = [
     "transfer_evidence_digest",
     "transfer_evidence_from_dict",
     "transfer_evidence_to_dict",
+    "validate_transfer_evidence_binding",
     "write_transfer_evidence",
 ]
