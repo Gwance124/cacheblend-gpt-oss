@@ -21,7 +21,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
-from typing import NoReturn, Protocol
+from typing import NoReturn, Protocol, cast
 
 from cacheblend_gpt_oss.gpt_oss.layout import (
     GPT_OSS_MAX_CONTEXT_TOKENS,
@@ -53,6 +53,9 @@ class SelectiveWriteErrorCode(str, Enum):
     OVERLAPPING_SPANS = "overlapping_spans"
     INVALID_PHYSICAL_SLOT = "invalid_physical_slot"
     ATTENTION_PATTERN_MISMATCH = "attention_pattern_mismatch"
+    INVALID_SLOT_MAPPING = "invalid_slot_mapping"
+    SLOT_MAPPING_LENGTH_MISMATCH = "slot_mapping_length_mismatch"
+    SLOT_MAPPING_VALUE_MISMATCH = "slot_mapping_value_mismatch"
 
 
 class SelectiveUpdateErrorCode(str, Enum):
@@ -226,6 +229,66 @@ class SelectiveWritePlan:
         if not _is_int(layer_index) or not 0 <= layer_index < GPT_OSS_NUM_LAYERS:
             _fail(SelectiveWriteErrorCode.INVALID_LAYER)
         return self.row_plan.layer(layer_index).cached_ranges
+
+
+def validate_slot_mapping(
+    plan: SelectiveWritePlan,
+    *,
+    layer_index: int,
+    slot_mapping: Sequence[object],
+) -> tuple[int, ...]:
+    """Validate vLLM's flattened per-token physical slot mapping.
+
+    The pinned Triton ``do_kv_cache_update`` receives a flattened slot vector
+    alongside the post-RoPE K/V rows.  ``SelectiveWritePlan`` already carries
+    the destination block and offset for every target token, but a future
+    backend must still check that the runtime vector agrees before it writes
+    only recomputed rows.  The input is intentionally a CPU-friendly sequence;
+    the CUDA adapter must call ``tolist()`` (or an equivalent bounded reader)
+    before entering this contract.
+
+    ``-1``/padding slots are rejected.  The first selective experiment uses a
+    single eager prompt with prefix caching disabled, so every prompt row must
+    have a concrete destination.  Rejecting any other shape or value prevents
+    a stale row from being written to an unrelated block.
+    """
+
+    if not isinstance(plan, SelectiveWritePlan):
+        _fail(SelectiveWriteErrorCode.INVALID_PLAN)
+    if not _is_int(layer_index) or not 0 <= layer_index < GPT_OSS_NUM_LAYERS:
+        _fail(SelectiveWriteErrorCode.INVALID_LAYER)
+    try:
+        normalized = tuple(slot_mapping)
+    except TypeError as error:
+        raise SelectiveWriteError(
+            SelectiveWriteErrorCode.INVALID_SLOT_MAPPING
+        ) from error
+    prompt_tokens = plan.row_plan.prompt_tokens
+    if len(normalized) != prompt_tokens:
+        _fail(SelectiveWriteErrorCode.SLOT_MAPPING_LENGTH_MISMATCH)
+    normalized_slots: list[int] = []
+    for slot in normalized:
+        if not _is_int(slot):
+            _fail(SelectiveWriteErrorCode.SLOT_MAPPING_VALUE_MISMATCH)
+        slot_int = cast(int, slot)
+        if slot_int < 0:
+            _fail(SelectiveWriteErrorCode.SLOT_MAPPING_VALUE_MISMATCH)
+        normalized_slots.append(slot_int)
+    normalized_ints = tuple(normalized_slots)
+
+    expected_by_position: dict[int, int] = {}
+    for span in plan.full_layer_spans:
+        if span.layer_index != layer_index:
+            continue
+        for offset in range(span.token_count):
+            position = span.target_range.start + offset
+            expected_by_position[position] = span.physical_slot_start + offset
+    if len(expected_by_position) != prompt_tokens:
+        _fail(SelectiveWriteErrorCode.RANGE_COVERAGE_MISMATCH)
+    for position, actual in enumerate(normalized_ints):
+        if actual != expected_by_position[position]:
+            _fail(SelectiveWriteErrorCode.SLOT_MAPPING_VALUE_MISMATCH)
+    return normalized_ints
 
 
 def plan_selective_kv_writes(

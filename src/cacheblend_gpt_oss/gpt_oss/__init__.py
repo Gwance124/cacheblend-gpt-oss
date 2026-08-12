@@ -41,6 +41,7 @@ from cacheblend_gpt_oss.gpt_oss.selective_kv import (
     SelectiveWriteErrorCode,
     SelectiveWritePlan,
     plan_selective_kv_writes,
+    validate_slot_mapping,
 )
 from cacheblend_gpt_oss.gpt_oss.selective_policy import (
     CacheBlendSelectionPolicy,
@@ -157,6 +158,7 @@ __all__ = [
     "selection_sweep_digest",
     "selection_sweep_from_dict",
     "selection_sweep_to_dict",
+    "validate_slot_mapping",
     "write_selection_sweep",
     "yarn_inverse_frequencies",
     "yarn_magnitude_scale",

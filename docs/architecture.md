@@ -112,7 +112,11 @@ for only the rows that may be written. It performs no copy and is not consumed
 by the current 100%-recompute connector. Its injected `GptOssSelectiveKvUpdater`
 adds the same all-preflight-before-mutation guarantee for model-produced K/V
 rows and rejects non-CUDA, wrong-shape, wrong-dtype, wrong-device, or partial
-cache updates. It is a CPU-tested contract, not a live attention backend.
+cache updates. `validate_slot_mapping` additionally compares the exact
+per-token physical slot vector supplied to a future pinned Triton
+`do_kv_cache_update` against every layer's hybrid block spans, rejecting
+padding/negative slots, wrong lengths, and cross-group mismatches before any
+write. These are CPU-tested contracts, not a live attention backend.
 
 `gpt_oss.forward_output` guards the other half of that future M6 seam. A model
 override must return the same two-dimensional hidden-state row count that

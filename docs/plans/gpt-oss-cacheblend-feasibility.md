@@ -356,7 +356,11 @@ before any copy and records only recompute-row writes. It is not wired into the
 live attention path. The pinned stock method still calls
 `triton_reshape_and_cache_flash` for every slot, so a real custom backend must
 adapt this contract and pass the M6 GPU ordering/shape gate before it can claim
-selective execution or correctness.
+selective execution or correctness. The same module now validates the complete
+flattened `slot_mapping` vector against each layer's expected physical slots,
+including the alternating full/sliding group tables, and rejects padding or
+cross-group mappings before any write. This closes the CPU-side input contract;
+it does not replace the required real CUDA/backend test.
 
 The companion `gpt_oss.forward_output` contract guards the model-runner side:
 a future model override must preserve the full hidden-state row shape and the

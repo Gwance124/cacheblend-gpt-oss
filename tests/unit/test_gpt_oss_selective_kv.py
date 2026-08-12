@@ -17,6 +17,7 @@ from cacheblend_gpt_oss.gpt_oss.selective_kv import (
     SelectiveWriteError,
     SelectiveWriteErrorCode,
     plan_selective_kv_writes,
+    validate_slot_mapping,
 )
 from cacheblend_gpt_oss.planner import TokenRange
 
@@ -150,3 +151,75 @@ def test_layer_lookup_rejects_bool_and_out_of_range_indices() -> None:
         with pytest.raises(SelectiveWriteError) as error:
             result.spans_for_layer(index)
         assert error.value.code is SelectiveWriteErrorCode.INVALID_LAYER
+
+
+def test_slot_mapping_matches_each_hybrid_group_physical_layout() -> None:
+    result = plan_selective_kv_writes(
+        _scatter_spans(),
+        ForwardRowPlan.from_recompute_ranges(
+            20,
+            [
+                (TokenRange(0, 3), TokenRange(10, 20))
+                if index == 0
+                else (TokenRange(0, 20),)
+                for index in range(24)
+            ],
+        ),
+    )
+
+    assert validate_slot_mapping(
+        result,
+        layer_index=0,
+        slot_mapping=tuple(range(32, 52)),
+    ) == tuple(range(32, 52))
+    assert validate_slot_mapping(
+        result,
+        layer_index=1,
+        slot_mapping=tuple(range(20)),
+    ) == tuple(range(20))
+
+
+@pytest.mark.parametrize(
+    ("slot_mapping", "code"),
+    [
+        ((32,) * 19, SelectiveWriteErrorCode.SLOT_MAPPING_LENGTH_MISMATCH),
+        ((*range(32, 42), -1, *range(43, 52)),
+         SelectiveWriteErrorCode.SLOT_MAPPING_VALUE_MISMATCH),
+        ((*range(32, 41), True, *range(42, 52)),
+         SelectiveWriteErrorCode.SLOT_MAPPING_VALUE_MISMATCH),
+        ((*range(32, 51), 999), SelectiveWriteErrorCode.SLOT_MAPPING_VALUE_MISMATCH),
+    ],
+)
+def test_slot_mapping_rejects_padding_type_and_physical_mismatch(
+    slot_mapping: tuple[object, ...],
+    code: SelectiveWriteErrorCode,
+) -> None:
+    result = plan_selective_kv_writes(
+        _scatter_spans(),
+        ForwardRowPlan.full_recompute(20),
+    )
+    with pytest.raises(SelectiveWriteError) as error:
+        validate_slot_mapping(
+            result,
+            layer_index=0,
+            slot_mapping=slot_mapping,
+        )
+    assert error.value.code is code
+
+
+def test_slot_mapping_rejects_invalid_layer_and_non_iterable() -> None:
+    result = plan_selective_kv_writes(
+        _scatter_spans(),
+        ForwardRowPlan.full_recompute(20),
+    )
+    with pytest.raises(SelectiveWriteError) as invalid_layer:
+        validate_slot_mapping(result, layer_index=True, slot_mapping=range(20))
+    assert invalid_layer.value.code is SelectiveWriteErrorCode.INVALID_LAYER
+
+    with pytest.raises(SelectiveWriteError) as invalid_mapping:
+        validate_slot_mapping(
+            result,
+            layer_index=0,
+            slot_mapping=20,  # type: ignore[arg-type]
+        )
+    assert invalid_mapping.value.code is SelectiveWriteErrorCode.INVALID_SLOT_MAPPING
