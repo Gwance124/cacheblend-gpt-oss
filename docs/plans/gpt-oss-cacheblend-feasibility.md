@@ -27,7 +27,7 @@ be tested before deciding whether a pinned vLLM patch is necessary.
 | M4. GPT-OSS YaRN correction | Implemented; CUDA gate pending | Shifted cached K matches direct target-position K | No patch |
 | M5. Hybrid groups and sinks | CPU layout/data-plane complete; model gate pending | Full/sliding layers map correctly and sink behavior is unchanged | No patch |
 | M6. Out-of-tree selective-data-plane spike | Pinned boundary audited; implementation waits for M3--M5 GPU evidence | Registered model/backend must skip selected rows while preserving runner output shape | Decide at gate |
-| M7. Reduced recomputation correctness | Planned | Error curves at successively lower ratios | No optimization yet |
+| M7. Reduced recomputation correctness | CPU policy contract; GPU pending | Deterministic check-layer row plans; error/work curves still require model runs | No optimization yet |
 | M8. Responses/Harmony/multi-turn validation | CPU harness complete; GPU/API run pending | Transparent validated endpoint | Patch only for proven API blocker |
 | M9. Controlled benchmark | Planned | Full-prefill and prefix-cache comparisons with complete metrics | Optimize only after correctness |
 
@@ -377,6 +377,16 @@ model/attention hook. The patch must apply only to the audited commit and reject
 every other version.
 
 ## M7: reduce recomputation only under measured correctness
+
+The CPU-only `gpt_oss.selective_policy` contract is now implemented. It follows
+the audited CacheBlend check-layer idea without copying its old vLLM code:
+verified cached rows are ranked by injected importance scores, ties choose the
+lower token position, the configured fraction is selected, and uncached rows
+plus a forced suffix always remain recomputed. It emits the exact retained
+cached/recomputed ranges for all 24 layers and remains disconnected from the
+live connector. Its descending ratio sweep exposes a work curve locally while
+requiring explicit externally supplied measurements before exposing error or
+latency curves; it does not fabricate GPU evidence.
 
 Deliverables:
 

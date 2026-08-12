@@ -42,6 +42,15 @@ from cacheblend_gpt_oss.gpt_oss.selective_kv import (
     SelectiveWritePlan,
     plan_selective_kv_writes,
 )
+from cacheblend_gpt_oss.gpt_oss.selective_policy import (
+    CacheBlendSelectionPolicy,
+    SelectionMeasurement,
+    SelectionPolicyError,
+    SelectionPolicyErrorCode,
+    SelectionPolicyResult,
+    SelectionSweep,
+    SelectionSweepPoint,
+)
 from cacheblend_gpt_oss.gpt_oss.torch_yarn import (
     GPT_OSS_KV_DTYPE,
     GPT_OSS_YARN_CONFIG,
@@ -71,6 +80,7 @@ __all__ = [
     "GPT_OSS_YARN_INVERSE_FREQUENCIES",
     "AttentionKind",
     "AttentionLayerLayout",
+    "CacheBlendSelectionPolicy",
     "CacheGroupLayout",
     "ForwardOutputContract",
     "ForwardOutputError",
@@ -86,6 +96,12 @@ __all__ = [
     "HybridLayoutErrorCode",
     "LayerRowSelection",
     "LayerTokenScatterSpan",
+    "SelectionMeasurement",
+    "SelectionPolicyError",
+    "SelectionPolicyErrorCode",
+    "SelectionPolicyResult",
+    "SelectionSweep",
+    "SelectionSweepPoint",
     "SelectiveCacheOps",
     "SelectivePlanError",
     "SelectivePlanErrorCode",

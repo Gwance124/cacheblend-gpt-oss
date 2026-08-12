@@ -118,6 +118,16 @@ runner's strictly increasing logits indices. Returning only recomputed rows is
 rejected before logits gathering. This contract is metadata-only and does not
 enable selective execution.
 
+`gpt_oss.selective_policy` is the dormant M7 check-layer planner. Given
+verified candidate ranges and injected per-row importance scores, it chooses a
+deterministic top fraction of eligible cached rows, always keeps uncached rows
+and a configured suffix in recomputation, and emits a full 24-layer
+`ForwardRowPlan`. The policy has no tensor or vLLM dependency and is not live;
+its ratio must remain gated by measured GPU correctness. Its ratio-sweep
+artifact reports deterministic recomputation work immediately, but refuses to
+expose an error or latency curve until an external runner attaches finite
+measurements for every ratio.
+
 ### Version-scoped connector layer
 
 `cacheblend_gpt_oss.vllm_compat.v0_19_1` contains the only imports of vLLM
