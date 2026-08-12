@@ -1,7 +1,9 @@
 """Pinned GPT-OSS correctness artifacts and numerical gates."""
 
 from cacheblend_gpt_oss.correctness.capture import (
+    VllmNativeRequestEvidence,
     VllmPrefillWorkSnapshot,
+    VllmPromptSourceDelta,
     VllmTimingSnapshot,
     VllmTimingSummary,
     connector_counter_delta,
@@ -119,7 +121,9 @@ __all__ = [
     "TransferEvidenceCaptureMetadata",
     "TransferEvidenceError",
     "TransferEvidenceErrorCode",
+    "VllmNativeRequestEvidence",
     "VllmPrefillWorkSnapshot",
+    "VllmPromptSourceDelta",
     "VllmTimingSnapshot",
     "VllmTimingSummary",
     "artifact_digest",

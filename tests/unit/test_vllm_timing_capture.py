@@ -3,7 +3,9 @@ from __future__ import annotations
 import pytest
 
 from cacheblend_gpt_oss.correctness import (
+    VllmNativeRequestEvidence,
     VllmPrefillWorkSnapshot,
+    VllmPromptSourceDelta,
     VllmTimingSnapshot,
     VllmTimingSummary,
     has_vllm_prefill_work_metric_surface,
@@ -199,6 +201,40 @@ def test_prompt_source_external_or_unknown_labels_fail_closed() -> None:
                 "external_kv_transfer": 0,
             },
             expected_prompt_tokens=280,
+        )
+
+
+def test_native_request_evidence_reconciles_all_pinned_metrics() -> None:
+    evidence = VllmNativeRequestEvidence(
+        prompt_tokens_processed=280,
+        prompt_source_delta=VllmPromptSourceDelta(280, 0, 0),
+        prefill_work=VllmPrefillWorkSnapshot(1, 280),
+        timing_delta=parse_vllm_timing_snapshot(_snapshot_text(count=1)),
+    )
+    assert evidence.as_dict()["prompt_tokens_processed"] == 280
+    assert evidence.as_dict()["prefill_work"] == {
+        "observations": 1,
+        "kv_computed_tokens": 280,
+    }
+
+
+def test_native_request_evidence_rejects_nonlocal_or_partial_work() -> None:
+    kwargs = {
+        "prompt_tokens_processed": 280,
+        "prefill_work": VllmPrefillWorkSnapshot(1, 280),
+        "timing_delta": parse_vllm_timing_snapshot(_snapshot_text(count=1)),
+    }
+    with pytest.raises(ValueError, match="does not reconcile"):
+        VllmNativeRequestEvidence(
+            prompt_source_delta=VllmPromptSourceDelta(279, 1, 0),
+            **kwargs,
+        )
+    with pytest.raises(ValueError, match="does not reconcile"):
+        VllmNativeRequestEvidence(
+            prompt_source_delta=VllmPromptSourceDelta(280, 0, 0),
+            prefill_work=VllmPrefillWorkSnapshot(0, 0),
+            timing_delta=kwargs["timing_delta"],
+            prompt_tokens_processed=280,
         )
 
 

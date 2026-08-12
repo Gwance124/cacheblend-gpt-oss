@@ -246,7 +246,8 @@ each interval snapshot, so asynchronous exporter lag cannot produce a false
 mismatch.
 
 The capture command's JSON summary retains the target native prompt-token,
-prompt-source, prefill-work, and timing deltas alongside the artifact path;
+prompt-source, prefill-work, and timing deltas, plus a reconciled
+`native_request_evidence` object, alongside the artifact path;
 preserve that summary from the `tee` output with the server metrics and logs.
 
 ```bash

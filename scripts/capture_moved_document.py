@@ -34,7 +34,9 @@ from cacheblend_gpt_oss.correctness import (
     CorrectnessCase,
     CorrectnessRunMode,
     CorrectnessRuntimeIdentity,
+    VllmNativeRequestEvidence,
     VllmPrefillWorkSnapshot,
+    VllmPromptSourceDelta,
     VllmTimingSnapshot,
     build_correctness_fixture,
     connector_evidence_from_snapshots,
@@ -539,6 +541,19 @@ def main() -> int:
             parse_vllm_timing_snapshot(after_metrics),
         )
         require_vllm_timing_delta(target_timing_delta, expected_requests=1)
+    if (
+        target_prompt_tokens_processed is None
+        or target_prompt_source_delta is None
+        or target_prefill_work_delta is None
+        or target_timing_delta is None
+    ):
+        raise ValueError("native target evidence was not captured")
+    native_request_evidence = VllmNativeRequestEvidence(
+        prompt_tokens_processed=target_prompt_tokens_processed,
+        prompt_source_delta=VllmPromptSourceDelta(**target_prompt_source_delta),
+        prefill_work=target_prefill_work_delta,
+        timing_delta=target_timing_delta,
+    )
     artifact = CorrectnessArtifact(
         schema_version=ARTIFACT_SCHEMA_VERSION,
         run_mode=mode,
@@ -571,6 +586,7 @@ def main() -> int:
                 ),
                 "native_prompt_tokens_processed": target_prompt_tokens_processed,
                 "native_prompt_source_delta": target_prompt_source_delta,
+                "native_request_evidence": native_request_evidence.as_dict(),
                 "native_prefill_work": (
                     None
                     if target_prefill_work_delta is None

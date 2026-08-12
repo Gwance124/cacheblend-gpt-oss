@@ -145,6 +145,82 @@ class VllmPrefillWorkSnapshot:
             raise ValueError("invalid native vLLM prefill-work snapshot")
 
 
+@dataclass(frozen=True, slots=True)
+class VllmPromptSourceDelta:
+    """One full-prefill request's native prompt-source token counts."""
+
+    local_compute: int
+    local_cache_hit: int
+    external_kv_transfer: int
+
+    def __post_init__(self) -> None:
+        values = (
+            self.local_compute,
+            self.local_cache_hit,
+            self.external_kv_transfer,
+        )
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in values
+        ):
+            raise ValueError("invalid native vLLM prompt-source delta")
+
+    def as_dict(self) -> dict[str, int]:
+        """Return bounded JSON-ready source counters."""
+
+        return {
+            "local_compute": self.local_compute,
+            "local_cache_hit": self.local_cache_hit,
+            "external_kv_transfer": self.external_kv_transfer,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class VllmNativeRequestEvidence:
+    """Validated native metrics for exactly one fully recomputed request."""
+
+    prompt_tokens_processed: int
+    prompt_source_delta: VllmPromptSourceDelta
+    prefill_work: VllmPrefillWorkSnapshot
+    timing_delta: VllmTimingSnapshot
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.prompt_tokens_processed, bool)
+            or not isinstance(self.prompt_tokens_processed, int)
+            or self.prompt_tokens_processed <= 0
+            or not isinstance(self.prompt_source_delta, VllmPromptSourceDelta)
+            or not isinstance(self.prefill_work, VllmPrefillWorkSnapshot)
+            or not isinstance(self.timing_delta, VllmTimingSnapshot)
+        ):
+            raise ValueError("invalid native vLLM request evidence")
+        try:
+            require_full_prefill_prompt_source_delta(
+                self.prompt_source_delta.as_dict(),
+                expected_prompt_tokens=self.prompt_tokens_processed,
+            )
+            require_vllm_prefill_work_delta(
+                self.prefill_work,
+                expected_prompt_tokens=self.prompt_tokens_processed,
+            )
+            require_vllm_timing_delta(self.timing_delta, expected_requests=1)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("native vLLM request evidence does not reconcile") from exc
+
+    def as_dict(self) -> dict[str, object]:
+        """Return the bounded nested summary stored beside a capture artifact."""
+
+        return {
+            "prompt_tokens_processed": self.prompt_tokens_processed,
+            "prompt_source_delta": self.prompt_source_delta.as_dict(),
+            "prefill_work": {
+                "observations": self.prefill_work.observations,
+                "kv_computed_tokens": self.prefill_work.kv_computed_tokens,
+            },
+            "timing_delta": self.timing_delta.as_dict(),
+        }
+
+
 def has_connector_metric_surface(text: str) -> bool:
     """Return whether a scrape advertises this connector's request counter."""
 
@@ -728,7 +804,9 @@ def connector_store_counter_delta(
 
 
 __all__ = [
+    "VllmNativeRequestEvidence",
     "VllmPrefillWorkSnapshot",
+    "VllmPromptSourceDelta",
     "VllmTimingSnapshot",
     "VllmTimingSummary",
     "connector_counter_delta",
