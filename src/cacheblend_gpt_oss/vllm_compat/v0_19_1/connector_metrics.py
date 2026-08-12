@@ -206,6 +206,19 @@ class GptOssCacheBlendStats(KVConnectorStats):  # type: ignore[misc]
         position_correction_latency_seconds: float = 0.0,
         selective_recomputation_latency_seconds: float = 0.0,
     ) -> None:
+        counters = (
+            verified_tokens,
+            loaded_tokens,
+            rejected_tokens,
+            recomputed_tokens,
+        )
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in counters
+        ):
+            raise ValueError("CacheBlend load counters require non-negative integers")
+        if not isinstance(fallback, bool):
+            raise ValueError("CacheBlend load fallback requires a boolean")
         if verified_tokens != loaded_tokens + rejected_tokens:
             raise ValueError("verified KV tokens must be loaded or rejected")
         self._append("kv_tokens_loaded", loaded_tokens)
@@ -231,6 +244,15 @@ class GptOssCacheBlendStats(KVConnectorStats):  # type: ignore[misc]
         fallback: bool,
         latency_seconds: float,
     ) -> None:
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in (eligible_tokens, stored_tokens)
+        ):
+            raise ValueError("CacheBlend store counters require non-negative integers")
+        if not isinstance(fallback, bool):
+            raise ValueError("CacheBlend store fallback requires a boolean")
+        if stored_tokens > eligible_tokens:
+            raise ValueError("stored KV tokens cannot exceed eligible tokens")
         self._append("store_tokens_eligible", eligible_tokens)
         self._append("store_tokens_completed", stored_tokens)
         self._append("store_fallbacks", int(fallback))

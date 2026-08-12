@@ -1131,6 +1131,29 @@ def test_connector_metrics_aggregate_hits_fallbacks_and_reject_bad_data(
             fallback=True,
             latency_seconds=0.1,
         )
+    with pytest.raises(ValueError, match="load fallback"):
+        stats.record_load(
+            verified_tokens=0,
+            loaded_tokens=0,
+            rejected_tokens=0,
+            recomputed_tokens=0,
+            fallback=1,  # type: ignore[arg-type]
+            latency_seconds=0.0,
+        )
+    with pytest.raises(ValueError, match="store fallback"):
+        stats.record_store(
+            eligible_tokens=0,
+            stored_tokens=0,
+            fallback=1,  # type: ignore[arg-type]
+            latency_seconds=0.0,
+        )
+    with pytest.raises(ValueError, match="exceed eligible"):
+        stats.record_store(
+            eligible_tokens=0,
+            stored_tokens=1,
+            fallback=False,
+            latency_seconds=0.0,
+        )
     malformed = {key: list(values) for key, values in stats.data.items()}
     malformed["requests"] = [1.5]
     with pytest.raises(ValueError, match="stats value"):
