@@ -285,6 +285,15 @@ def test_lookup_metadata_rejects_missing_windows_for_chunk_sized_prompt() -> Non
     assert caught.value.code is SchedulerRuntimeErrorCode.INVALID_METADATA
 
 
+def test_lookup_metadata_rejects_unhashable_status_with_bounded_error() -> None:
+    runtime, _, prompt = _hit_runtime()
+    metadata = runtime.lookup(_request(prompt))
+
+    with pytest.raises(SchedulerRuntimeError) as caught:
+        replace(metadata, status=[])  # type: ignore[arg-type]
+    assert caught.value.code is SchedulerRuntimeErrorCode.INVALID_METADATA
+
+
 def test_empty_transport_result_is_explicit_full_prefill_miss() -> None:
     config = _transfer_config()
     transport = FakeCandidateTransport(_transport_config(config))

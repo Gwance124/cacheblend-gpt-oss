@@ -274,6 +274,10 @@ class SchedulerLookupMetadata:
             for window in windows
         ):
             _fail(SchedulerRuntimeErrorCode.INVALID_METADATA)
+        if not isinstance(self.lookup_plan, LmcacheLookupPlan) or not isinstance(
+            self.status, SchedulerLookupStatus
+        ):
+            _fail(SchedulerRuntimeErrorCode.INVALID_METADATA)
         expected_window_count = max(0, len(prompt) - LMCACHE_CHUNK_SIZE + 1)
         windows_required = self.status in {
             SchedulerLookupStatus.TRANSFER_READY,
@@ -287,10 +291,6 @@ class SchedulerLookupMetadata:
             window.start != start
             or window.end != start + LMCACHE_CHUNK_SIZE
             for start, window in enumerate(windows)
-        ):
-            _fail(SchedulerRuntimeErrorCode.INVALID_METADATA)
-        if not isinstance(self.lookup_plan, LmcacheLookupPlan) or not isinstance(
-            self.status, SchedulerLookupStatus
         ):
             _fail(SchedulerRuntimeErrorCode.INVALID_METADATA)
         if (
