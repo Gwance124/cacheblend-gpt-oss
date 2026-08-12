@@ -421,6 +421,15 @@ def test_resource_close_attempts_every_owner_after_failure() -> None:
     assert runtime.close_calls == 1
     assert sidecar.close_calls == 1
 
+    runtime.close_error = False
+    sidecar.close_error = False
+    scheduler.close()
+    assert runtime.close_calls == 2
+    assert sidecar.close_calls == 2
+    scheduler.close()
+    assert runtime.close_calls == 2
+    assert sidecar.close_calls == 2
+
     bridge = FakeBridge(close_error=True)
     worker_sidecar = FakeSidecar(close_error=True)
     worker = WorkerRuntimeResources(
@@ -433,3 +442,12 @@ def test_resource_close_attempts_every_owner_after_failure() -> None:
     assert error.value.code is RuntimeResourceErrorCode.CLOSE_FAILED
     assert bridge.close_calls == 1
     assert worker_sidecar.close_calls == 1
+
+    bridge.close_error = False
+    worker_sidecar.close_error = False
+    worker.close()
+    assert bridge.close_calls == 2
+    assert worker_sidecar.close_calls == 2
+    worker.close()
+    assert bridge.close_calls == 2
+    assert worker_sidecar.close_calls == 2

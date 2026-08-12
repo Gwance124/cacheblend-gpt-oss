@@ -936,17 +936,21 @@ class GptOssCacheBlendConnector(
     def shutdown(self) -> None:
         close_error: BaseException | None = None
         if self._scheduler_resources is not None:
+            scheduler_resources = self._scheduler_resources
             try:
-                self._scheduler_resources.close()
+                scheduler_resources.close()
             except Exception as exc:
                 close_error = exc
-            self._scheduler_resources = None
+            else:
+                self._scheduler_resources = None
         if self._worker_resources is not None:
+            worker_resources = self._worker_resources
             try:
-                self._worker_resources.close()
+                worker_resources.close()
             except Exception as exc:
                 close_error = close_error or exc
-            self._worker_resources = None
+            else:
+                self._worker_resources = None
         for request_id in tuple(self._known_request_ids):
             self._control_plane.discard(request_id)
         self._known_request_ids.clear()

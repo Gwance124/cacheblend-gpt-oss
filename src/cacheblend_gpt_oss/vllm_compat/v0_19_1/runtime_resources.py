@@ -292,9 +292,13 @@ class SchedulerRuntimeResources:
             self.sidecar.close()
         except Exception:
             failed = True
-        self._closed = True
         if failed:
+            # Keep the wrapper retryable.  Worker staging deliberately retains
+            # CUDA/IPC owners after an unregister failure, and the underlying
+            # runtime can retry cleanup on a later close.  Marking this owner
+            # closed here would make that documented recovery impossible.
             _fail(RuntimeResourceErrorCode.CLOSE_FAILED)
+        self._closed = True
 
 
 @dataclass(slots=True)
@@ -318,9 +322,13 @@ class WorkerRuntimeResources:
             self.sidecar.close()
         except Exception:
             failed = True
-        self._closed = True
         if failed:
+            # Preserve retry semantics when staging or the LMCache transport
+            # reports a cleanup failure.  The bridge owns resources that may
+            # still be registered remotely and explicitly supports a later
+            # unregister attempt.
             _fail(RuntimeResourceErrorCode.CLOSE_FAILED)
+        self._closed = True
 
 
 def create_scheduler_runtime_resources(

@@ -653,13 +653,19 @@ class FakeSchedulerLookupRuntime:
 
 class FakeSchedulerResources:
     def __init__(
-        self, verified_candidate: VerifiedLmcacheCandidate | None = None
+        self,
+        verified_candidate: VerifiedLmcacheCandidate | None = None,
+        *,
+        close_error: bool = False,
     ) -> None:
         self.runtime = FakeSchedulerLookupRuntime(verified_candidate)
+        self.close_error = close_error
         self.close_calls = 0
 
     def close(self) -> None:
         self.close_calls += 1
+        if self.close_error:
+            raise RuntimeError("bounded fake scheduler cleanup failure")
 
 
 class FakeTransferRuntime:
@@ -712,12 +718,15 @@ class FakeTransferRuntime:
 
 
 class FakeWorkerResources:
-    def __init__(self) -> None:
+    def __init__(self, *, close_error: bool = False) -> None:
         self.transfer_runtime = FakeTransferRuntime()
+        self.close_error = close_error
         self.close_calls = 0
 
     def close(self) -> None:
         self.close_calls += 1
+        if self.close_error:
+            raise RuntimeError("bounded fake worker cleanup failure")
 
 
 def test_transfer_mode_wires_full_recompute_scheduler_and_worker_hooks(
@@ -1006,6 +1015,58 @@ def test_transfer_mode_loads_verified_moved_candidate_before_full_recompute(
     worker.shutdown()
     assert scheduler_resources.close_calls == 1
     assert worker_resources.close_calls == 1
+
+
+def test_shutdown_retains_failed_resources_for_a_later_cleanup_retry(
+    loaded_connector: tuple[ModuleType, SimpleNamespace],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module, fake = loaded_connector
+    kv_cache_config = _kv_cache_config()
+    scheduler_config = _config()
+    worker_config = _config()
+    _enable_transfer(scheduler_config, kv_cache_config)
+    _enable_transfer(worker_config, kv_cache_config)
+
+    scheduler_resources = FakeSchedulerResources(close_error=True)
+    worker_resources = FakeWorkerResources(close_error=True)
+    monkeypatch.setattr(
+        module,
+        "create_scheduler_runtime_resources",
+        lambda _config: scheduler_resources,
+    )
+    monkeypatch.setattr(
+        module,
+        "create_worker_runtime_resources",
+        lambda *_args, **_kwargs: worker_resources,
+    )
+
+    scheduler = module.GptOssCacheBlendConnector(
+        scheduler_config, fake.role.SCHEDULER, kv_cache_config
+    )
+    with pytest.raises(RuntimeError, match="resource shutdown failed"):
+        scheduler.shutdown()
+    assert scheduler._scheduler_resources is scheduler_resources
+    scheduler_resources.close_error = False
+    scheduler.shutdown()
+    assert scheduler._scheduler_resources is None
+    assert scheduler_resources.close_calls == 2
+
+    worker = module.GptOssCacheBlendConnector(
+        worker_config, fake.role.WORKER, kv_cache_config
+    )
+    caches = {
+        f"model.layers.{index}.attn.attn": SimpleNamespace(device="cuda:0")
+        for index in range(24)
+    }
+    worker.register_kv_caches(caches)
+    with pytest.raises(RuntimeError, match="resource shutdown failed"):
+        worker.shutdown()
+    assert worker._worker_resources is worker_resources
+    worker_resources.close_error = False
+    worker.shutdown()
+    assert worker._worker_resources is None
+    assert worker_resources.close_calls == 2
 
 
 def test_transfer_mode_partial_scheduler_step_records_full_prefill_fallback(
