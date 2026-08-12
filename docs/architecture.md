@@ -89,7 +89,10 @@ vLLM tensor imports. Its responsibilities are:
 The package provides immutable segment/range/record types, fixed and delimiter
 segmentation, SHA-256 fingerprints, exact-token verification, weighted
 non-overlap matching, and injected storage boundaries. CPU tests use fakes for
-each boundary. A lower-than-100% `RecomputePolicy` remains future work.
+each boundary. The dormant CPU-only `ForwardRowPlan` and
+`ForwardRowPlanContext` also validate full-shaped per-layer row coverage for
+the future M6 spike; they are not wired into vLLM. A lower-than-100%
+`RecomputePolicy` remains future work.
 
 ### Version-scoped connector layer
 

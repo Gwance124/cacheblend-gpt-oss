@@ -302,6 +302,12 @@ engine, and worker process and could silently activate incomplete classes. The
 entry point is a deliverable only after M3--M5 provide real baseline, transfer,
 YaRN, hybrid-group, and sink results on `solab-g3`.
 
+The repository now contains a dormant CPU-only `ForwardRowPlan` and
+`ForwardRowPlanContext` contract. It validates 24 layer selections, exact
+recompute/cached complements, and nested-context/lifetime failures without
+importing vLLM or Torch. The current connector does not consume it and remains
+100% recompute.
+
 This milestone decides the patch boundary.
 
 Deliverables:

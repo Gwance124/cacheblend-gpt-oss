@@ -19,6 +19,13 @@ from cacheblend_gpt_oss.gpt_oss.layout import (
     extract_gpt_oss_layer_index,
     plan_token_scatter,
 )
+from cacheblend_gpt_oss.gpt_oss.selective import (
+    ForwardRowPlan,
+    ForwardRowPlanContext,
+    LayerRowSelection,
+    SelectivePlanError,
+    SelectivePlanErrorCode,
+)
 from cacheblend_gpt_oss.gpt_oss.torch_yarn import (
     GPT_OSS_KV_DTYPE,
     GPT_OSS_YARN_CONFIG,
@@ -49,13 +56,18 @@ __all__ = [
     "AttentionKind",
     "AttentionLayerLayout",
     "CacheGroupLayout",
+    "ForwardRowPlan",
+    "ForwardRowPlanContext",
     "GptOssHybridCacheLayout",
     "GptOssTorchYarnCorrector",
     "GroupBlockTable",
     "GroupTokenScatterSpan",
     "HybridLayoutError",
     "HybridLayoutErrorCode",
+    "LayerRowSelection",
     "LayerTokenScatterSpan",
+    "SelectivePlanError",
+    "SelectivePlanErrorCode",
     "TokenScatterPlan",
     "TokenTransfer",
     "TorchYarnError",
