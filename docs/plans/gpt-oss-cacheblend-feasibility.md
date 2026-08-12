@@ -35,7 +35,7 @@ be tested before deciding whether a pinned vLLM patch is necessary.
 | M6. Out-of-tree selective-data-plane spike | Pinned boundary audited; implementation waits for M3--M5 GPU evidence | Registered model/backend must skip selected rows while preserving runner output shape | Decide at gate |
 | M7. Reduced recomputation correctness | CPU policy contract; GPU pending | Deterministic check-layer row plans; error/work curves still require model runs | No optimization yet |
 | M8. Responses/Harmony/multi-turn validation | CPU harness complete; GPU/API run pending | Transparent validated endpoint | Patch only for proven API blocker |
-| M9. Controlled benchmark | Planned | Full-prefill and prefix-cache comparisons with complete metrics | Optimize only after correctness |
+| M9. Controlled benchmark | CPU evidence contract; GPU pending | Full-prefill and prefix-cache comparisons with complete metrics and confidence intervals | Optimize only after correctness |
 
 ## M0: pinned audit and repository scaffold
 
@@ -469,6 +469,17 @@ Stop criteria:
 - Do not alter `rag-system` to compensate for a serving-plugin bug.
 
 ## M9: benchmark design
+
+The dependency-free `cacheblend_gpt_oss.benchmark` package now defines the
+controlled-trial evidence boundary. A trial records one arm, cache state,
+reconciled request counters/timers, peak memory, recomputation ratio, and a
+digest of its independent correctness artifact. Artifacts pin the model and
+software identity, Triton attention backend, hybrid-cache requirement, block
+size, context limit, deterministic sampling settings, and TP/PP=1. The host
+validator computes per-arm means, medians, and 95% confidence intervals from
+repeated raw trials. It reports `benchmark_ready=false` until both the ordinary
+full-prefill and CacheBlend-100%-recompute control arms exist and every
+recorded trial has passing correctness evidence.
 
 Run these isolated arms from identical model/runtime/config snapshots:
 

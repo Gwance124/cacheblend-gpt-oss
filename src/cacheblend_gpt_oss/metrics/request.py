@@ -28,6 +28,9 @@ class MetricField(str, Enum):
     TTFT_SECONDS = "ttft_seconds"
     PREFILL_LATENCY_SECONDS = "prefill_latency_seconds"
     STORE_LATENCY_SECONDS = "store_latency_seconds"
+    QUEUE_LATENCY_SECONDS = "queue_latency_seconds"
+    DECODE_LATENCY_SECONDS = "decode_latency_seconds"
+    END_TO_END_LATENCY_SECONDS = "end_to_end_latency_seconds"
     MAX_ABS_LOGIT_ERROR = "max_abs_logit_error"
     MEAN_ABS_LOGIT_ERROR = "mean_abs_logit_error"
 
@@ -101,7 +104,7 @@ class RequestMetricCounters:
 
 @dataclass(frozen=True, slots=True)
 class RequestMetricTimers:
-    """Durations in seconds; TTFT may be unavailable for non-streaming clients."""
+    """Durations in seconds; nullable server timings stay absent when unknown."""
 
     lookup_latency_seconds: float
     transfer_latency_seconds: float
@@ -110,6 +113,9 @@ class RequestMetricTimers:
     ttft_seconds: float | None
     prefill_latency_seconds: float
     store_latency_seconds: float = 0.0
+    queue_latency_seconds: float | None = None
+    decode_latency_seconds: float | None = None
+    end_to_end_latency_seconds: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,6 +221,12 @@ def validate_request_metrics(
             metrics.timers.prefill_latency_seconds,
         ),
         (MetricField.STORE_LATENCY_SECONDS, metrics.timers.store_latency_seconds),
+        (MetricField.QUEUE_LATENCY_SECONDS, metrics.timers.queue_latency_seconds),
+        (MetricField.DECODE_LATENCY_SECONDS, metrics.timers.decode_latency_seconds),
+        (
+            MetricField.END_TO_END_LATENCY_SECONDS,
+            metrics.timers.end_to_end_latency_seconds,
+        ),
     )
     for timer_field, timer_value in timer_fields:
         if timer_value is not None and (

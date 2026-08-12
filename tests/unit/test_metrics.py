@@ -21,6 +21,9 @@ def _timers() -> RequestMetricTimers:
         selective_recomputation_latency_seconds=0.0,
         ttft_seconds=None,
         prefill_latency_seconds=0.01,
+        queue_latency_seconds=0.004,
+        decode_latency_seconds=0.005,
+        end_to_end_latency_seconds=0.026,
     )
 
 
@@ -151,6 +154,7 @@ def test_invalid_values_have_bounded_fields_and_raise_structured_error() -> None
         ttft_seconds=float("nan"),
         prefill_latency_seconds=0.1,
         store_latency_seconds=-0.2,
+        queue_latency_seconds="queue",  # type: ignore[arg-type]
     )
     metrics = RequestMetrics(
         counters=_full_recompute_counters(),
@@ -165,6 +169,7 @@ def test_invalid_values_have_bounded_fields_and_raise_structured_error() -> None
         MetricField.LOOKUP_LATENCY_SECONDS,
         MetricField.TTFT_SECONDS,
         MetricField.STORE_LATENCY_SECONDS,
+        MetricField.QUEUE_LATENCY_SECONDS,
         MetricField.MAX_ABS_LOGIT_ERROR,
     }
 

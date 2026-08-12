@@ -16,6 +16,9 @@ is:
 - Aggregate connector lookup/load/recompute/store metrics: **implemented through
   vLLM's public stats and Prometheus hooks; live exporter evidence pending on
   `solab-g3`**.
+- Controlled benchmark evidence: **implemented as a CPU-only artifact and
+  validator; all GPU arms and correctness-linked confidence intervals pending
+  on `solab-g3`**.
 - Selective non-prefix recomputation: **not expressible by the connector API
   alone**. First exhaust a registered GPT-OSS model override and custom
   sink-aware attention backend. The pinned follow-up audit confirms those
@@ -416,6 +419,12 @@ artifacts. Connector metric labels are limited to vLLM's bounded engine labels:
 | `vllm:cacheblend_position_correction_latency_seconds` | Position-correction duration; zero in the current 100% connector hook and populated by a future selective worker |
 | `vllm:cacheblend_selective_recomputation_latency_seconds` | Selective model/backend duration; zero in the current 100% connector hook and required before M7 GPU claims |
 | vLLM TTFT/prefill metrics | Server-measured TTFT and total prefill latency; the non-streaming client cannot infer TTFT |
+
+The dependency-free `metrics.RequestMetricTimers` snapshot additionally keeps
+nullable queue, decode, and end-to-end timings, so missing server measurements
+remain missing rather than being reported as zero. The M9 benchmark artifact
+also records peak memory and staging overhead per trial, then summarizes those
+values with the same repeated-trial confidence-interval calculation.
 
 The implemented M3 correctness artifacts record the complete normalized output
 logprob vector, sampled/top token, BF16 dtype, prompt/token digests, exact

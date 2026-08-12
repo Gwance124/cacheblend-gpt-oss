@@ -1,0 +1,53 @@
+"""Pinned GPT-OSS benchmark evidence and summary boundary."""
+
+from cacheblend_gpt_oss.benchmark.io import (
+    benchmark_artifact_digest,
+    benchmark_artifact_from_dict,
+    benchmark_artifact_to_dict,
+    canonical_benchmark_bytes,
+    read_benchmark_artifact,
+    write_benchmark_artifact,
+)
+from cacheblend_gpt_oss.benchmark.models import (
+    BENCHMARK_ATTENTION_BACKEND,
+    BENCHMARK_BLOCK_SIZE,
+    BENCHMARK_MAX_MODEL_LEN,
+    BENCHMARK_PIPELINE_PARALLEL_SIZE,
+    BENCHMARK_SCHEMA_VERSION,
+    BENCHMARK_TENSOR_PARALLEL_SIZE,
+    BenchmarkArm,
+    BenchmarkArmSummary,
+    BenchmarkArtifact,
+    BenchmarkCacheState,
+    BenchmarkError,
+    BenchmarkErrorCode,
+    BenchmarkFailureCode,
+    BenchmarkTrial,
+    ConfidenceInterval,
+    summarize_benchmark,
+)
+
+__all__ = [
+    "BENCHMARK_ATTENTION_BACKEND",
+    "BENCHMARK_BLOCK_SIZE",
+    "BENCHMARK_MAX_MODEL_LEN",
+    "BENCHMARK_PIPELINE_PARALLEL_SIZE",
+    "BENCHMARK_SCHEMA_VERSION",
+    "BENCHMARK_TENSOR_PARALLEL_SIZE",
+    "BenchmarkArm",
+    "BenchmarkArmSummary",
+    "BenchmarkArtifact",
+    "BenchmarkCacheState",
+    "BenchmarkError",
+    "BenchmarkErrorCode",
+    "BenchmarkFailureCode",
+    "BenchmarkTrial",
+    "ConfidenceInterval",
+    "benchmark_artifact_digest",
+    "benchmark_artifact_from_dict",
+    "benchmark_artifact_to_dict",
+    "canonical_benchmark_bytes",
+    "read_benchmark_artifact",
+    "summarize_benchmark",
+    "write_benchmark_artifact",
+]
