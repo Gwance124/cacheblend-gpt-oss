@@ -1,6 +1,6 @@
 # Pinned source audit
 
-Audit date: 2026-08-11. This audit was read-only with respect to vLLM,
+Audit date: 2026-08-12 (initial audit 2026-08-11). This audit was read-only with respect to vLLM,
 LMCache, CacheBlend, and `rag-system`. Temporary source archives were inspected
 outside this repository; no upstream checkout or workload file was changed.
 
