@@ -281,6 +281,29 @@ def test_exact_runtime_shape_and_hma_contract(
     ]
 
 
+def test_compatibility_probe_reports_finalized_digests_and_stops_startup(
+    loaded_connector: tuple[ModuleType, SimpleNamespace],
+) -> None:
+    module, fake = loaded_connector
+    config = _config()
+    kv_cache_config = _kv_cache_config()
+    expected = derive_runtime_compatibility_digests(
+        config, adapt_kv_cache_config(kv_cache_config)
+    )
+    config.kv_transfer_config.kv_connector_extra_config = {
+        "mode": "compatibility_probe"
+    }
+
+    with pytest.raises(RuntimeError, match="compatibility probe") as caught:
+        module.GptOssCacheBlendConnector(
+            config, fake.role.SCHEDULER, kv_cache_config
+        )
+
+    assert expected.model_config_digest in str(caught.value)
+    assert expected.kv_cache_config_digest in str(caught.value)
+    assert "transfer remains disabled" in str(caught.value)
+
+
 def test_scheduler_records_all_groups_while_recomputing_every_token(
     loaded_connector: tuple[ModuleType, SimpleNamespace],
 ) -> None:

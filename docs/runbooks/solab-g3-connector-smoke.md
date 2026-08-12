@@ -111,9 +111,39 @@ export CACHEBLEND_SIDECAR
 The live connector also requires the exact model and KV compatibility digests
 derived from the finalized `VllmConfig` and `KVCacheConfig`. Do not substitute
 arbitrary 64-hex values: startup intentionally rejects them, and a mislabeled
-persistent namespace would make KV reuse unsafe. A deployment config-probe
-command is the remaining runbook tooling task before the end-to-end
-`transfer_100pct` launch is enabled here.
+persistent namespace would make KV reuse unsafe.
+
+Run the same intended transfer launch once with the explicit probe mode. It
+always stops startup after printing the two finalized digests and never opens
+LMCache or reuses KV:
+
+```bash
+CACHEBLEND_PROBE_CONFIG='{"kv_connector":"GptOssCacheBlendConnector","kv_connector_module_path":"cacheblend_gpt_oss.vllm_compat.v0_19_1.connector","kv_role":"kv_both","kv_load_failure_policy":"fail","kv_connector_extra_config":{"mode":"compatibility_probe"}}'
+
+export VLLM_USE_V2_MODEL_RUNNER=0
+.venv/bin/vllm serve "$CACHEBLEND_MODEL_PATH" \
+  --served-model-name "$CACHEBLEND_SERVED_MODEL" \
+  --tensor-parallel-size 1 \
+  --dtype bfloat16 \
+  --max-model-len 131072 \
+  --gpu-memory-utilization 0.90 \
+  --max-num-seqs 1 \
+  --max-num-batched-tokens 4096 \
+  --long-prefill-token-threshold 0 \
+  --enforce-eager \
+  --no-enable-prefix-caching \
+  --kv-cache-dtype auto \
+  --attention-backend TRITON_ATTN \
+  --no-disable-hybrid-kv-cache-manager \
+  --kv-transfer-config "$CACHEBLEND_PROBE_CONFIG"
+```
+
+Expected terminal evidence is one bounded message containing
+`model_config_digest=<64 lowercase hex>` and
+`kv_cache_config_digest=<64 lowercase hex>`, plus the statement that transfer
+remained disabled. Record both values with the exact model/tokenizer revisions
+and use them unchanged in the later `transfer_100pct` JSON. Any other startup
+failure is not a successful probe.
 
 ## Exercise `/v1/responses`
 

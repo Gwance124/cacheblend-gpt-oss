@@ -7,8 +7,10 @@ https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666
 
 This module intentionally imports neither vLLM, LMCache, Torch, nor CUDA.
 Empty configuration keeps the connector in its transfer-disabled control-flow
-mode.  Transfer is enabled only by the complete exact ``transfer_100pct``
-schema; configuration drift fails before any cache lookup or transport starts.
+mode. ``compatibility_probe`` is also transfer-disabled and intentionally stops
+startup after the connector derives the finalized model/KV digests. Transfer is
+enabled only by the complete exact ``transfer_100pct`` schema; configuration
+drift fails before any cache lookup or transport starts.
 """
 
 from __future__ import annotations
@@ -67,6 +69,7 @@ class ConnectorTransferMode(str, Enum):
     """The only connector modes recognized by the pinned implementation."""
 
     CONTROL_FLOW = "control_flow"
+    COMPATIBILITY_PROBE = "compatibility_probe"
     TRANSFER_100PCT = "transfer_100pct"
 
 
@@ -249,6 +252,20 @@ class ControlFlowTransferConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class CompatibilityProbeConfig:
+    """Transfer-disabled startup mode that reports finalized config digests."""
+
+    mode: ConnectorTransferMode = field(
+        default=ConnectorTransferMode.COMPATIBILITY_PROBE,
+        init=False,
+    )
+
+    @property
+    def transfer_enabled(self) -> bool:
+        return False
+
+
+@dataclass(frozen=True, slots=True)
 class Transfer100PctConfig:
     """Validated configuration for instrumented transfer plus full prefill."""
 
@@ -310,7 +327,9 @@ class Transfer100PctConfig:
         return True
 
 
-ConnectorTransferConfig = ControlFlowTransferConfig | Transfer100PctConfig
+ConnectorTransferConfig = (
+    ControlFlowTransferConfig | CompatibilityProbeConfig | Transfer100PctConfig
+)
 
 
 def _parse_attestation(value: object) -> PinnedLmcacheServerAttestation:
@@ -352,6 +371,14 @@ def parse_connector_extra_config(
             missing_code=TransferConfigErrorCode.MODE_MISSING,
         )
         return ControlFlowTransferConfig()
+    if mode == ConnectorTransferMode.COMPATIBILITY_PROBE.value:
+        _require_exact_keys(
+            extra_config,
+            _CONTROL_FLOW_KEYS,
+            unknown_code=TransferConfigErrorCode.UNKNOWN_TOP_LEVEL_KEYS,
+            missing_code=TransferConfigErrorCode.MODE_MISSING,
+        )
+        return CompatibilityProbeConfig()
     if mode != ConnectorTransferMode.TRANSFER_100PCT.value:
         _fail(TransferConfigErrorCode.MODE_UNSUPPORTED)
 
@@ -391,6 +418,7 @@ __all__ = [
     "MAX_REQUEST_TIMEOUT_SECONDS",
     "MAX_SIDECAR_PATH_BYTES",
     "MAX_STAGING_TOKEN_CAPACITY",
+    "CompatibilityProbeConfig",
     "ConnectorTransferConfig",
     "ConnectorTransferMode",
     "ControlFlowTransferConfig",

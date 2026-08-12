@@ -16,6 +16,7 @@ from cacheblend_gpt_oss.vllm_compat.v0_19_1.transfer_config import (
     MAX_LMCACHE_SERVER_URL_BYTES,
     MAX_REQUEST_TIMEOUT_SECONDS,
     MAX_SIDECAR_PATH_BYTES,
+    CompatibilityProbeConfig,
     ConnectorTransferMode,
     ControlFlowTransferConfig,
     PinnedLmcacheServerAttestation,
@@ -77,6 +78,20 @@ def test_explicit_control_flow_accepts_only_the_mode_key() -> None:
         TransferConfigErrorCode.UNKNOWN_TOP_LEVEL_KEYS,
         lambda: parse_connector_extra_config(
             {"mode": "control_flow", "sidecar_path": "/not-used"}
+        ),
+    )
+
+
+def test_compatibility_probe_is_explicit_inert_and_has_no_extra_keys() -> None:
+    parsed = parse_connector_extra_config({"mode": "compatibility_probe"})
+    assert parsed == CompatibilityProbeConfig()
+    assert parsed.mode is ConnectorTransferMode.COMPATIBILITY_PROBE
+    assert not parsed.transfer_enabled
+
+    _assert_error(
+        TransferConfigErrorCode.UNKNOWN_TOP_LEVEL_KEYS,
+        lambda: parse_connector_extra_config(
+            {"mode": "compatibility_probe", "sidecar_path": "/not-used"}
         ),
     )
 

@@ -46,6 +46,7 @@ from cacheblend_gpt_oss.vllm_compat.v0_19_1.adapters import (
     copy_request_prompt_token_ids,
 )
 from cacheblend_gpt_oss.vllm_compat.v0_19_1.compatibility_digest import (
+    derive_runtime_compatibility_digests,
     require_runtime_compatibility_digests,
 )
 from cacheblend_gpt_oss.vllm_compat.v0_19_1.config_validation import (
@@ -64,6 +65,7 @@ from cacheblend_gpt_oss.vllm_compat.v0_19_1.scheduler_runtime import (
 )
 from cacheblend_gpt_oss.vllm_compat.v0_19_1.transfer_config import (
     LMCACHE_CHUNK_SIZE,
+    CompatibilityProbeConfig,
     Transfer100PctConfig,
     parse_connector_extra_config,
 )
@@ -225,6 +227,15 @@ class GptOssCacheBlendConnector(
         self._transfer_config = parse_connector_extra_config(
             vllm_config.kv_transfer_config.kv_connector_extra_config
         )
+        if isinstance(self._transfer_config, CompatibilityProbeConfig):
+            digests = derive_runtime_compatibility_digests(
+                vllm_config, self._adapted_kv_cache_config
+            )
+            raise RuntimeError(
+                "CacheBlend compatibility probe (transfer remains disabled): "
+                f"model_config_digest={digests.model_config_digest}; "
+                f"kv_cache_config_digest={digests.kv_cache_config_digest}."
+            )
         if isinstance(self._transfer_config, Transfer100PctConfig):
             require_transfer_100pct_config(
                 vllm_config,
