@@ -270,11 +270,12 @@ def _is_custom_backend_token(value: object) -> bool:
     allowing an arbitrary backend selector to reach ``register_backend``.
     """
 
-    if value == CUSTOM_ATTENTION_BACKEND_NAME:
+    if isinstance(value, str) and value == CUSTOM_ATTENTION_BACKEND_NAME:
         return True
-    return getattr(value, "name", None) == CUSTOM_ATTENTION_BACKEND_NAME or getattr(
-        value, "value", None
-    ) == CUSTOM_ATTENTION_BACKEND_NAME
+    return isinstance(value, Enum) and (
+        value.name == CUSTOM_ATTENTION_BACKEND_NAME
+        or value.value == CUSTOM_ATTENTION_BACKEND_NAME
+    )
 
 
 @dataclass(frozen=True, slots=True)

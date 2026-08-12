@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import replace
+from enum import Enum
 from hashlib import sha256
 from pathlib import Path
 
@@ -59,6 +60,10 @@ class FakeRegistries:
 
     def backend(self, token: object, class_path: str) -> None:
         self.backends.append((token, class_path))
+
+
+class FakeBackendEnum(str, Enum):
+    CUSTOM = CUSTOM_ATTENTION_BACKEND_NAME
 
 
 def test_valid_registration_is_idempotent_and_binds_custom_backend() -> None:
@@ -240,8 +245,7 @@ def test_non_custom_backend_token_is_rejected_before_registry_mutation() -> None
 @pytest.mark.parametrize(
     "token",
     [
-        type("FakeEnum", (), {"name": CUSTOM_ATTENTION_BACKEND_NAME})(),
-        type("FakeEnum", (), {"value": CUSTOM_ATTENTION_BACKEND_NAME})(),
+        FakeBackendEnum.CUSTOM,
     ],
 )
 def test_enum_shaped_custom_token_is_accepted(token: object) -> None:
@@ -255,6 +259,18 @@ def test_enum_shaped_custom_token_is_accepted(token: object) -> None:
 
     assert receipt.registered
     assert fakes.models == [(GPT_OSS_MODEL_ARCHITECTURE, _spec().model_class_path)]
+
+
+def test_arbitrary_object_with_custom_attributes_is_rejected() -> None:
+    token = type("FakeObject", (), {"name": CUSTOM_ATTENTION_BACKEND_NAME})()
+    with pytest.raises(SelectiveRegistrationError) as error:
+        SelectiveExtensionRegistrar().register(
+            _spec(),
+            model_register=FakeRegistries().model,
+            backend_register=FakeRegistries().backend,
+            backend_token=token,
+        )
+    assert error.value.code is SelectiveRegistrationErrorCode.INVALID_BACKEND_TOKEN
 
 
 def test_all_true_prerequisites_without_bound_gpu_evidence_are_not_ready() -> None:
