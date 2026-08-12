@@ -9,9 +9,12 @@ from hashlib import sha256
 from cacheblend_gpt_oss.correctness.models import (
     CorrectnessCase,
     PromptCaseIdentity,
+    ReusableSegmentIdentity,
 )
 
-_DOCUMENT_TOKENS = tuple(range(1_024, 1_280))
+_DOCUMENT_A_TOKENS = tuple(range(1_024, 1_280))
+_DOCUMENT_B_TOKENS = tuple(range(1_280, 1_536))
+_MISS_DOCUMENT_TOKENS = tuple(range(4_096, 4_352))
 _TARGET_PREFIX_TOKENS = tuple(range(2_048, 2_065))
 _TARGET_SUFFIX_TOKENS = tuple(range(3_072, 3_079))
 
@@ -27,32 +30,130 @@ def digest_token_ids(token_ids: tuple[int, ...]) -> str:
 
 
 @dataclass(frozen=True, slots=True)
-class MovedDocumentFixture:
-    """A 256-token source chunk moved by 17 non-block-aligned positions."""
+class CorrectnessFixture:
+    """One deterministic source/target pair and its identifier-free identity."""
 
     source_prompt_token_ids: tuple[int, ...]
     target_prompt_token_ids: tuple[int, ...]
     prompt_identity: PromptCaseIdentity
 
 
-def build_moved_document_fixture() -> MovedDocumentFixture:
-    """Return the immutable raw-token fixture used by all M3 captures."""
+MovedDocumentFixture = CorrectnessFixture
 
-    source = _DOCUMENT_TOKENS
-    target = (*_TARGET_PREFIX_TOKENS, *_DOCUMENT_TOKENS, *_TARGET_SUFFIX_TOKENS)
-    return MovedDocumentFixture(
-        source_prompt_token_ids=source,
-        target_prompt_token_ids=target,
-        prompt_identity=PromptCaseIdentity(
-            case=CorrectnessCase.MOVED_DOCUMENT,
-            target_prompt_digest=digest_token_ids(target),
-            target_prompt_tokens=len(target),
-            reusable_token_digest=digest_token_ids(_DOCUMENT_TOKENS),
-            reusable_tokens=len(_DOCUMENT_TOKENS),
-            source_start=0,
-            target_start=len(_TARGET_PREFIX_TOKENS),
+
+def _identity(
+    case: CorrectnessCase,
+    source: tuple[int, ...],
+    target: tuple[int, ...],
+    mappings: tuple[tuple[tuple[int, ...], int, int], ...],
+) -> PromptCaseIdentity:
+    return PromptCaseIdentity(
+        case=case,
+        source_prompt_digest=digest_token_ids(source),
+        source_prompt_tokens=len(source),
+        target_prompt_digest=digest_token_ids(target),
+        target_prompt_tokens=len(target),
+        reusable_segments=tuple(
+            ReusableSegmentIdentity(
+                token_digest=digest_token_ids(tokens),
+                tokens=len(tokens),
+                source_start=source_start,
+                target_start=target_start,
+            )
+            for tokens, source_start, target_start in mappings
         ),
     )
 
 
-__all__ = ["MovedDocumentFixture", "build_moved_document_fixture", "digest_token_ids"]
+def build_exact_prefix_fixture() -> CorrectnessFixture:
+    source = _DOCUMENT_A_TOKENS
+    target = (*_DOCUMENT_A_TOKENS, *_TARGET_SUFFIX_TOKENS)
+    return CorrectnessFixture(
+        source,
+        target,
+        _identity(
+            CorrectnessCase.EXACT_PREFIX,
+            source,
+            target,
+            ((_DOCUMENT_A_TOKENS, 0, 0),),
+        ),
+    )
+
+
+def build_moved_document_fixture() -> CorrectnessFixture:
+    """Return the immutable raw-token fixture used by all M3 captures."""
+
+    source = _DOCUMENT_A_TOKENS
+    target = (*_TARGET_PREFIX_TOKENS, *_DOCUMENT_A_TOKENS, *_TARGET_SUFFIX_TOKENS)
+    return CorrectnessFixture(
+        source,
+        target,
+        _identity(
+            CorrectnessCase.MOVED_DOCUMENT,
+            source,
+            target,
+            ((_DOCUMENT_A_TOKENS, 0, len(_TARGET_PREFIX_TOKENS)),),
+        ),
+    )
+
+
+def build_reordered_documents_fixture() -> CorrectnessFixture:
+    source = (*_DOCUMENT_A_TOKENS, *_DOCUMENT_B_TOKENS)
+    target = (
+        *_TARGET_PREFIX_TOKENS,
+        *_DOCUMENT_B_TOKENS,
+        *_DOCUMENT_A_TOKENS,
+        *_TARGET_SUFFIX_TOKENS,
+    )
+    prefix = len(_TARGET_PREFIX_TOKENS)
+    return CorrectnessFixture(
+        source,
+        target,
+        _identity(
+            CorrectnessCase.REORDERED_DOCUMENTS,
+            source,
+            target,
+            (
+                (_DOCUMENT_A_TOKENS, 0, prefix + len(_DOCUMENT_B_TOKENS)),
+                (_DOCUMENT_B_TOKENS, len(_DOCUMENT_A_TOKENS), prefix),
+            ),
+        ),
+    )
+
+
+def build_cache_miss_fixture() -> CorrectnessFixture:
+    source = _DOCUMENT_A_TOKENS
+    target = (
+        *_TARGET_PREFIX_TOKENS,
+        *_MISS_DOCUMENT_TOKENS,
+        *_TARGET_SUFFIX_TOKENS,
+    )
+    return CorrectnessFixture(
+        source,
+        target,
+        _identity(CorrectnessCase.CACHE_MISS, source, target, ()),
+    )
+
+
+def build_correctness_fixture(case: CorrectnessCase) -> CorrectnessFixture:
+    builders = {
+        CorrectnessCase.EXACT_PREFIX: build_exact_prefix_fixture,
+        CorrectnessCase.MOVED_DOCUMENT: build_moved_document_fixture,
+        CorrectnessCase.REORDERED_DOCUMENTS: build_reordered_documents_fixture,
+        CorrectnessCase.CACHE_MISS: build_cache_miss_fixture,
+    }
+    if not isinstance(case, CorrectnessCase):
+        raise ValueError("unsupported correctness fixture case")
+    return builders[case]()
+
+
+__all__ = [
+    "CorrectnessFixture",
+    "MovedDocumentFixture",
+    "build_cache_miss_fixture",
+    "build_correctness_fixture",
+    "build_exact_prefix_fixture",
+    "build_moved_document_fixture",
+    "build_reordered_documents_fixture",
+    "digest_token_ids",
+]

@@ -10,15 +10,22 @@ from cacheblend_gpt_oss.correctness import (
     GPT_OSS_VOCAB_SIZE,
     ConnectorCorrectnessEvidence,
     CorrectnessArtifact,
+    CorrectnessCase,
+    CorrectnessFixture,
     CorrectnessRunMode,
     CorrectnessRuntimeIdentity,
     FullVocabularyLogprobs,
     artifact_digest,
     artifact_from_dict,
     artifact_to_dict,
+    build_cache_miss_fixture,
+    build_correctness_fixture,
+    build_exact_prefix_fixture,
     build_moved_document_fixture,
+    build_reordered_documents_fixture,
     connector_counter_delta,
     connector_evidence_from_snapshots,
+    digest_token_ids,
     evaluate_cacheblend_100pct,
     freeze_full_prefill_tolerance,
     has_connector_metric_surface,
@@ -94,15 +101,84 @@ def _cacheblend(
 
 def test_moved_document_fixture_is_exact_non_block_aligned_reuse() -> None:
     fixture = build_moved_document_fixture()
+    segment = fixture.prompt_identity.reusable_segments[0]
 
     assert len(fixture.source_prompt_token_ids) == 256
     assert len(fixture.target_prompt_token_ids) == 280
-    assert fixture.prompt_identity.source_start == 0
-    assert fixture.prompt_identity.target_start == 17
+    assert segment.source_start == 0
+    assert segment.target_start == 17
     assert fixture.target_prompt_token_ids[17:273] == fixture.source_prompt_token_ids
     assert fixture.prompt_identity.target_prompt_digest != (
-        fixture.prompt_identity.reusable_token_digest
+        segment.token_digest
     )
+
+
+def test_all_required_correctness_fixtures_bind_exact_ranges() -> None:
+    exact = build_exact_prefix_fixture()
+    moved = build_moved_document_fixture()
+    reordered = build_reordered_documents_fixture()
+    miss = build_cache_miss_fixture()
+
+    assert exact.prompt_identity.reusable_segments[0].source_start == 0
+    assert exact.prompt_identity.reusable_segments[0].target_start == 0
+    assert len(exact.target_prompt_token_ids) == 263
+    assert moved.prompt_identity.case is CorrectnessCase.MOVED_DOCUMENT
+    assert len(reordered.source_prompt_token_ids) == 512
+    assert len(reordered.target_prompt_token_ids) == 536
+    assert [
+        segment.source_start for segment in reordered.prompt_identity.reusable_segments
+    ] == [0, 256]
+    assert [
+        segment.target_start for segment in reordered.prompt_identity.reusable_segments
+    ] == [273, 17]
+    for segment in reordered.prompt_identity.reusable_segments:
+        source_tokens = reordered.source_prompt_token_ids[
+            segment.source_start : segment.source_start + segment.tokens
+        ]
+        target_tokens = reordered.target_prompt_token_ids[
+            segment.target_start : segment.target_start + segment.tokens
+        ]
+        assert source_tokens == target_tokens
+        assert digest_token_ids(source_tokens) == segment.token_digest
+    assert miss.prompt_identity.case is CorrectnessCase.CACHE_MISS
+    assert miss.prompt_identity.reusable_segments == ()
+    assert miss.prompt_identity.reusable_tokens == 0
+    assert build_correctness_fixture(CorrectnessCase.EXACT_PREFIX) == exact
+    assert build_correctness_fixture(CorrectnessCase.REORDERED_DOCUMENTS) == reordered
+
+
+@pytest.mark.parametrize(
+    ("fixture", "expected_loaded"),
+    [
+        (build_exact_prefix_fixture(), 256),
+        (build_moved_document_fixture(), 256),
+        (build_reordered_documents_fixture(), 512),
+        (build_cache_miss_fixture(), 0),
+    ],
+)
+def test_cacheblend_artifact_accepts_exact_case_specific_transfer_coverage(
+    fixture: CorrectnessFixture,
+    expected_loaded: int,
+) -> None:
+    prompt = fixture.prompt_identity
+    artifact = CorrectnessArtifact(
+        schema_version=ARTIFACT_SCHEMA_VERSION,
+        run_mode=CorrectnessRunMode.CACHEBLEND_100PCT,
+        runtime=_runtime(),
+        prompt=prompt,
+        distribution=_distribution(),
+        connector=ConnectorCorrectnessEvidence(
+            reusable_document_tokens_requested=prompt.target_prompt_tokens,
+            kv_tokens_found=expected_loaded,
+            kv_tokens_loaded=expected_loaded,
+            kv_tokens_rejected=0,
+            tokens_recomputed=prompt.target_prompt_tokens,
+            prefill_tokens_avoided=0,
+        ),
+    )
+
+    assert artifact.connector is not None
+    assert artifact.connector.kv_tokens_loaded == expected_loaded
 
 
 def test_artifact_canonical_round_trip_preserves_negative_infinity(

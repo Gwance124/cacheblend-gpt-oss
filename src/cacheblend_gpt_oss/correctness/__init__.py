@@ -16,8 +16,13 @@ from cacheblend_gpt_oss.correctness.evaluate import (
     freeze_full_prefill_tolerance,
 )
 from cacheblend_gpt_oss.correctness.fixture import (
+    CorrectnessFixture,
     MovedDocumentFixture,
+    build_cache_miss_fixture,
+    build_correctness_fixture,
+    build_exact_prefix_fixture,
     build_moved_document_fixture,
+    build_reordered_documents_fixture,
     digest_token_ids,
 )
 from cacheblend_gpt_oss.correctness.io import (
@@ -37,6 +42,7 @@ from cacheblend_gpt_oss.correctness.models import (
     CorrectnessRuntimeIdentity,
     FullVocabularyLogprobs,
     PromptCaseIdentity,
+    ReusableSegmentIdentity,
 )
 from cacheblend_gpt_oss.correctness.tolerance_io import (
     TOLERANCE_SCHEMA_VERSION,
@@ -54,6 +60,7 @@ __all__ = [
     "ConnectorCorrectnessEvidence",
     "CorrectnessArtifact",
     "CorrectnessCase",
+    "CorrectnessFixture",
     "CorrectnessRunMode",
     "CorrectnessRuntimeIdentity",
     "DistributionComparison",
@@ -61,10 +68,15 @@ __all__ = [
     "FullVocabularyLogprobs",
     "MovedDocumentFixture",
     "PromptCaseIdentity",
+    "ReusableSegmentIdentity",
     "artifact_digest",
     "artifact_from_dict",
     "artifact_to_dict",
+    "build_cache_miss_fixture",
+    "build_correctness_fixture",
+    "build_exact_prefix_fixture",
     "build_moved_document_fixture",
+    "build_reordered_documents_fixture",
     "compare_distributions",
     "connector_counter_delta",
     "connector_evidence_from_snapshots",

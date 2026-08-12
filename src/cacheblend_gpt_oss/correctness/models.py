@@ -10,7 +10,7 @@ from enum import Enum
 
 from cacheblend_gpt_oss.targets import PINNED_TARGET
 
-ARTIFACT_SCHEMA_VERSION = 1
+ARTIFACT_SCHEMA_VERSION = 2
 GPT_OSS_VOCAB_SIZE = 201_088
 _HEX_40 = re.compile(r"[0-9a-f]{40}")
 _HEX_64 = re.compile(r"[0-9a-f]{64}")
@@ -90,48 +90,105 @@ class CorrectnessRuntimeIdentity:
 
 
 @dataclass(frozen=True, slots=True)
+class ReusableSegmentIdentity:
+    """One exact reusable token sequence and its old/new absolute positions."""
+
+    token_digest: str
+    tokens: int
+    source_start: int
+    target_start: int
+
+    def __post_init__(self) -> None:
+        if _HEX_64.fullmatch(self.token_digest) is None:
+            raise ValueError("invalid correctness artifact reusable token digest")
+        for name, value in (
+            ("tokens", self.tokens),
+            ("source_start", self.source_start),
+            ("target_start", self.target_start),
+        ):
+            _require_count(name, value)
+        if self.tokens == 0:
+            raise ValueError("reusable segment must not be empty")
+
+
+@dataclass(frozen=True, slots=True)
 class PromptCaseIdentity:
     """Position-only metadata and digests; raw token sequences stay private."""
 
     case: CorrectnessCase
+    source_prompt_digest: str
+    source_prompt_tokens: int
     target_prompt_digest: str
     target_prompt_tokens: int
-    reusable_token_digest: str
-    reusable_tokens: int
-    source_start: int
-    target_start: int
+    reusable_segments: tuple[ReusableSegmentIdentity, ...]
 
     def __post_init__(self) -> None:
         if not isinstance(self.case, CorrectnessCase):
             raise ValueError("invalid correctness case")
         for name, digest in (
+            ("source_prompt_digest", self.source_prompt_digest),
             ("target_prompt_digest", self.target_prompt_digest),
-            ("reusable_token_digest", self.reusable_token_digest),
         ):
             if _HEX_64.fullmatch(digest) is None:
                 raise ValueError(f"invalid correctness artifact {name}")
         for name, value in (
+            ("source_prompt_tokens", self.source_prompt_tokens),
             ("target_prompt_tokens", self.target_prompt_tokens),
-            ("reusable_tokens", self.reusable_tokens),
-            ("source_start", self.source_start),
-            ("target_start", self.target_start),
         ):
             _require_count(name, value)
-        if (
-            self.reusable_tokens == 0
-            or self.target_start + self.reusable_tokens > self.target_prompt_tokens
-        ):
-            raise ValueError("reusable range is outside the target prompt")
-        if (
-            self.case is CorrectnessCase.MOVED_DOCUMENT
-            and self.source_start == self.target_start
-        ):
-            raise ValueError("moved-document positions must differ")
-        if (
-            self.case is CorrectnessCase.EXACT_PREFIX
-            and self.source_start != self.target_start
+        try:
+            segments = tuple(self.reusable_segments)
+        except TypeError as exc:
+            raise ValueError("invalid reusable-segment identities") from exc
+        if any(not isinstance(item, ReusableSegmentIdentity) for item in segments):
+            raise ValueError("invalid reusable-segment identities")
+        object.__setattr__(self, "reusable_segments", segments)
+        self._validate_segments()
+
+    def _validate_segments(self) -> None:
+        segments = self.reusable_segments
+        if self.source_prompt_tokens == 0 or self.target_prompt_tokens == 0:
+            raise ValueError("correctness prompts must not be empty")
+        if self.case is CorrectnessCase.CACHE_MISS:
+            if segments:
+                raise ValueError("cache-miss identity cannot claim reusable segments")
+            return
+        expected_count = 2 if self.case is CorrectnessCase.REORDERED_DOCUMENTS else 1
+        if len(segments) != expected_count:
+            raise ValueError("correctness case has the wrong reusable segments")
+        if tuple(sorted(segments, key=lambda item: item.source_start)) != segments:
+            raise ValueError("reusable segments must be ordered by source position")
+        source_end = 0
+        for segment in segments:
+            if (
+                segment.source_start < source_end
+                or segment.source_start + segment.tokens > self.source_prompt_tokens
+                or segment.target_start + segment.tokens > self.target_prompt_tokens
+            ):
+                raise ValueError("reusable segment is outside a prompt or overlaps")
+            source_end = segment.source_start + segment.tokens
+        by_target = sorted(segments, key=lambda item: item.target_start)
+        target_end = 0
+        for segment in by_target:
+            if segment.target_start < target_end:
+                raise ValueError("reusable target segments overlap")
+            target_end = segment.target_start + segment.tokens
+        if self.case is CorrectnessCase.EXACT_PREFIX and any(
+            item.source_start != item.target_start for item in segments
         ):
             raise ValueError("exact-prefix positions must agree")
+        if self.case is CorrectnessCase.MOVED_DOCUMENT and any(
+            item.source_start == item.target_start for item in segments
+        ):
+            raise ValueError("moved-document positions must differ")
+        if self.case is CorrectnessCase.REORDERED_DOCUMENTS and tuple(
+            item.source_start for item in by_target
+        ) == tuple(item.source_start for item in segments):
+            raise ValueError("reordered documents must change relative order")
+
+    @property
+    def reusable_tokens(self) -> int:
+        return sum(segment.tokens for segment in self.reusable_segments)
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,8 +284,7 @@ class CorrectnessArtifact:
         if not isinstance(self.connector, ConnectorCorrectnessEvidence):
             raise ValueError("CacheBlend artifact requires connector evidence")
         if (
-            self.connector.kv_tokens_loaded == 0
-            or self.connector.kv_tokens_loaded != self.prompt.reusable_tokens
+            self.connector.kv_tokens_loaded != self.prompt.reusable_tokens
             or self.connector.reusable_document_tokens_requested
             != self.prompt.target_prompt_tokens
             or self.connector.tokens_recomputed != self.prompt.target_prompt_tokens
@@ -247,4 +303,5 @@ __all__ = [
     "CorrectnessRuntimeIdentity",
     "FullVocabularyLogprobs",
     "PromptCaseIdentity",
+    "ReusableSegmentIdentity",
 ]

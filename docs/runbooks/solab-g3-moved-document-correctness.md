@@ -257,6 +257,45 @@ maximum and mean errors stay inside the already-frozen envelope. Preserve the
 three artifacts, verdict, metrics, both server logs, compatibility probe, and
 identity outputs.
 
+## Required case matrix
+
+The capture harness also has deterministic fixtures for the other required
+correctness cases. Each case needs its own fresh baseline pair, frozen
+tolerance, and CacheBlend artifact because the target prompt digest changes.
+Keep the same server identity and run directory, but use distinct filenames:
+
+```bash
+for CASE in exact_prefix moved_document reordered_documents cache_miss; do
+  .venv/bin/python scripts/capture_moved_document.py \
+    --mode full_prefill \
+    --case "$CASE" \
+    --model-revision "$CACHEBLEND_MODEL_REVISION" \
+    --tokenizer-revision "$CACHEBLEND_TOKENIZER_REVISION" \
+    --plugin-commit "$CACHEBLEND_PLUGIN_COMMIT" \
+    --model-config-digest "$CACHEBLEND_MODEL_CONFIG_DIGEST" \
+    --kv-cache-config-digest "$CACHEBLEND_KV_CONFIG_DIGEST" \
+    --output "$CACHEBLEND_RUN_DIR/${CASE}-full.json"
+done
+```
+
+With the CacheBlend server and a clean sidecar state appropriate to the case,
+repeat the same loop with `--mode cacheblend_100pct` and output names
+`${CASE}-cacheblend.json`; then evaluate each pair with its own frozen
+tolerance. The expected transfer evidence is:
+
+| Case | Reusable segments | Expected loaded tokens | Position relation |
+|---|---:|---:|---|
+| `exact_prefix` | 1 | 256 | source and target start at 0 |
+| `moved_document` | 1 | 256 | source 0, target 17 |
+| `reordered_documents` | 2 | 512 | two 256-token documents swap order |
+| `cache_miss` | 0 | 0 | target contains a new 256-token document |
+
+Every case must still report full target-prompt recomputation and zero saved
+prefill. A cache miss is a successful ordinary-prefill fallback only when its
+artifact explicitly reports zero found/loaded tokens and the final distribution
+passes the corresponding full-prefill comparison. Do not use one case's
+tolerance or sidecar evidence to judge another case.
+
 ## Stop/go decision
 
 Go to the `/v1/responses` Harmony/tool/multi-turn gate only if:

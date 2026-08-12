@@ -27,9 +27,10 @@ from cacheblend_gpt_oss.correctness import (
     ARTIFACT_SCHEMA_VERSION,
     GPT_OSS_VOCAB_SIZE,
     CorrectnessArtifact,
+    CorrectnessCase,
     CorrectnessRunMode,
     CorrectnessRuntimeIdentity,
-    build_moved_document_fixture,
+    build_correctness_fixture,
     connector_evidence_from_snapshots,
     has_connector_metric_surface,
     parse_completion_distribution,
@@ -45,6 +46,11 @@ def _parser() -> argparse.ArgumentParser:
         "--mode",
         choices=[mode.value for mode in CorrectnessRunMode],
         required=True,
+    )
+    parser.add_argument(
+        "--case",
+        choices=[case.value for case in CorrectnessCase],
+        default=CorrectnessCase.MOVED_DOCUMENT.value,
     )
     parser.add_argument("--base-url", default="http://127.0.0.1:8000")
     parser.add_argument("--api-key", default="EMPTY")
@@ -183,7 +189,7 @@ def main() -> int:
     runtime = _runtime_identity(args)
     client = LocalVllmClient(args.base_url, args.api_key, args.timeout_seconds)
     _require_served_model(client.get_json("/v1/models"))
-    fixture = build_moved_document_fixture()
+    fixture = build_correctness_fixture(CorrectnessCase(args.case))
     connector = None
     if mode is CorrectnessRunMode.CACHEBLEND_100PCT:
         initial_metrics = client.get_text("/metrics")
@@ -228,6 +234,7 @@ def main() -> int:
             {
                 "output": str(args.output),
                 "run_mode": mode.value,
+                "case": artifact.prompt.case.value,
                 "top_token_id": artifact.distribution.top_token_id,
                 "sampled_token_id": artifact.distribution.sampled_token_id,
                 "connector": (

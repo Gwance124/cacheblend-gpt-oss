@@ -17,6 +17,7 @@ from cacheblend_gpt_oss.correctness.models import (
     CorrectnessRuntimeIdentity,
     FullVocabularyLogprobs,
     PromptCaseIdentity,
+    ReusableSegmentIdentity,
 )
 
 
@@ -59,12 +60,19 @@ def artifact_to_dict(artifact: CorrectnessArtifact) -> dict[str, Any]:
         },
         "prompt": {
             "case": prompt.case.value,
+            "source_prompt_digest": prompt.source_prompt_digest,
+            "source_prompt_tokens": prompt.source_prompt_tokens,
             "target_prompt_digest": prompt.target_prompt_digest,
             "target_prompt_tokens": prompt.target_prompt_tokens,
-            "reusable_token_digest": prompt.reusable_token_digest,
-            "reusable_tokens": prompt.reusable_tokens,
-            "source_start": prompt.source_start,
-            "target_start": prompt.target_start,
+            "reusable_segments": [
+                {
+                    "token_digest": segment.token_digest,
+                    "tokens": segment.tokens,
+                    "source_start": segment.source_start,
+                    "target_start": segment.target_start,
+                }
+                for segment in prompt.reusable_segments
+            ],
         },
         "distribution": {
             "kind": "full_vocabulary_logprobs",
@@ -133,12 +141,11 @@ def artifact_from_dict(data: object) -> CorrectnessArtifact:
         root["prompt"],
         {
             "case",
+            "source_prompt_digest",
+            "source_prompt_tokens",
             "target_prompt_digest",
             "target_prompt_tokens",
-            "reusable_token_digest",
-            "reusable_tokens",
-            "source_start",
-            "target_start",
+            "reusable_segments",
         },
         "prompt",
     )
@@ -151,6 +158,17 @@ def artifact_from_dict(data: object) -> CorrectnessArtifact:
         distribution["values"], list
     ):
         raise ValueError("invalid correctness artifact distribution")
+    reusable_segments = prompt["reusable_segments"]
+    if not isinstance(reusable_segments, list):
+        raise ValueError("invalid correctness artifact reusable segments")
+    parsed_segments: list[ReusableSegmentIdentity] = []
+    for raw_segment in reusable_segments:
+        segment = _exact_mapping(
+            raw_segment,
+            {"token_digest", "tokens", "source_start", "target_start"},
+            "reusable segment",
+        )
+        parsed_segments.append(ReusableSegmentIdentity(**segment))
     connector_data = root["connector"]
     connector: ConnectorCorrectnessEvidence | None
     if connector_data is None:
@@ -175,12 +193,11 @@ def artifact_from_dict(data: object) -> CorrectnessArtifact:
         runtime=CorrectnessRuntimeIdentity(**runtime),
         prompt=PromptCaseIdentity(
             case=CorrectnessCase(prompt["case"]),
+            source_prompt_digest=prompt["source_prompt_digest"],
+            source_prompt_tokens=prompt["source_prompt_tokens"],
             target_prompt_digest=prompt["target_prompt_digest"],
             target_prompt_tokens=prompt["target_prompt_tokens"],
-            reusable_token_digest=prompt["reusable_token_digest"],
-            reusable_tokens=prompt["reusable_tokens"],
-            source_start=prompt["source_start"],
-            target_start=prompt["target_start"],
+            reusable_segments=tuple(parsed_segments),
         ),
         distribution=FullVocabularyLogprobs(
             values=tuple(_decode_logprob(value) for value in distribution["values"]),
