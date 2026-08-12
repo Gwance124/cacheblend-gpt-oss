@@ -247,7 +247,10 @@ not an entry point: it accepts only a proof object and project-owned lazy class
 paths, and it treats a partial registry mutation as terminal for that process.
 The companion `cacheblend_gpt_oss.gpt_oss.selective_kv` planner supplies the
 row-to-slot split that a custom `do_kv_cache_update` must consume; it does not
-mutate cache tensors or alter the stock runner.
+mutate cache tensors or alter the stock runner. Its injected updater is
+CPU-tested for all-preflight-before-mutation, selected-row-only writes, and
+fail-closed shape/dtype/device checks; it remains dormant until the M3--M5 GPU
+gates and a real Triton implementation exist.
 
 ## LMCache 0.4.3 integration audit
 

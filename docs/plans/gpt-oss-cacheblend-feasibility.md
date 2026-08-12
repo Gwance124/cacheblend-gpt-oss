@@ -317,7 +317,9 @@ library seam only; no plugin entry point is enabled.
 The tensor-free `gpt_oss.selective_kv` planner now splits complete hybrid
 layer spans by those row selections and preserves source-position metadata and
 physical destination slots. It is a structural contract for
-`do_kv_cache_update`, not an execution or correctness claim.
+`do_kv_cache_update`; its injected updater preflights all model/cache views
+before any copy and records only recompute-row writes. It is not wired into the
+live attention path and is not an execution or correctness claim.
 
 This milestone decides the patch boundary.
 

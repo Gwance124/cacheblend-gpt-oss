@@ -106,7 +106,10 @@ GPU evidence exist.
 it splits complete 24-layer hybrid spans by recompute ranges, preserves old
 source positions for YaRN correction, and computes destination physical slots
 for only the rows that may be written. It performs no copy and is not consumed
-by the current 100%-recompute connector.
+by the current 100%-recompute connector. Its injected `GptOssSelectiveKvUpdater`
+adds the same all-preflight-before-mutation guarantee for model-produced K/V
+rows and rejects non-CUDA, wrong-shape, wrong-dtype, wrong-device, or partial
+cache updates. It is a CPU-tested contract, not a live attention backend.
 
 ### Version-scoped connector layer
 

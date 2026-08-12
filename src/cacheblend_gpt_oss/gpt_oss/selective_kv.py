@@ -18,10 +18,10 @@ not consume it yet.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
-from typing import NoReturn
+from typing import NoReturn, Protocol
 
 from cacheblend_gpt_oss.gpt_oss.layout import (
     GPT_OSS_MAX_CONTEXT_TOKENS,
@@ -35,6 +35,9 @@ from cacheblend_gpt_oss.gpt_oss.selective import (
     LayerRowSelection,
 )
 from cacheblend_gpt_oss.planner.models import TokenRange
+
+GPT_OSS_NUM_KV_HEADS = 8
+GPT_OSS_HEAD_DIM = 64
 
 
 class SelectiveWriteErrorCode(str, Enum):
@@ -52,6 +55,20 @@ class SelectiveWriteErrorCode(str, Enum):
     ATTENTION_PATTERN_MISMATCH = "attention_pattern_mismatch"
 
 
+class SelectiveUpdateErrorCode(str, Enum):
+    """Bounded failures for the tensor-injected selective writer."""
+
+    INVALID_PLAN = "invalid_plan"
+    TENSOR_SET_MISMATCH = "tensor_set_mismatch"
+    INVALID_SOURCE_SHAPE = "invalid_source_shape"
+    INVALID_CACHE_SHAPE = "invalid_cache_shape"
+    INVALID_VIEW = "invalid_view"
+    DTYPE_MISMATCH = "dtype_mismatch"
+    DEVICE_MISMATCH = "device_mismatch"
+    INVALID_DEVICE = "invalid_device"
+    MUTATION_FAILED = "mutation_failed"
+
+
 class SelectiveWriteError(ValueError):
     """Fail-closed selective write planning error."""
 
@@ -62,6 +79,18 @@ class SelectiveWriteError(ValueError):
 
 def _fail(code: SelectiveWriteErrorCode) -> NoReturn:
     raise SelectiveWriteError(code)
+
+
+class SelectiveUpdateError(RuntimeError):
+    """Fail-closed tensor update error; callers must discard the request KV."""
+
+    def __init__(self, code: SelectiveUpdateErrorCode) -> None:
+        self.code = code
+        super().__init__(code.value)
+
+
+def _fail_update(code: SelectiveUpdateErrorCode) -> NoReturn:
+    raise SelectiveUpdateError(code)
 
 
 def _is_int(value: object) -> bool:
@@ -234,7 +263,258 @@ def plan_selective_kv_writes(
     )
 
 
+class SelectiveCacheOps(Protocol):
+    """Minimal tensor surface for a plan-aware cache update."""
+
+    def shape(self, tensor: object) -> tuple[int, ...]:
+        """Return a tensor shape."""
+
+    def dtype_name(self, tensor: object) -> str:
+        """Return a stable dtype identifier."""
+
+    def device_name(self, tensor: object) -> str:
+        """Return a stable device identifier."""
+
+    def prompt_rows(self, tensor: object, *, start: int, count: int) -> object:
+        """Return a ``[count, 8, 64]`` view from model-produced rows."""
+
+    def paged_rows(
+        self,
+        tensor: object,
+        *,
+        component: int,
+        block_id: int,
+        block_offset: int,
+        count: int,
+    ) -> object:
+        """Return a ``[count, 8, 64]`` paged-cache view."""
+
+    def copy(self, destination: object, source: object) -> None:
+        """Copy one equal-shaped selected row span."""
+
+    def synchronize(self, tensor: object) -> None:
+        """Synchronize the destination device after all writes."""
+
+
+@dataclass(frozen=True, slots=True)
+class SelectiveUpdateReceipt:
+    """Counts from one fully preflighted selective KV update."""
+
+    recomputed_token_rows: int
+    cached_token_rows: int
+    write_span_count: int
+    copied_key_rows: int
+    copied_value_rows: int
+    sinks_touched: bool = False
+
+    def __post_init__(self) -> None:
+        if self.sinks_touched:
+            _fail_update(SelectiveUpdateErrorCode.INVALID_PLAN)
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedUpdate:
+    destination: object
+    source: object
+
+
+class GptOssSelectiveKvUpdater:
+    """Apply recompute-only K/V rows after a complete read-only preflight."""
+
+    def __init__(self, tensor_ops: SelectiveCacheOps) -> None:
+        self._ops = tensor_ops
+
+    def update(
+        self,
+        *,
+        plan: SelectiveWritePlan,
+        key_by_layer: Mapping[str, object],
+        value_by_layer: Mapping[str, object],
+        paged_caches: Mapping[str, object],
+    ) -> SelectiveUpdateReceipt:
+        """Write only recomputed rows; no operation occurs before all checks."""
+
+        if not isinstance(plan, SelectiveWritePlan):
+            _fail_update(SelectiveUpdateErrorCode.INVALID_PLAN)
+        expected_names = {
+            f"model.layers.{index}.attn.attn" for index in range(GPT_OSS_NUM_LAYERS)
+        }
+        if (
+            set(key_by_layer) != expected_names
+            or set(value_by_layer) != expected_names
+            or set(paged_caches) != expected_names
+        ):
+            _fail_update(SelectiveUpdateErrorCode.TENSOR_SET_MISMATCH)
+
+        dtype: str | None = None
+        device: str | None = None
+        prepared: list[_PreparedUpdate] = []
+        for layer_index in range(GPT_OSS_NUM_LAYERS):
+            layer_name = f"model.layers.{layer_index}.attn.attn"
+            key = key_by_layer[layer_name]
+            value = value_by_layer[layer_name]
+            cache = paged_caches[layer_name]
+            key_shape = self._safe_shape(key)
+            value_shape = self._safe_shape(value)
+            if key_shape != (
+                plan.row_plan.prompt_tokens,
+                GPT_OSS_NUM_KV_HEADS,
+                GPT_OSS_HEAD_DIM,
+            ) or value_shape != key_shape:
+                _fail_update(SelectiveUpdateErrorCode.INVALID_SOURCE_SHAPE)
+
+            cache_shape = self._safe_shape(cache)
+            full_layer_spans = tuple(
+                span
+                for span in plan.full_layer_spans
+                if span.layer_index == layer_index
+            )
+            layer_spans = plan.spans_for_layer(layer_index)
+            block_sizes = {
+                span.group_span.block_size for span in full_layer_spans
+            }
+            if (
+                len(block_sizes) != 1
+                or len(cache_shape) != 5
+                or cache_shape[0] <= 0
+                or cache_shape[1] != 2
+                or cache_shape[2] != next(iter(block_sizes), -1)
+                or cache_shape[3:] != (GPT_OSS_NUM_KV_HEADS, GPT_OSS_HEAD_DIM)
+            ):
+                _fail_update(SelectiveUpdateErrorCode.INVALID_CACHE_SHAPE)
+
+            key_dtype = self._safe_dtype(key)
+            value_dtype = self._safe_dtype(value)
+            cache_dtype = self._safe_dtype(cache)
+            if key_dtype != value_dtype or key_dtype != cache_dtype:
+                _fail_update(SelectiveUpdateErrorCode.DTYPE_MISMATCH)
+            key_device = self._safe_device(key)
+            value_device = self._safe_device(value)
+            cache_device = self._safe_device(cache)
+            if key_device != value_device or key_device != cache_device:
+                _fail_update(SelectiveUpdateErrorCode.DEVICE_MISMATCH)
+            if not key_device.startswith("cuda:"):
+                _fail_update(SelectiveUpdateErrorCode.INVALID_DEVICE)
+            if dtype is None:
+                dtype = key_dtype
+                device = key_device
+            elif dtype != key_dtype or device != key_device:
+                _fail_update(SelectiveUpdateErrorCode.DTYPE_MISMATCH)
+
+            for span in layer_spans:
+                count = span.token_count
+                try:
+                    key_source = self._ops.prompt_rows(
+                        key,
+                        start=span.target_range.start,
+                        count=count,
+                    )
+                    value_source = self._ops.prompt_rows(
+                        value,
+                        start=span.target_range.start,
+                        count=count,
+                    )
+                    key_destination = self._ops.paged_rows(
+                        cache,
+                        component=0,
+                        block_id=span.group_span.block_id,
+                        block_offset=span.group_span.block_offset,
+                        count=count,
+                    )
+                    value_destination = self._ops.paged_rows(
+                        cache,
+                        component=1,
+                        block_id=span.group_span.block_id,
+                        block_offset=span.group_span.block_offset,
+                        count=count,
+                    )
+                except Exception as error:
+                    raise SelectiveUpdateError(
+                        SelectiveUpdateErrorCode.INVALID_VIEW
+                    ) from error
+                expected_shape = (count, GPT_OSS_NUM_KV_HEADS, GPT_OSS_HEAD_DIM)
+                for view in (
+                    key_source,
+                    value_source,
+                    key_destination,
+                    value_destination,
+                ):
+                    if self._safe_shape(view) != expected_shape:
+                        _fail_update(SelectiveUpdateErrorCode.INVALID_VIEW)
+                    if self._safe_dtype(view) != dtype:
+                        _fail_update(SelectiveUpdateErrorCode.DTYPE_MISMATCH)
+                    if self._safe_device(view) != device:
+                        _fail_update(SelectiveUpdateErrorCode.DEVICE_MISMATCH)
+                prepared.extend(
+                    (
+                        _PreparedUpdate(key_destination, key_source),
+                        _PreparedUpdate(value_destination, value_source),
+                    )
+                )
+
+        try:
+            for operation in prepared:
+                self._ops.copy(operation.destination, operation.source)
+            if prepared:
+                self._ops.synchronize(next(iter(paged_caches.values())))
+        except Exception as error:
+            raise SelectiveUpdateError(
+                SelectiveUpdateErrorCode.MUTATION_FAILED
+            ) from error
+
+        return SelectiveUpdateReceipt(
+            recomputed_token_rows=plan.recompute_tokens,
+            cached_token_rows=plan.cached_tokens,
+            write_span_count=len(plan.recompute_layer_spans),
+            copied_key_rows=plan.recompute_tokens,
+            copied_value_rows=plan.recompute_tokens,
+        )
+
+    def _safe_shape(self, tensor: object) -> tuple[int, ...]:
+        try:
+            shape = tuple(self._ops.shape(tensor))
+        except Exception as error:
+            raise SelectiveUpdateError(
+                SelectiveUpdateErrorCode.INVALID_VIEW
+            ) from error
+        if any(
+            isinstance(dimension, bool)
+            or not isinstance(dimension, int)
+            or dimension < 0
+            for dimension in shape
+        ):
+            _fail_update(SelectiveUpdateErrorCode.INVALID_VIEW)
+        return shape
+
+    def _safe_dtype(self, tensor: object) -> str:
+        try:
+            dtype = self._ops.dtype_name(tensor)
+        except Exception as error:
+            raise SelectiveUpdateError(
+                SelectiveUpdateErrorCode.INVALID_VIEW
+            ) from error
+        if not dtype:
+            _fail_update(SelectiveUpdateErrorCode.INVALID_VIEW)
+        return dtype
+
+    def _safe_device(self, tensor: object) -> str:
+        try:
+            device = self._ops.device_name(tensor)
+        except Exception as error:
+            raise SelectiveUpdateError(
+                SelectiveUpdateErrorCode.INVALID_VIEW
+            ) from error
+        if not device:
+            _fail_update(SelectiveUpdateErrorCode.INVALID_VIEW)
+        return device
+
+
 __all__ = [
+    "GptOssSelectiveKvUpdater",
+    "SelectiveCacheOps",
+    "SelectiveUpdateError",
+    "SelectiveUpdateErrorCode",
+    "SelectiveUpdateReceipt",
     "SelectiveWriteError",
     "SelectiveWriteErrorCode",
     "SelectiveWritePlan",
