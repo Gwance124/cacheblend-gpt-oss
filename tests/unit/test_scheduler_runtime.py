@@ -664,7 +664,7 @@ def test_open_and_close_are_idempotent_and_closed_lookup_is_fatal() -> None:
     assert closed.status is SchedulerLookupStatus.FATAL_RUNTIME_CLOSED
 
 
-def test_close_failure_is_bounded_and_still_terminal() -> None:
+def test_close_failure_is_bounded_and_retryable_fail_closed() -> None:
     config = _transfer_config()
     transport = FakeCandidateTransport(
         _transport_config(config), close_error=RuntimeError("private close detail")
@@ -680,6 +680,15 @@ def test_close_failure_is_bounded_and_still_terminal() -> None:
 
     assert caught.value.code is SchedulerRuntimeErrorCode.CLOSE_FAILED
     assert "private close detail" not in str(caught.value)
+    assert runtime.state is SchedulerRuntimeState.FATAL
+    assert runtime.lookup(_request(tuple(range(256)))).status is (
+        SchedulerLookupStatus.FATAL_TRANSPORT_CLEANUP
+    )
+
+    transport.close_error = None
+    runtime.close()
+    runtime.close()
+    assert transport.close_calls == 2
     assert runtime.state is SchedulerRuntimeState.CLOSED
 
 

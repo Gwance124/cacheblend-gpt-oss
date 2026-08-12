@@ -586,7 +586,13 @@ class SchedulerLookupRuntime:
         try:
             self._transport.close()
         except Exception as exc:
-            self._state = SchedulerRuntimeState.CLOSED
+            # Retain ownership after a failed close.  The resource wrapper
+            # deliberately retries cleanup (for example after a transient MQ
+            # close error), so marking this runtime CLOSED here would make the
+            # second attempt a no-op and leak the transport.  FATAL prevents
+            # any lookup from proceeding while cleanup is pending.
+            self._state = SchedulerRuntimeState.FATAL
+            self._fatal_status = SchedulerLookupStatus.FATAL_TRANSPORT_CLEANUP
             raise SchedulerRuntimeError(SchedulerRuntimeErrorCode.CLOSE_FAILED) from exc
         self._transport_needs_close = False
         self._state = SchedulerRuntimeState.CLOSED
