@@ -173,6 +173,24 @@ def test_finalized_rope_parameters_must_contain_theta() -> None:
     assert "rope.theta" in {issue.field for issue in issues}
 
 
+def test_complete_raw_rope_scaling_is_not_treated_as_finalized() -> None:
+    """A legacy mapping must not bypass vLLM's normalization boundary."""
+
+    vllm_config, kv_cache_config = _valid_config()
+    raw_rope_scaling = dict(vllm_config.model_config.hf_config.rope_parameters)
+    vllm_config.model_config.hf_config.rope_parameters = None
+    vllm_config.model_config.hf_config.rope_scaling = raw_rope_scaling
+
+    issues = collect_pinned_config_issues(
+        vllm_config,
+        kv_cache_config,
+        v2_model_runner_enabled=False,
+    )
+
+    assert "rope.type" in {issue.field for issue in issues}
+    assert "rope.theta" in {issue.field for issue in issues}
+
+
 def test_vllm_rope_normalization_shape_is_accepted() -> None:
     """A vLLM-finalized flat rope_parameters mapping is the accepted shape."""
 

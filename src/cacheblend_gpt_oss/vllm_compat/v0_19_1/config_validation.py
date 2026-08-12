@@ -126,10 +126,11 @@ def _served_model_names(model_config: object) -> tuple[str, ...]:
 
 
 def _rope_parameters(hf_config: object) -> object:
-    parameters = _get(hf_config, "rope_parameters")
-    if parameters is not None:
-        return parameters
-    return _get(hf_config, "rope_scaling", {})
+    # vLLM's pinned ``patch_rope_parameters`` runs before GPT-OSS is
+    # constructed and the model reads this finalized field directly.  Never
+    # treat the legacy raw ``rope_scaling`` mapping as an equivalent input:
+    # accepting it could validate values the model will not consume.
+    return _get(hf_config, "rope_parameters", {})
 
 
 def _layer_index(layer_name: object) -> int | None:
