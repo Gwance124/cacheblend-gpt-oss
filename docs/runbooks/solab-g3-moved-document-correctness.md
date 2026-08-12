@@ -252,6 +252,19 @@ curl --fail-with-body http://127.0.0.1:8000/metrics \
   > "$CACHEBLEND_RUN_DIR/cacheblend-metrics.txt"
 ```
 
+If the worker-side probe has produced the required per-layer digest sidecar,
+validate it independently before accepting the final-distribution result:
+
+```bash
+.venv/bin/python scripts/validate_transfer_evidence.py \
+  --input "$CACHEBLEND_RUN_DIR/transfer-evidence.json" \
+  --output "$CACHEBLEND_RUN_DIR/transfer-evidence-report.json"
+```
+
+The report must show 12 sliding and 12 full layers, all layers loaded and
+overwritten, and zero prefill tokens avoided. This command is read-only with
+respect to KV; it cannot create evidence when the worker probe is absent.
+
 The evaluator exits nonzero unless sampled/top tokens agree and complete-vector
 maximum and mean errors stay inside the already-frozen envelope. Preserve the
 three artifacts, verdict, metrics, both server logs, compatibility probe, and
@@ -310,6 +323,6 @@ Go to the `/v1/responses` Harmony/tool/multi-turn gate only if:
 Stop on any failed invariant, timeout, fallback, distribution mismatch, or
 identity drift. Do not lower recomputation or interpret generated text as
 evidence. This gate demonstrates the final output distribution and the
-connector's all-layer/group success accounting; raw per-layer hidden-state or
-checksum capture remains additional evidence if the live result exposes a
-discrepancy.
+connector's all-layer/group success accounting. A supplied transfer sidecar
+must validate independently; raw per-layer evidence cannot be inferred from
+the output artifact or connector counters.
