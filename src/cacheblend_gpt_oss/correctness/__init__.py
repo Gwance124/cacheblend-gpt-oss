@@ -3,9 +3,11 @@
 from cacheblend_gpt_oss.correctness.capture import (
     connector_counter_delta,
     connector_evidence_from_snapshots,
+    connector_store_counter_delta,
     has_connector_metric_surface,
     parse_completion_distribution,
     parse_connector_counter_snapshot,
+    parse_connector_store_counter_snapshot,
 )
 from cacheblend_gpt_oss.correctness.evaluate import (
     CacheBlendCorrectnessVerdict,
@@ -110,12 +112,14 @@ __all__ = [
     "compare_distributions",
     "connector_counter_delta",
     "connector_evidence_from_snapshots",
+    "connector_store_counter_delta",
     "digest_token_ids",
     "evaluate_cacheblend_100pct",
     "freeze_full_prefill_tolerance",
     "has_connector_metric_surface",
     "parse_completion_distribution",
     "parse_connector_counter_snapshot",
+    "parse_connector_store_counter_snapshot",
     "read_artifact",
     "read_frozen_tolerance",
     "read_transfer_evidence",

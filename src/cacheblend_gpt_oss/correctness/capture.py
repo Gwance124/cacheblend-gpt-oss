@@ -25,6 +25,11 @@ _COUNTER_METRICS = {
     "tokens_recomputed": "vllm:cacheblend_tokens_recomputed_total",
     "prefill_tokens_avoided": "vllm:cacheblend_prefill_tokens_avoided_total",
 }
+_STORE_COUNTER_METRICS = {
+    "store_tokens_eligible": "vllm:cacheblend_store_tokens_eligible_total",
+    "store_tokens_completed": "vllm:cacheblend_store_tokens_completed_total",
+    "store_fallbacks": "vllm:cacheblend_store_fallbacks_total",
+}
 
 
 def has_connector_metric_surface(text: str) -> bool:
@@ -89,9 +94,24 @@ def parse_completion_distribution(data: object) -> FullVocabularyLogprobs:
 def parse_connector_counter_snapshot(text: str) -> dict[str, int]:
     """Sum bounded engine samples for each connector counter."""
 
+    return _parse_counter_snapshot(text, _COUNTER_METRICS)
+
+
+def parse_connector_store_counter_snapshot(text: str) -> dict[str, int]:
+    """Parse store-only counters used to gate source-cache persistence."""
+
+    return _parse_counter_snapshot(text, _STORE_COUNTER_METRICS)
+
+
+def _parse_counter_snapshot(
+    text: str,
+    metric_names: Mapping[str, str],
+) -> dict[str, int]:
+    """Parse one bounded metric family without retaining labels."""
+
     if not isinstance(text, str):
         raise TypeError("Prometheus snapshot must be text")
-    samples: dict[str, float] = {key: 0.0 for key in _COUNTER_METRICS}
+    samples: dict[str, float] = {key: 0.0 for key in metric_names}
     for line in text.splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
@@ -102,7 +122,7 @@ def parse_connector_counter_snapshot(text: str) -> dict[str, int]:
         sample_name = parts[0].split("{", 1)[0]
         matching_keys = [
             key
-            for key, metric_name in _COUNTER_METRICS.items()
+            for key, metric_name in metric_names.items()
             if metric_name == sample_name
         ]
         if not matching_keys:
@@ -159,10 +179,41 @@ def connector_counter_delta(
     return delta
 
 
+def connector_store_counter_delta(
+    before: Mapping[str, int],
+    after: Mapping[str, int],
+) -> dict[str, int]:
+    """Return monotonic deltas for the bounded store-counter family."""
+
+    if set(before) != set(_STORE_COUNTER_METRICS) or set(after) != set(
+        _STORE_COUNTER_METRICS
+    ):
+        raise ValueError("connector store counter snapshot schema mismatch")
+    delta: dict[str, int] = {}
+    for key in _STORE_COUNTER_METRICS:
+        old_value = before[key]
+        new_value = after[key]
+        if (
+            isinstance(old_value, bool)
+            or not isinstance(old_value, int)
+            or isinstance(new_value, bool)
+            or not isinstance(new_value, int)
+            or old_value < 0
+            or new_value < old_value
+        ):
+            raise ValueError(
+                "connector store counters are invalid or moved backwards"
+            )
+        delta[key] = new_value - old_value
+    return delta
+
+
 __all__ = [
     "connector_counter_delta",
     "connector_evidence_from_snapshots",
+    "connector_store_counter_delta",
     "has_connector_metric_surface",
     "parse_completion_distribution",
     "parse_connector_counter_snapshot",
+    "parse_connector_store_counter_snapshot",
 ]

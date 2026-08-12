@@ -35,8 +35,10 @@ from cacheblend_gpt_oss.correctness import (
     has_connector_metric_surface,
     parse_completion_distribution,
     parse_connector_counter_snapshot,
+    parse_connector_store_counter_snapshot,
     write_artifact,
 )
+from cacheblend_gpt_oss.storage.lmcache_types import LMCACHE_CHUNK_SIZE
 from cacheblend_gpt_oss.targets import PINNED_TARGET
 
 
@@ -148,16 +150,29 @@ def _wait_for_request_counter(
     client: LocalVllmClient,
     minimum: int,
     wait_seconds: float,
+    *,
+    minimum_store_tokens: int | None = None,
 ) -> dict[str, int]:
     if wait_seconds <= 0:
         raise ValueError("metric wait must be positive")
     deadline = time.monotonic() + wait_seconds
     while True:
-        snapshot = parse_connector_counter_snapshot(client.get_text("/metrics"))
-        if snapshot["requests"] >= minimum:
+        metrics = client.get_text("/metrics")
+        snapshot = parse_connector_counter_snapshot(metrics)
+        stores = parse_connector_store_counter_snapshot(metrics)
+        if (
+            snapshot["requests"] >= minimum
+            and (
+                minimum_store_tokens is None
+                or stores["store_tokens_completed"] >= minimum_store_tokens
+            )
+        ):
             return snapshot
         if time.monotonic() >= deadline:
-            raise TimeoutError("connector metrics did not reach the expected request")
+            raise TimeoutError(
+                "connector request/store metrics did not reach the expected "
+                "milestone"
+            )
         time.sleep(0.25)
 
 
@@ -195,6 +210,13 @@ def main() -> int:
         initial_metrics = client.get_text("/metrics")
         _require_connector_metric_surface(initial_metrics, expected=True)
         initial = parse_connector_counter_snapshot(initial_metrics)
+        initial_store = parse_connector_store_counter_snapshot(initial_metrics)
+        source_store_tokens = (
+            len(fixture.source_prompt_token_ids) // LMCACHE_CHUNK_SIZE
+        ) * LMCACHE_CHUNK_SIZE
+        target_store_tokens = (
+            len(fixture.target_prompt_token_ids) // LMCACHE_CHUNK_SIZE
+        ) * LMCACHE_CHUNK_SIZE
         client.post_json(
             "/v1/completions",
             _completion_payload(fixture.source_prompt_token_ids, full=False),
@@ -203,6 +225,9 @@ def main() -> int:
             client,
             initial["requests"] + 1,
             args.metric_wait_seconds,
+            minimum_store_tokens=(
+                initial_store["store_tokens_completed"] + source_store_tokens
+            ),
         )
         target_response = client.post_json(
             "/v1/completions",
@@ -212,6 +237,11 @@ def main() -> int:
             client,
             after_source["requests"] + 1,
             args.metric_wait_seconds,
+            minimum_store_tokens=(
+                initial_store["store_tokens_completed"]
+                + source_store_tokens
+                + target_store_tokens
+            ),
         )
         connector = connector_evidence_from_snapshots(after_source, after_target)
     else:

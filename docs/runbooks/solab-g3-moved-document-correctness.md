@@ -223,11 +223,13 @@ export VLLM_USE_V2_MODEL_RUNNER=0
 
 ## 5. Store, move, load, fully recompute, and compare
 
-The capture command first sends the 256-token source document. It then sends a
-280-token target where the exact document starts at position 17. It refuses to
-write a CacheBlend artifact unless the target interval contains exactly one
-connector request, all 256 reusable tokens were loaded, all 280 prompt tokens
-were recomputed, and saved prefill remained zero.
+The capture command first sends the 256-token source document and waits for its
+complete store counter before issuing the target. It then sends a 280-token
+target where the exact document starts at position 17. It refuses to write a
+CacheBlend artifact unless the target interval contains exactly one connector
+request, all 256 reusable tokens were loaded, all 280 prompt tokens were
+recomputed, and saved prefill remained zero. This store-counter wait prevents
+request completion from racing the source sidecar/LMCache publication.
 
 ```bash
 .venv/bin/python scripts/capture_moved_document.py \

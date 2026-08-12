@@ -25,12 +25,14 @@ from cacheblend_gpt_oss.correctness import (
     build_reordered_documents_fixture,
     connector_counter_delta,
     connector_evidence_from_snapshots,
+    connector_store_counter_delta,
     digest_token_ids,
     evaluate_cacheblend_100pct,
     freeze_full_prefill_tolerance,
     has_connector_metric_surface,
     parse_completion_distribution,
     parse_connector_counter_snapshot,
+    parse_connector_store_counter_snapshot,
     read_artifact,
     read_frozen_tolerance,
     write_artifact,
@@ -451,3 +453,29 @@ def test_partial_completion_or_ambiguous_metric_interval_is_rejected() -> None:
     with pytest.raises(ValueError, match="exactly one target request"):
         connector_evidence_from_snapshots(empty, two_requests)
     assert connector_counter_delta(empty, two_requests)["requests"] == 2
+
+
+def test_store_counter_surface_is_parsed_and_reconciled_separately() -> None:
+    before = parse_connector_store_counter_snapshot(
+        """
+vllm:cacheblend_store_tokens_eligible_total{engine="0"} 256
+vllm:cacheblend_store_tokens_completed_total{engine="0"} 256
+vllm:cacheblend_store_fallbacks_total{engine="0"} 0
+"""
+    )
+    after = parse_connector_store_counter_snapshot(
+        """
+vllm:cacheblend_store_tokens_eligible_total{engine="0"} 768
+vllm:cacheblend_store_tokens_completed_total{engine="0"} 512
+vllm:cacheblend_store_fallbacks_total{engine="0"} 1
+"""
+    )
+
+    assert connector_store_counter_delta(before, after) == {
+        "store_tokens_eligible": 512,
+        "store_tokens_completed": 256,
+        "store_fallbacks": 1,
+    }
+
+    with pytest.raises(ValueError, match="store counter"):
+        connector_store_counter_delta(after, before)

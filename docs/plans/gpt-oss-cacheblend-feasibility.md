@@ -191,6 +191,11 @@ out-of-order samples, requires all 24 layers before finalization, and becomes
 immutable after producing the sidecar. It performs no tensor sampling itself;
 the CUDA probe still must provide real digest values.
 
+The moved-document capture script also waits for the pinned connector's
+`store_tokens_completed` counter after each source/target request. A request
+counter alone is not sufficient evidence that the source document is visible
+to the next lookup.
+
 GPU correctness sequence:
 
 1. Run prompt A with document D at source position and store its reusable KV.
