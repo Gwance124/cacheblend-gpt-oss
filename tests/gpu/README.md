@@ -39,3 +39,19 @@ python3.10 -m venv .venv
 
 Do not treat a local skip as a GPU pass. Preserve and return the full command
 output before recording any `solab-g3` result.
+
+Before any weight-loading or numerical gate, point the model-marked config
+check at the exact local GPT-OSS-20B checkpoint. It uses
+`local_files_only=True`, so it never downloads a model during the test:
+
+```bash
+export CACHEBLEND_MODEL_PATH=/absolute/path/to/pinned/gpt-oss-20b
+uv run pytest tests/gpu/test_gpt_oss_model_config.py \
+  -m "gpu and integration and model" -vv
+```
+
+The check must report the exact 24-layer alternating sliding/full layout,
+128-token window, 131,072-token context, 64/8 heads with dimension 64, YaRN
+factor/original context, 32 experts with 4 active, and 201,088-token
+vocabulary. This is a configuration gate only; it is not logits, transfer, or
+`/v1/responses` evidence.

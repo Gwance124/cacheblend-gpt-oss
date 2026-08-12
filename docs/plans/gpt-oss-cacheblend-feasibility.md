@@ -606,13 +606,18 @@ uv sync --extra gpu --extra test
 uv run pytest -m "gpu and integration and not model" -vv
 ```
 
-Once model tests are added, the manual command will be:
+The first model-marked gate loads only the local checkpoint configuration and
+asserts the exact GPT-OSS topology before weight or logits work:
 
 ```bash
 CACHEBLEND_MODEL_PATH=/path/to/pinned/gpt-oss-20b
 export CACHEBLEND_MODEL_PATH
-uv run pytest -m "gpu and integration and model" -vv
+uv run pytest tests/gpu/test_gpt_oss_model_config.py \
+  -m "gpu and integration and model" -vv
 ```
+
+This configuration gate is not numerical or endpoint evidence. The moved
+document runbook remains the first full weight/transfer/logit gate.
 
 Before interpreting either run, preserve this identity output:
 
