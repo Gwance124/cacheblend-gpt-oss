@@ -282,7 +282,9 @@ def main() -> int:
     first_payload["tools"] = [_TOOL]
     first_payload["tool_choice"] = {"type": "function", "name": _TOOL_NAME}
     first = parse_completed_response(
-        client.post_json("/v1/responses", first_payload), require_usage=True
+        client.post_json("/v1/responses", first_payload),
+        require_usage=True,
+        require_completed_items=True,
     )
     call = require_forced_tool_call(first, expected_name=_TOOL_NAME)
     city = call.arguments.get("city")
@@ -303,6 +305,7 @@ def main() -> int:
     second = parse_completed_response(
         client.post_json("/v1/responses", _request_payload(tool_history)),
         require_usage=True,
+        require_completed_items=True,
     )
     second_texts = require_reasoned_message(second)
     if _EXPECTED_CITY.casefold() not in " ".join(second_texts).casefold():
@@ -316,6 +319,7 @@ def main() -> int:
     third = parse_completed_response(
         client.post_json("/v1/responses", _request_payload(final_history)),
         require_usage=True,
+        require_completed_items=True,
     )
     third_texts = require_reasoned_message(third)
     if _EXPECTED_CITY.casefold() not in " ".join(third_texts).casefold():

@@ -165,14 +165,16 @@ def _parse_usage(data: object, *, required: bool) -> ResponseUsageObservation | 
 
 
 def parse_completed_response(
-    data: object, *, require_usage: bool = False
+    data: object, *, require_usage: bool = False, require_completed_items: bool = False
 ) -> ResponseObservation:
     """Require a completed, nonempty pinned Responses JSON object.
 
     ``usage`` is optional in the pinned protocol model, so CPU fixtures may
     omit it. The live non-streaming contract harness passes ``require_usage``
     to prove that vLLM emitted the structured counters before accepting a
-    Harmony/tool/multi-turn response.
+    Harmony/tool/multi-turn response. It also passes
+    ``require_completed_items`` because a completed root response must not
+    carry an in-progress output item.
     """
 
     root = _json_object(data, "response")
@@ -196,6 +198,8 @@ def parse_completed_response(
         )
         if item_type not in _HARMONY_OUTPUT_TYPES:
             raise ValueError("Responses output item type is unsupported")
+        if require_completed_items and item.get("status") != "completed":
+            raise ValueError("Responses output item did not complete")
         output_items.append(item)
         output_types.append(item_type)
         if item_type == "reasoning":

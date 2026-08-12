@@ -125,6 +125,23 @@ def test_required_usage_is_parsed_and_reconciled() -> None:
     assert response.usage.reasoning_tokens == 3
 
 
+def test_completed_item_status_is_required_for_live_contract() -> None:
+    raw = _message_response()
+    output = raw["output"]
+    assert isinstance(output, list)
+    reasoning = output[0]
+    assert isinstance(reasoning, dict)
+    reasoning["status"] = "in_progress"
+    raw["usage"] = _usage()
+
+    with pytest.raises(ValueError, match="output item did not complete"):
+        parse_completed_response(
+            raw,
+            require_usage=True,
+            require_completed_items=True,
+        )
+
+
 @pytest.mark.parametrize(
     "mutation",
     [

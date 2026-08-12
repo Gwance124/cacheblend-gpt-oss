@@ -114,9 +114,10 @@ It fails unless every response completes, every turn emits a Harmony reasoning
 item, the first emits exactly the named function call with valid JSON
 arguments, both later turns emit nonempty message text, the fixed city survives
 both continuations, every non-streaming response includes reconciled `usage`
-input/output/total and nested detail counters, the sum of usage input tokens
-matches native vLLM prompt-token accounting, prefix-cache usage is zero, and
-exactly three connector requests are observed, all
+input/output/total and nested detail counters, every output item has completed
+status, the sum of usage input tokens matches native vLLM prompt-token
+accounting, prefix-cache usage is zero, and exactly three connector requests
+are observed, all
 connector counter deltas reconcile, each pinned vLLM timing histogram records
 exactly three observations, and the native prefill-KV histogram sum equals the
 native prompt-token counter delta. The prompt-source interval must also report
