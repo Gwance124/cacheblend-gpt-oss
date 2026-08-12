@@ -424,7 +424,11 @@ The dependency-free `metrics.RequestMetricTimers` snapshot additionally keeps
 nullable queue, decode, and end-to-end timings, so missing server measurements
 remain missing rather than being reported as zero. The M9 benchmark artifact
 also records peak memory and staging overhead per trial, then summarizes those
-values with the same repeated-trial confidence-interval calculation.
+values with the same repeated-trial confidence-interval calculation. Its
+derived report retains the artifact/prompt-fixture digests, one uniform
+warm/cold cache state, and the complete pinned runtime/config identity so a
+copied report cannot lose the conditions under which its confidence intervals
+were measured.
 
 The Responses contract harness parses the pinned vLLM histogram families
 `vllm:time_to_first_token_seconds`, `vllm:e2e_request_latency_seconds`,

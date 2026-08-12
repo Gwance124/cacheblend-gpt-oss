@@ -358,6 +358,14 @@ class BenchmarkArtifact:
         )
 
     @property
+    def cache_state(self) -> BenchmarkCacheState:
+        """The single cache condition shared by every trial in this artifact."""
+
+        # ``__post_init__`` rejects mixed states, so this is deterministic and
+        # cannot silently pick one condition from an incompatible artifact.
+        return self.trials[0].cache_state
+
+    @property
     def missing_required_arms(self) -> tuple[BenchmarkArm, ...]:
         required = (BenchmarkArm.FULL_PREFILL, BenchmarkArm.CACHEBLEND_100PCT)
         return tuple(arm for arm in required if arm not in self.arms)

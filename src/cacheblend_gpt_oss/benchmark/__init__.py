@@ -27,12 +27,17 @@ from cacheblend_gpt_oss.benchmark.models import (
     merge_benchmark_artifacts,
     summarize_benchmark,
 )
+from cacheblend_gpt_oss.benchmark.report import (
+    BENCHMARK_REPORT_SCHEMA_VERSION,
+    build_benchmark_report,
+)
 
 __all__ = [
     "BENCHMARK_ATTENTION_BACKEND",
     "BENCHMARK_BLOCK_SIZE",
     "BENCHMARK_MAX_MODEL_LEN",
     "BENCHMARK_PIPELINE_PARALLEL_SIZE",
+    "BENCHMARK_REPORT_SCHEMA_VERSION",
     "BENCHMARK_SCHEMA_VERSION",
     "BENCHMARK_TENSOR_PARALLEL_SIZE",
     "BenchmarkArm",
@@ -47,6 +52,7 @@ __all__ = [
     "benchmark_artifact_digest",
     "benchmark_artifact_from_dict",
     "benchmark_artifact_to_dict",
+    "build_benchmark_report",
     "canonical_benchmark_bytes",
     "merge_benchmark_artifacts",
     "read_benchmark_artifact",

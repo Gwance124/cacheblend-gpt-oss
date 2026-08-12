@@ -19,6 +19,7 @@ from cacheblend_gpt_oss.benchmark import (
     benchmark_artifact_digest,
     benchmark_artifact_from_dict,
     benchmark_artifact_to_dict,
+    build_benchmark_report,
     merge_benchmark_artifacts,
     read_benchmark_artifact,
     summarize_benchmark,
@@ -275,6 +276,32 @@ def test_round_trip_digest_and_create_only_writer(tmp_path) -> None:
     with pytest.raises(BenchmarkError) as caught:
         write_benchmark_artifact(path, artifact)
     assert caught.value.code is BenchmarkErrorCode.FILE_EXISTS
+
+
+def test_derived_report_retains_pinned_identity_and_cache_state() -> None:
+    artifact = _artifact(
+        _trial(BenchmarkArm.FULL_PREFILL),
+        _trial(BenchmarkArm.CACHEBLEND_100PCT),
+    )
+    report = build_benchmark_report(artifact)
+    assert report["schema_version"] == 1
+    assert report["artifact_schema_version"] == 1
+    assert report["cache_state"] == BenchmarkCacheState.WARM.value
+    assert report["prompt_fixture_digest"] == "f" * 64
+    assert report["runtime"] == {
+        "cuda_runtime": "12.8",
+        "dtype": "torch.bfloat16",
+        "gpu_name": "NVIDIA A100-SXM4-80GB",
+        "kv_cache_config_digest": "c" * 64,
+        "lmcache_version": "0.4.3",
+        "model_config_digest": "b" * 64,
+        "model_id": "openai/gpt-oss-20b",
+        "model_revision": "model-revision",
+        "plugin_commit": "a" * 40,
+        "tokenizer_revision": "tokenizer-revision",
+        "torch_version": "2.10.0+cu128",
+        "vllm_version": "0.19.1",
+    }
 
 
 def test_artifact_is_identifier_free() -> None:
