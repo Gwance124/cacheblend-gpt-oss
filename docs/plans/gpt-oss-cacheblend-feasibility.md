@@ -7,9 +7,12 @@ out-of-tree connector and a **no-patch** decision for the 100%-recomputation
 transfer proof. The connector, scheduler lookup, LMCache transport, persistent
 sidecar, worker staging bridge, YaRN corrector, and full/sliding scatter-gather
 path are now implemented and CPU-tested. Identifier-free aggregate connector
-metrics are wired through vLLM 0.19.1's public stats/Prometheus hooks. The next
-gate is manual CUDA and connector/model execution on `solab-g3`; no such pass
-is claimed yet.
+metrics are wired through vLLM 0.19.1's public stats/Prometheus hooks. A
+dependency-free validator and manual runbook now bind those metrics to one
+private, append-only BrowseComp-Plus trajectory from the read-only
+`rag-system` repository. The next gate is manual CUDA and connector/model
+execution on `solab-g3`, followed by that one-query orchestration run on
+`solab-p7`; no such pass is claimed yet.
 
 The connector stats schema now includes separate position-correction and
 selective-recomputation latency histograms. Position-correction latency is
@@ -39,6 +42,7 @@ be tested before deciding whether a pinned vLLM patch is necessary.
 | M6. Out-of-tree selective-data-plane spike | Pinned boundary audited; implementation waits for M3--M5 GPU evidence | Registered model/backend must skip selected rows while preserving runner output shape | Decide at gate |
 | M7. Reduced recomputation correctness | CPU policy contract; GPU pending | Deterministic check-layer row plans; error/work curves still require model runs | No optimization yet |
 | M8. Responses/Harmony/multi-turn validation | CPU harness and offline evidence validator complete; GPU/API run pending | Transparent validated endpoint with native source-credit proof | Patch only for proven API blocker |
+| M8.5. BrowseComp-Plus append-only transfer smoke | Offline evidence validator and cross-host runbook implemented; g3/p7 run pending | One private real-agent trajectory with positive verified KV load and 100% recomputation | No `rag-system` changes |
 | M9. Controlled benchmark | CPU evidence contract; GPU pending | Full-prefill and prefix-cache comparisons with complete metrics and confidence intervals | Optimize only after correctness |
 
 ## M0: pinned audit and repository scaffold
@@ -552,6 +556,26 @@ Stop criteria:
 
 - Any Harmony/tool-call regression blocks benchmarking.
 - Do not alter `rag-system` to compensate for a serving-plugin bug.
+
+## M8.5: BrowseComp-Plus append-only transfer smoke
+
+The offline validator and exact cross-host procedure are implemented in
+`scripts/validate_browsecomp_append_only.py` and
+`docs/runbooks/solab-g3-browsecomp-append-only.md`. The validator reads the
+private `rag-system` run record plus before/after Prometheus snapshots and
+emits only bounded aggregate evidence. It requires the unchanged Responses
+scaffold, append-only context construction, duplicate-document retention, at
+least one completed search, positive verified KV loading, successful source
+storage, full local recomputation of every input token, zero scheduler transfer
+credit, and complete native timing observations.
+
+This is deliberately a 100%-recomputation transfer gate. A pass demonstrates
+transparent connector lookup/load on one real agent trajectory; it does not
+demonstrate lower prefill work, selective recomputation, or arbitrary embedded
+document persistence. The latter still requires the per-range store design
+described in the architecture. The private question, retrieval results,
+reasoning, and answer stay on `solab-p7`; only the identifier-free report may
+leave the private artifact directory.
 
 ## M9: benchmark design
 

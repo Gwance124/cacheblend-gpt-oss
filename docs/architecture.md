@@ -16,6 +16,9 @@ is:
 - Aggregate connector lookup/load/recompute/store metrics: **implemented through
   vLLM's public stats and Prometheus hooks; live exporter evidence pending on
   `solab-g3`**.
+- BrowseComp-Plus append-only integration: **one-query offline evidence
+  validator and g3/p7 runbook implemented without changing or importing
+  `rag-system`; live transfer evidence pending**.
 - Controlled benchmark evidence: **implemented as a CPU-only artifact and
   validator; all GPU arms and correctness-linked confidence intervals pending
   on `solab-g3`**.

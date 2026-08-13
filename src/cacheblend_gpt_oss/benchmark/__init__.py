@@ -1,5 +1,16 @@
 """Pinned GPT-OSS benchmark evidence and summary boundary."""
 
+from cacheblend_gpt_oss.benchmark.browsecomp import (
+    BROWSECOMP_EVIDENCE_CONTRACT,
+    BROWSECOMP_EVIDENCE_SCHEMA_VERSION,
+    BrowseCompEvidenceError,
+    BrowseCompEvidenceErrorCode,
+    browsecomp_evidence_digest,
+    canonical_browsecomp_evidence_bytes,
+    failed_browsecomp_report,
+    runtime_identity_from_dict,
+    validate_browsecomp_append_only,
+)
 from cacheblend_gpt_oss.benchmark.io import (
     benchmark_artifact_digest,
     benchmark_artifact_from_dict,
@@ -40,6 +51,8 @@ __all__ = [
     "BENCHMARK_REPORT_SCHEMA_VERSION",
     "BENCHMARK_SCHEMA_VERSION",
     "BENCHMARK_TENSOR_PARALLEL_SIZE",
+    "BROWSECOMP_EVIDENCE_CONTRACT",
+    "BROWSECOMP_EVIDENCE_SCHEMA_VERSION",
     "BenchmarkArm",
     "BenchmarkArmSummary",
     "BenchmarkArtifact",
@@ -48,14 +61,21 @@ __all__ = [
     "BenchmarkErrorCode",
     "BenchmarkFailureCode",
     "BenchmarkTrial",
+    "BrowseCompEvidenceError",
+    "BrowseCompEvidenceErrorCode",
     "ConfidenceInterval",
     "benchmark_artifact_digest",
     "benchmark_artifact_from_dict",
     "benchmark_artifact_to_dict",
+    "browsecomp_evidence_digest",
     "build_benchmark_report",
     "canonical_benchmark_bytes",
+    "canonical_browsecomp_evidence_bytes",
+    "failed_browsecomp_report",
     "merge_benchmark_artifacts",
     "read_benchmark_artifact",
+    "runtime_identity_from_dict",
     "summarize_benchmark",
+    "validate_browsecomp_append_only",
     "write_benchmark_artifact",
 ]
