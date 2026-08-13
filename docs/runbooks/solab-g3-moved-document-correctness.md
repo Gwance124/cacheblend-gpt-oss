@@ -172,9 +172,11 @@ Stop the ordinary server before continuing.
 
 ## 4. Start LMCache and the 100% connector
 
-Start the pinned public LMCache server in one shell, using the exact command in
-`solab-g3-connector-smoke.md`. In another shell, create a new sidecar path. Do
-not reuse a database from another model/config/plugin identity:
+Start the pinned LMCache server in one shell, using the wrapper command in
+`solab-g3-connector-smoke.md`. It applies the minimal 0.4.3 store-completion
+race backport; do not launch `lmcache.v1.multiprocess.blend_server_v2` directly.
+In another shell, create a new sidecar path. Do not reuse a database from
+another model/config/plugin identity:
 
 ```bash
 CACHEBLEND_SIDECAR="$CACHEBLEND_RUN_DIR/sidecar.sqlite3"
