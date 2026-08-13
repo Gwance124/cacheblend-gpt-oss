@@ -960,9 +960,13 @@ class GptOssCacheBlendConnector(
         # applies the worker's validation receipt (see
         # ``Scheduler._update_from_kv_xfer_finished``).  Discarding here would
         # make that valid late receipt look like an unknown request and kill
-        # EngineCore.  Keep the state until ``update_connector_output`` applies
-        # the receipt; the TP=1 target has one synchronous worker receipt.
-        self._finished_request_ids.add(request_id)
+        # EngineCore.  Keep transfer state until ``update_connector_output``
+        # applies the receipt; the TP=1 target has one synchronous receipt.
+        # In control-flow mode there is no worker receipt, so discard normally.
+        if self._transfer_enabled and state.worker_validation is None:
+            self._finished_request_ids.add(request_id)
+        else:
+            self._control_plane.discard(request_id)
         self._known_request_ids.discard(request_id)
         self._request_preemptions.pop(request_id, None)
         return False, None
