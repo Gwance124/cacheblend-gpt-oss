@@ -624,8 +624,22 @@ class GptOssCacheBlendConnector(
         return set()
 
     def get_kv_connector_stats(self) -> KVConnectorStats | None:
-        """Return and atomically reset identifier-free worker observations."""
-        self._require_role(KVConnectorRole.WORKER, "get_kv_connector_stats")
+        """Return and atomically reset identifier-free worker observations.
+
+        The pinned vLLM scheduler also invokes this hook on its scheduler-role
+        connector from ``Scheduler.update_from_output``.  Statistics are
+        produced by the worker/model-runner connector and carried in the
+        ``KVConnectorOutput``; the scheduler instance has no local worker
+        observations to drain.  Returning ``None`` for that role is therefore
+        the intended base-class behavior and avoids turning a normal scheduler
+        bookkeeping call into a fatal request error.
+
+        Pinned call sites:
+        https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/v1/core/sched/scheduler.py#L1320-L1335
+        https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/v1/worker/gpu_model_runner.py#L7050-L7070
+        """
+        if self.role is KVConnectorRole.SCHEDULER:
+            return None
         if self._stats.is_empty():
             return None
         return self._stats.clone_and_reset()

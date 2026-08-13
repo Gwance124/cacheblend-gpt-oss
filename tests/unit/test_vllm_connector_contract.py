@@ -467,6 +467,9 @@ def test_scheduler_records_all_groups_while_recomputing_every_token(
         False,
         None,
     )
+    # vLLM calls this hook on the scheduler connector after every engine step;
+    # worker observations are returned by the worker connector/output path.
+    assert connector.get_kv_connector_stats() is None
 
 
 def test_worker_registers_every_layer_and_rejects_transfer_claims(
