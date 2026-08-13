@@ -60,6 +60,7 @@ export VLLM_USE_V2_MODEL_RUNNER=0
   --max-num-seqs 1 \
   --max-num-batched-tokens 512 \
   --long-prefill-token-threshold 0 \
+  --no-async-scheduling \
   --enforce-eager \
   --no-enable-prefix-caching \
   --kv-cache-dtype auto \

@@ -37,7 +37,7 @@ from cacheblend_gpt_oss.connector.control_plane import (
     RequestHandoffMetadata,
     WorkerValidationReceipt,
 )
-from cacheblend_gpt_oss.gpt_oss.layout import GroupBlockTable
+from cacheblend_gpt_oss.gpt_oss.layout import AttentionKind, GroupBlockTable
 from cacheblend_gpt_oss.planner import MatchPlan
 from cacheblend_gpt_oss.vllm_compat.v0_19_1.adapters import (
     AdaptedKvCacheBlocks,
@@ -137,41 +137,106 @@ _VLLM_NULL_BLOCK_ID = 0
 def _is_ordered_subsequence(
     observed: tuple[tuple[object, ...], ...],
     allocated: tuple[tuple[int, ...], ...],
+    group_kinds: tuple[AttentionKind, ...],
+    num_blocks: int,
 ) -> bool:
-    """Accept only allocation tables with vLLM-dropped rows removed.
+    """Validate a completion table against the allocation-time table.
 
     The pinned scheduler calls ``remove_skipped_blocks`` immediately before
-    ``request_finished_all_groups``.  Sliding-window groups can therefore be a
-    shorter, order-preserving subsequence of their allocation-time table; a
-    completion must never introduce a new or reordered physical block.
-    https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/v1/core/sched/scheduler.py#L2022-L2038
+    collecting block IDs and invoking ``request_finished_all_groups``.  Full
+    attention therefore retains the allocation table and may append decode
+    blocks.  Sliding attention can replace a leading allocation prefix with
+    the permanent null block and may also append decode blocks.
+
+    Pinned vLLM completion behavior:
+
+    * ``Scheduler._connector_finished`` performs the cleanup, reads the
+      current grouped table, and invokes the HMA hook:
+      https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/v1/core/sched/scheduler.py#L2021-L2038
+    * ``SingleTypeKVCacheManager.remove_skipped_blocks`` replaces skipped
+      entries with ``null_block`` in place:
+      https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/v1/core/single_type_kv_cache_manager.py#L358-L399
+    * ``KVCacheBlocks.get_block_ids`` returns one integer-ID list per group:
+      https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/v1/core/kv_cache_manager.py#L53-L80
     """
 
-    if len(observed) != len(allocated):
+    if (
+        len(observed) != len(allocated)
+        or len(observed) != len(group_kinds)
+        or isinstance(num_blocks, bool)
+        or not isinstance(num_blocks, int)
+        or num_blocks < 1
+    ):
         return False
-    for current, original in zip(observed, allocated, strict=True):
+
+    for current, original, group_kind in zip(
+        observed, allocated, group_kinds, strict=True
+    ):
         if any(
-            isinstance(block_id, bool) or not isinstance(block_id, int)
-            for block_id in current
+            isinstance(block_id, bool)
+            or not isinstance(block_id, int)
+            or block_id < 0
+            or block_id >= num_blocks
+            for block_id in (*current, *original)
         ):
             return False
-        # Sliding-window ``remove_skipped_blocks`` replaces released entries
-        # with the permanent null block.  ``KVCacheBlocks.get_block_ids``
-        # discards ``is_null``, so the pinned block ID is the only safe marker
-        # available at this hook.  Real allocation snapshots cannot contain
-        # this ID because the adapter rejects null blocks earlier.
+
+        # Allocation snapshots are captured from real writable blocks.  The
+        # pinned adapter rejects observable null blocks before they enter the
+        # control plane, and a request cannot own the same physical block twice
+        # within one cache group.
+        if len(original) != len(set(original)):
+            return False
+
+        # A block can be reused after a sliding-window block is freed, but a
+        # current table cannot contain the same real block twice.  Repeated
+        # null IDs are the intentional representation of dropped positions.
         current_real_blocks = tuple(
             block_id
             for block_id in current
             if block_id != _VLLM_NULL_BLOCK_ID
         )
-        cursor = 0
-        for block_id in current_real_blocks:
-            while cursor < len(original) and original[cursor] != block_id:
-                cursor += 1
-            if cursor == len(original):
+        if len(current_real_blocks) != len(set(current_real_blocks)):
+            return False
+
+        if len(current) < len(original):
+            return False
+
+        if group_kind is AttentionKind.FULL:
+            # Full attention never drops a logical position, so allocation
+            # blocks must remain an exact prefix; only decode-growth blocks may
+            # follow them.  Null block 0 is never valid in this group.
+            if (
+                any(block_id == _VLLM_NULL_BLOCK_ID for block_id in current)
+                or current[: len(original)] != original
+            ):
                 return False
-            cursor += 1
+            continue
+
+        if group_kind is not AttentionKind.SLIDING:
+            return False
+
+        # Sliding-window cleanup replaces only a leading allocation prefix.
+        # After that prefix, the allocation suffix must remain in order, and
+        # the suffix after the original table must contain only real decode
+        # blocks.
+        null_prefix_length = 0
+        while (
+            null_prefix_length < len(current)
+            and current[null_prefix_length] == _VLLM_NULL_BLOCK_ID
+        ):
+            null_prefix_length += 1
+        if null_prefix_length > len(original):
+            return False
+        if (
+            current[null_prefix_length : len(original)]
+            != original[null_prefix_length:]
+            or any(
+                block_id == _VLLM_NULL_BLOCK_ID
+                for block_id in current[null_prefix_length:]
+            )
+        ):
+            return False
     return True
 
 
@@ -933,9 +998,10 @@ class GptOssCacheBlendConnector(
         # vLLM calls this HMA hook before releasing the group's blocks.  The
         # count check above prevents a single-group fallback, but a table from
         # another request would still be an invalid completion receipt. vLLM
-        # may drop old sliding-window blocks before this hook, so accept only
-        # an order-preserving subsequence of the allocation-time tables. This
-        # remains permissive for early cancellation, where no allocation exists.
+        # may drop old sliding-window blocks before this hook, so validate the
+        # current table against the allocation-time table while allowing legal
+        # decode-growth suffixes. This remains permissive for early
+        # cancellation, where no allocation exists.
         state = self._control_plane.state(request_id)
         if state.allocation is not None:
             try:
@@ -947,6 +1013,11 @@ class GptOssCacheBlendConnector(
             if not _is_ordered_subsequence(
                 observed_block_ids,
                 state.allocation.grouped_blocks.block_ids_by_group,
+                tuple(
+                    group.attention_kind
+                    for group in self._adapted_kv_cache_config.gpt_oss_layout.groups
+                ),
+                self._adapted_kv_cache_config.num_blocks,
             ):
                 raise RuntimeError(
                     "Completion block tables are not compatible with the "

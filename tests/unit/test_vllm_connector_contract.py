@@ -464,15 +464,87 @@ def test_scheduler_records_all_groups_while_recomputing_every_token(
     ):
         connector.request_finished_all_groups(request, ([99], [11]))
     # The pinned sliding-window manager replaces released entries with its
-    # permanent null block (ID 0) before this hook; the ID-only hook cannot
-    # expose the original ``is_null`` bit.
-    assert connector.request_finished_all_groups(request, ([0, 3], [0, 11])) == (
-        False,
-        None,
-    )
+    # permanent null block (ID 0) before this hook.  Decode growth is appended
+    # after the allocation-time table; full attention retains its allocation
+    # prefix while sliding attention may replace a leading prefix.
+    assert connector.request_finished_all_groups(
+        request, ([0, 4, 5], [11, 12, 13])
+    ) == (False, None)
     # vLLM calls this hook on the scheduler connector after every engine step;
     # worker observations are returned by the worker connector/output path.
     assert connector.get_kv_connector_stats() is None
+
+
+def test_completion_accepts_short_prompt_with_decode_growth(
+    loaded_connector: tuple[ModuleType, SimpleNamespace],
+) -> None:
+    module, fake = loaded_connector
+    connector = module.GptOssCacheBlendConnector(
+        _config(), fake.role.SCHEDULER, _kv_cache_config()
+    )
+    request = SimpleNamespace(
+        request_id="request-decode-growth",
+        prompt_token_ids=[1, 2, 3, 4],
+        prompt_embeds=None,
+        num_prompt_tokens=4,
+        num_preemptions=0,
+    )
+    blocks = SimpleNamespace(
+        get_block_ids=lambda: ([3], [11]),
+        blocks=(
+            [SimpleNamespace(block_id=3, is_null=False)],
+            [SimpleNamespace(block_id=11, is_null=False)],
+        ),
+    )
+
+    assert connector.get_num_new_matched_tokens(request, 0) == (0, False)
+    connector.update_state_after_alloc(request, blocks, num_external_tokens=0)
+
+    # A short prompt can grow into a second physical block while decoding.
+    assert connector.request_finished_all_groups(
+        request, ([3, 4], [11, 12])
+    ) == (False, None)
+
+
+@pytest.mark.parametrize(
+    "completion_block_ids",
+    [
+        ([4, 3, 5], [11, 12]),  # reordered sliding allocation block
+        ([3, 4], [12, 11, 13]),  # reordered full-attention allocation block
+        ([3, 3], [11, 12]),  # duplicate real block ID
+        ([3, 4], [11, 128]),  # out-of-range block ID
+    ],
+)
+def test_completion_rejects_wrong_or_unsafe_block_tables(
+    loaded_connector: tuple[ModuleType, SimpleNamespace],
+    completion_block_ids: tuple[list[int], list[int]],
+) -> None:
+    module, fake = loaded_connector
+    connector = module.GptOssCacheBlendConnector(
+        _config(), fake.role.SCHEDULER, _kv_cache_config()
+    )
+    request = SimpleNamespace(
+        request_id="request-invalid-completion",
+        prompt_token_ids=[1, 2, 3, 4],
+        prompt_embeds=None,
+        num_prompt_tokens=4,
+        num_preemptions=0,
+    )
+    blocks = SimpleNamespace(
+        get_block_ids=lambda: ([3], [11]),
+        blocks=(
+            [SimpleNamespace(block_id=3, is_null=False)],
+            [SimpleNamespace(block_id=11, is_null=False)],
+        ),
+    )
+
+    assert connector.get_num_new_matched_tokens(request, 0) == (0, False)
+    connector.update_state_after_alloc(request, blocks, num_external_tokens=0)
+
+    with pytest.raises(
+        RuntimeError, match="not compatible with the request allocation"
+    ):
+        connector.request_finished_all_groups(request, completion_block_ids)
 
 
 def test_worker_registers_every_layer_and_rejects_transfer_claims(
