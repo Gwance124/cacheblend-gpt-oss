@@ -122,6 +122,24 @@ def test_digests_are_deterministic_and_ignore_mapping_insertion_order() -> None:
     assert _derive(config, kv_config) == first
 
 
+def test_hf_config_integer_mapping_keys_are_canonicalized_without_collision() -> None:
+    config, kv_config = _runtime()
+    config.model_config.hf_config.values["id2label"] = {
+        0: "LABEL_0",
+        1: "LABEL_1",
+    }
+
+    integer_key_digest = _derive(config, kv_config)
+
+    config.model_config.hf_config.values["id2label"] = {
+        "0": "LABEL_0",
+        "1": "LABEL_1",
+    }
+    string_key_digest = _derive(config, kv_config)
+
+    assert integer_key_digest != string_key_digest
+
+
 def test_model_and_kv_changes_are_separated() -> None:
     config, kv_config = _runtime()
     baseline_model, baseline_kv = _derive(config, kv_config)

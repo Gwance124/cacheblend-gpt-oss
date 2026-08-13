@@ -99,11 +99,27 @@ def _canonicalize(value: object, budget: _CanonicalBudget, depth: int = 0) -> ob
     if isinstance(value, list | tuple):
         return [_canonicalize(item, budget, depth + 1) for item in value]
     if isinstance(value, dict):
-        if any(not isinstance(key, str) or "\x00" in key for key in value):
-            _fail(CompatibilityDigestErrorCode.UNSUPPORTED_CONFIG_VALUE)
+        canonical_items: list[tuple[str, object]] = []
+        for key, item in value.items():
+            # Hugging Face's standard PretrainedConfig includes ``id2label``
+            # with integer keys.  JSON object keys are strings on disk, but
+            # the in-memory config returned by ``to_dict`` preserves those
+            # integer keys.  Type-tag keys so ``1`` and ``"1"`` cannot
+            # silently collide in the persistent identity.
+            if isinstance(key, str):
+                if "\x00" in key:
+                    _fail(CompatibilityDigestErrorCode.UNSUPPORTED_CONFIG_VALUE)
+                canonical_key = f"str:{key}"
+            elif isinstance(key, int) and not isinstance(key, bool):
+                canonical_key = f"int:{key}"
+            else:
+                _fail(CompatibilityDigestErrorCode.UNSUPPORTED_CONFIG_VALUE)
+            canonical_items.append(
+                (canonical_key, _canonicalize(item, budget, depth + 1))
+            )
         return {
-            key: _canonicalize(value[key], budget, depth + 1)
-            for key in sorted(value)
+            key: item
+            for key, item in sorted(canonical_items, key=lambda pair: pair[0])
         }
     _fail(CompatibilityDigestErrorCode.UNSUPPORTED_CONFIG_VALUE)
 
