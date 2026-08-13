@@ -36,8 +36,34 @@ def _load_text_config() -> Any:
 
 def _mapping(value: object) -> Mapping[str, object]:
     if not isinstance(value, Mapping):
-        pytest.fail("GPT-OSS rope_scaling must be a mapping")
+        pytest.fail("GPT-OSS RoPE parameters must be a mapping")
     return value
+
+
+def _raw_rope_parameters(config: Any) -> Mapping[str, object]:
+    """Read the checkpoint's raw RoPE shape across Transformers releases.
+
+    The released GPT-OSS ``config.json`` uses the legacy top-level
+    ``rope_scaling`` plus ``rope_theta`` fields.  vLLM 0.19.1 normalizes those
+    fields into ``hf_config.rope_parameters`` during its model-config load,
+    but this gate deliberately loads the checkpoint with Transformers only.
+    Newer Transformers may expose the normalized field directly; older or
+    model-specific config classes expose only the raw fields.
+    """
+
+    finalized = getattr(config, "rope_parameters", None)
+    if isinstance(finalized, Mapping):
+        return finalized
+
+    raw = dict(_mapping(getattr(config, "rope_scaling", None)))
+    if "rope_theta" not in raw:
+        theta = getattr(config, "rope_theta", None)
+        if theta is not None:
+            raw["rope_theta"] = theta
+    # The released raw config omits this optional YaRN flag; vLLM's pinned
+    # normalization treats the omitted value as the default ``False``.
+    raw.setdefault("truncate", False)
+    return raw
 
 
 def test_pinned_gpt_oss_hybrid_model_config() -> None:
@@ -60,7 +86,7 @@ def test_pinned_gpt_oss_hybrid_model_config() -> None:
         "full_attention",
     ) * 12
 
-    rope_parameters = _mapping(getattr(config, "rope_parameters", None))
+    rope_parameters = _raw_rope_parameters(config)
     assert rope_parameters.get("rope_type") == "yarn"
     assert rope_parameters.get("rope_theta") == 150_000
     assert rope_parameters.get("factor") == 32
