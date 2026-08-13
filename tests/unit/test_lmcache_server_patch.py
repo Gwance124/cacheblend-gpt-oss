@@ -15,6 +15,16 @@ from cacheblend_gpt_oss.storage.lmcache_server_v0_4_3 import (
 
 
 def test_patch_replaces_only_the_expected_engine_method() -> None:
+    class CBMatchResult:
+        def __init__(self, **values: object) -> None:
+            self.__dict__.update(values)
+
+    class BlendTokenRangeMatcher:
+        __module__ = "lmcache.v1.multiprocess.blend_server_v2"
+
+        def __init__(self, chunk_size: int = 256) -> None:
+            self.chunk_size = chunk_size
+
     class BlendEngineV2:
         __module__ = "lmcache.v1.multiprocess.blend_server_v2"
 
@@ -24,12 +34,18 @@ def test_patch_replaces_only_the_expected_engine_method() -> None:
     module = SimpleNamespace(
         __name__="lmcache.v1.multiprocess.blend_server_v2",
         BlendEngineV2=BlendEngineV2,
+        BlendTokenRangeMatcher=BlendTokenRangeMatcher,
+        CBMatchResult=CBMatchResult,
     )
 
     patched = patch_lmcache_blend_module(module)
 
     assert patched is BlendEngineV2
     assert cast(object, BlendEngineV2._cb_store_gpu_copy) is patched_store_gpu_copy
+    assert (
+        cast(object, BlendTokenRangeMatcher.match_sub_sequence)
+        is patch_module.patched_match_sub_sequence
+    )
 
 
 def test_patch_fails_closed_for_another_engine_module() -> None:
@@ -50,6 +66,112 @@ def test_patch_fails_closed_when_engine_is_missing() -> None:
 
     with pytest.raises(RuntimeError, match="unavailable"):
         patch_lmcache_blend_module(module)
+
+
+def test_patch_fails_closed_when_matcher_is_missing() -> None:
+    class BlendEngineV2:
+        __module__ = "lmcache.v1.multiprocess.blend_server_v2"
+
+    module = SimpleNamespace(
+        __name__="lmcache.v1.multiprocess.blend_server_v2",
+        BlendEngineV2=BlendEngineV2,
+    )
+
+    with pytest.raises(RuntimeError, match="BlendTokenRangeMatcher"):
+        patch_lmcache_blend_module(module)
+
+
+def test_exact_matcher_finds_256_tokens_moved_to_offset_17() -> None:
+    class CBMatchResult:
+        def __init__(
+            self,
+            *,
+            old_st: int,
+            old_ed: int,
+            cur_st: int,
+            cur_ed: int,
+            hash: bytes,
+        ) -> None:
+            self.old_st = old_st
+            self.old_ed = old_ed
+            self.cur_st = cur_st
+            self.cur_ed = cur_ed
+            self.hash = hash
+
+    class BlendTokenRangeMatcher:
+        __module__ = "lmcache.v1.multiprocess.blend_server_v2"
+
+        def __init__(self, chunk_size: int = 256) -> None:
+            self.chunk_size = chunk_size
+
+        def on_new_token_hashes(self, *_: object) -> None:
+            raise AssertionError("the public direct-address matcher must be replaced")
+
+        def match_sub_sequence(self, *_: object) -> list[object]:
+            raise AssertionError("the public direct-address matcher must be replaced")
+
+        def remove_chunks(self, *_: object) -> None:
+            raise AssertionError("the public direct-address matcher must be replaced")
+
+    class BlendEngineV2:
+        __module__ = "lmcache.v1.multiprocess.blend_server_v2"
+
+        def _cb_store_gpu_copy(self) -> None:
+            pass
+
+    module = SimpleNamespace(
+        __name__="lmcache.v1.multiprocess.blend_server_v2",
+        BlendEngineV2=BlendEngineV2,
+        BlendTokenRangeMatcher=BlendTokenRangeMatcher,
+        CBMatchResult=CBMatchResult,
+    )
+    patch_lmcache_blend_module(module)
+    matcher = BlendTokenRangeMatcher(chunk_size=256)
+    document = list(range(1024, 1280))
+    storage_hash = b"h" * 32
+    matcher.on_new_token_hashes(document, [storage_hash])
+
+    results = matcher.match_sub_sequence([*range(17), *document, *range(2000, 2007)])
+
+    assert len(results) == 1
+    assert results[0].old_st == 0
+    assert results[0].old_ed == 256
+    assert results[0].cur_st == 17
+    assert results[0].cur_ed == 273
+    assert results[0].hash == storage_hash
+
+    matcher.remove_chunks([storage_hash])
+    assert matcher.match_sub_sequence([*range(17), *document, *range(2000, 2007)]) == []
+
+
+def test_exact_matcher_rejects_chunk_hash_count_mismatch() -> None:
+    class CBMatchResult:
+        def __init__(self, **values: object) -> None:
+            self.__dict__.update(values)
+
+    class BlendTokenRangeMatcher:
+        __module__ = "lmcache.v1.multiprocess.blend_server_v2"
+
+        def __init__(self, chunk_size: int = 256) -> None:
+            self.chunk_size = chunk_size
+
+    class BlendEngineV2:
+        __module__ = "lmcache.v1.multiprocess.blend_server_v2"
+
+        def _cb_store_gpu_copy(self) -> None:
+            pass
+
+    module = SimpleNamespace(
+        __name__="lmcache.v1.multiprocess.blend_server_v2",
+        BlendEngineV2=BlendEngineV2,
+        BlendTokenRangeMatcher=BlendTokenRangeMatcher,
+        CBMatchResult=CBMatchResult,
+    )
+    patch_lmcache_blend_module(module)
+    matcher = BlendTokenRangeMatcher(chunk_size=256)
+
+    with pytest.raises(RuntimeError, match="chunk/hash count mismatch"):
+        matcher.on_new_token_hashes(list(range(256)), [])
 
 
 def test_store_completion_is_queued_before_client_event(
@@ -155,9 +277,7 @@ def test_store_completion_is_queued_before_client_event(
             return SimpleNamespace(MemoryLayoutDesc=MemoryLayoutDesc)
         if name == "lmcache.v1.gpu_connector.gpu_ops":
             return SimpleNamespace(
-                lmcache_memcpy_async_d2h=lambda buffer, memory: order.append(
-                    "copy"
-                )
+                lmcache_memcpy_async_d2h=lambda buffer, memory: order.append("copy")
             )
         raise AssertionError(name)
 

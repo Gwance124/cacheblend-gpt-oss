@@ -86,8 +86,11 @@ recomputes the complete prompt and must not be described as acceleration.
 Start the pinned LMCache Blend V2 server in a separate shell on `solab-g3`.
 Use the repository wrapper, not the raw 0.4.3 module: the pinned server has a
 documented store-completion race where its CUDA event can become visible before
-the storage-index commit. The wrapper backports only the upstream callback-order
-fix and delegates every other operation to LMCache 0.4.3.
+the storage-index commit. The public direct-address matcher also missed the
+first live offset-17 fixture after a successful store. The wrapper backports the
+callback ordering and substitutes a bounded exact-token candidate index;
+LMCache 0.4.3 still owns object storage, prefetch, retrieval, and server
+lifecycle.
 
 ```bash
 export CUDA_VISIBLE_DEVICES=0

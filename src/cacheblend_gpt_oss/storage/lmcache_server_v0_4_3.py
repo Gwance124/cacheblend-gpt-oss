@@ -1,4 +1,4 @@
-"""Pinned LMCache 0.4.3 Blend V2 server entry point with one safe backport.
+"""Pinned LMCache 0.4.3 Blend V2 server entry point with safe backports.
 
 LMCache 0.4.3 enqueues ``finish_write`` after the interprocess CUDA event in
 ``BlendEngineV2._cb_store_gpu_copy``.  A client can therefore observe the event,
@@ -13,6 +13,15 @@ copying or replacing LMCache: the
 same CUDA stream.  The wrapper imports LMCache lazily, patches only the exact
 0.4.3 class, and delegates all argument parsing, handlers, storage, and server
 lifecycle to the pinned public module.
+
+The public matcher also uses only a truncated direct-address polynomial hash
+for candidate generation.  A live GPT-OSS gate stored an exact 256-token
+document successfully but returned no candidate when that document moved to
+offset 17.  The wrapper therefore replaces only the matcher's in-memory
+candidate index with a bounded exact-token index.  LMCache still owns object
+storage, prefetch, and retrieval; the connector still independently verifies
+the namespace, cache key, SHA-256 fingerprint, and complete token sequence
+before loading any KV.
 
 Source attribution:
 
@@ -30,7 +39,160 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from importlib import import_module
+from threading import RLock
 from typing import Any, cast
+
+_EXACT_INDEX_LIMIT = 1 << 20
+
+
+def patched_matcher_init(
+    self: Any,
+    chunk_size: int = 256,
+) -> None:
+    """Initialize the pinned matcher plus a bounded exact-token index."""
+
+    original = getattr(type(self), "_cacheblend_original_init", None)
+    if not callable(original):
+        raise RuntimeError("LMCache matcher original initializer is unavailable")
+    original(self, chunk_size)
+    self._cacheblend_exact_lock = RLock()
+    self._cacheblend_exact_by_first_token = {}
+    self._cacheblend_exact_by_hash = {}
+
+
+def patched_on_new_token_hashes(
+    self: Any,
+    token_ids: list[int],
+    token_hashes: list[bytes],
+) -> None:
+    """Register complete chunks by exact tokens instead of a table slot."""
+
+    chunk_size = getattr(self, "chunk_size", None)
+    if (
+        isinstance(chunk_size, bool)
+        or not isinstance(chunk_size, int)
+        or chunk_size < 1
+        or any(
+            isinstance(token, bool) or not isinstance(token, int) for token in token_ids
+        )
+        or any(
+            not isinstance(token_hash, bytes) or not token_hash
+            for token_hash in token_hashes
+        )
+    ):
+        raise RuntimeError("LMCache exact matcher received invalid chunk data")
+    complete_chunks = len(token_ids) // chunk_size
+    if len(token_hashes) != complete_chunks:
+        raise RuntimeError("LMCache exact matcher chunk/hash count mismatch")
+
+    additions: list[tuple[bytes, tuple[int, ...], int]] = []
+    for chunk_index, token_hash in enumerate(token_hashes):
+        start = chunk_index * chunk_size
+        chunk = tuple(token_ids[start : start + chunk_size])
+        if len(chunk) != chunk_size:
+            raise RuntimeError("LMCache exact matcher received a partial chunk")
+        additions.append((token_hash, chunk, start))
+
+    lock = getattr(self, "_cacheblend_exact_lock", None)
+    by_first = getattr(self, "_cacheblend_exact_by_first_token", None)
+    by_hash = getattr(self, "_cacheblend_exact_by_hash", None)
+    if lock is None or not isinstance(by_first, dict) or not isinstance(by_hash, dict):
+        raise RuntimeError("LMCache exact matcher is not initialized")
+    with lock:
+        new_hashes = {token_hash for token_hash, _, _ in additions} - set(by_hash)
+        if len(by_hash) + len(new_hashes) > _EXACT_INDEX_LIMIT:
+            raise RuntimeError("LMCache exact matcher capacity exceeded")
+        for token_hash, chunk, start in additions:
+            existing = by_hash.get(token_hash)
+            if existing is not None and existing != (chunk, start):
+                raise RuntimeError("LMCache exact matcher hash identity conflict")
+        for token_hash, chunk, start in additions:
+            by_hash[token_hash] = (chunk, start)
+            bucket = by_first.setdefault(chunk[0], {})
+            bucket[token_hash] = (chunk, start)
+
+
+def patched_match_sub_sequence(
+    self: Any,
+    token_ids: list[int],
+) -> list[Any]:
+    """Return first exact query occurrence for every stored chunk hash."""
+
+    chunk_size = getattr(self, "chunk_size", None)
+    if (
+        isinstance(chunk_size, bool)
+        or not isinstance(chunk_size, int)
+        or chunk_size < 1
+        or any(
+            isinstance(token, bool) or not isinstance(token, int) for token in token_ids
+        )
+    ):
+        raise RuntimeError("LMCache exact matcher received invalid query tokens")
+    if len(token_ids) < chunk_size:
+        return []
+    lock = getattr(self, "_cacheblend_exact_lock", None)
+    by_first = getattr(self, "_cacheblend_exact_by_first_token", None)
+    match_type = getattr(type(self), "_cacheblend_match_type", None)
+    if lock is None or not isinstance(by_first, dict) or not callable(match_type):
+        raise RuntimeError("LMCache exact matcher is not initialized")
+
+    with lock:
+        snapshot = {
+            first_token: tuple(bucket.items())
+            for first_token, bucket in by_first.items()
+        }
+    results: list[Any] = []
+    seen_hashes: set[bytes] = set()
+    for query_start in range(len(token_ids) - chunk_size + 1):
+        bucket = snapshot.get(token_ids[query_start], ())
+        if not bucket:
+            continue
+        query_chunk: tuple[int, ...] | None = None
+        for token_hash, (stored_chunk, source_start) in bucket:
+            if token_hash in seen_hashes:
+                continue
+            if query_chunk is None:
+                query_chunk = tuple(token_ids[query_start : query_start + chunk_size])
+            if query_chunk != stored_chunk:
+                continue
+            results.append(
+                match_type(
+                    old_st=source_start,
+                    old_ed=source_start + chunk_size,
+                    cur_st=query_start,
+                    cur_ed=query_start + chunk_size,
+                    hash=token_hash,
+                )
+            )
+            seen_hashes.add(token_hash)
+    return results
+
+
+def patched_remove_chunks(self: Any, token_hashes: list[bytes]) -> None:
+    """Remove evicted object hashes from the exact-token index."""
+
+    if any(
+        not isinstance(token_hash, bytes) or not token_hash
+        for token_hash in token_hashes
+    ):
+        raise RuntimeError("LMCache exact matcher received invalid eviction hashes")
+    lock = getattr(self, "_cacheblend_exact_lock", None)
+    by_first = getattr(self, "_cacheblend_exact_by_first_token", None)
+    by_hash = getattr(self, "_cacheblend_exact_by_hash", None)
+    if lock is None or not isinstance(by_first, dict) or not isinstance(by_hash, dict):
+        raise RuntimeError("LMCache exact matcher is not initialized")
+    with lock:
+        for token_hash in token_hashes:
+            removed = by_hash.pop(token_hash, None)
+            if removed is None:
+                continue
+            chunk, _ = removed
+            bucket = by_first.get(chunk[0])
+            if bucket is None:
+                continue
+            bucket.pop(token_hash, None)
+            if not bucket:
+                by_first.pop(chunk[0], None)
 
 
 def patched_store_gpu_copy(
@@ -49,9 +211,7 @@ def patched_store_gpu_copy(
     """
 
     torch = import_module("torch")
-    MemoryLayoutDesc = import_module(
-        "lmcache.v1.distributed.api"
-    ).MemoryLayoutDesc
+    MemoryLayoutDesc = import_module("lmcache.v1.distributed.api").MemoryLayoutDesc
     lmcache_memcpy_async_d2h = import_module(
         "lmcache.v1.gpu_connector.gpu_ops"
     ).lmcache_memcpy_async_d2h
@@ -69,12 +229,8 @@ def patched_store_gpu_copy(
 
         num_tokens = self.chunk_size
         cpu_shape = gpu_context.get_kv_buffer_shape(num_tokens)
-        layout_desc = MemoryLayoutDesc(
-            shapes=[cpu_shape], dtypes=[gpu_context.dtype]
-        )
-        reserved_dict = self.storage_manager.reserve_write(
-            obj_keys, layout_desc, "new"
-        )
+        layout_desc = MemoryLayoutDesc(shapes=[cpu_shape], dtypes=[gpu_context.dtype])
+        reserved_dict = self.storage_manager.reserve_write(obj_keys, layout_desc, "new")
 
         for index, obj_key in enumerate(obj_keys):
             if obj_key not in reserved_dict:
@@ -113,17 +269,32 @@ def patch_lmcache_blend_module(module: Any) -> Callable[..., Any]:
         raise RuntimeError("LMCache 0.4.3 BlendEngineV2 is unavailable")
     if getattr(engine_class, "__module__", None) != module.__name__:
         raise RuntimeError("unexpected BlendEngineV2 implementation module")
+    matcher_class = getattr(module, "BlendTokenRangeMatcher", None)
+    match_type = getattr(module, "CBMatchResult", None)
+    if matcher_class is None or not callable(match_type):
+        raise RuntimeError("LMCache 0.4.3 BlendTokenRangeMatcher is unavailable")
+    if getattr(matcher_class, "__module__", None) != module.__name__:
+        raise RuntimeError("unexpected BlendTokenRangeMatcher implementation module")
+    original_init = getattr(matcher_class, "__init__", None)
+    if not callable(original_init):
+        raise RuntimeError("LMCache matcher initializer is unavailable")
+    matcher_class._cacheblend_original_init = original_init
+    matcher_class._cacheblend_match_type = match_type
+    matcher_class.__init__ = patched_matcher_init
+    matcher_class.on_new_token_hashes = patched_on_new_token_hashes
+    matcher_class.match_sub_sequence = patched_match_sub_sequence
+    matcher_class.remove_chunks = patched_remove_chunks
     engine_class._cb_store_gpu_copy = patched_store_gpu_copy
     return cast(Callable[..., Any], engine_class)
 
 
 def main() -> None:
-    """Run the pinned LMCache server with the minimal race backport."""
+    """Run the pinned server with store ordering and exact matching patched."""
 
     module = import_module("lmcache.v1.multiprocess.blend_server_v2")
     patch_lmcache_blend_module(module)
     print(
-        "CacheBlend: LMCache 0.4.3 store-completion ordering backport active",
+        "CacheBlend: LMCache 0.4.3 store-order and exact-matcher backports active",
         flush=True,
     )
     args = module.parse_args()

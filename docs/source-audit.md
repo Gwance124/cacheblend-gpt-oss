@@ -350,16 +350,23 @@ preserve sinks, account for scheduler work, or emit the required metrics.
 Table collisions can overwrite entries, and a returned match is not verified
 against the complete token sequence. The plugin must treat it as candidate
 generation and perform a strong digest plus exact-token check before transfer.
+The first live moved-document gate additionally observed that the public
+matcher returned no candidate for an exact 256-token document moved from
+offset 0 to offset 17, after storage and sidecar publication both completed.
+The version-scoped server wrapper therefore replaces only this in-memory
+candidate table with a bounded, lock-protected exact-token index. LMCache still
+owns object storage, prefetch, and retrieval, and the connector still performs
+its independent namespace, cache-key, SHA-256, and complete-token checks.
 
 The pinned 0.4.3 server also has a live store-completion race in
 `BlendEngineV2._cb_store_gpu_copy`: it records the client-visible CUDA event and
 only then queues `storage_manager.finish_write`. A subsequent lookup can observe
 the fingerprint, fail the storage prefetch, and evict that freshly stored
-fingerprint before the storage index is committed. Upstream later documented and
-documented this ordering correction. The project therefore ships a
-version-scoped server entry point that moves only `finish_write` before
-`event.record`; it does not vendor or replace LMCache. The exact source and
-upstream issue analysis are linked in
+fingerprint before the storage index is committed. Upstream later documented
+this ordering correction. The project therefore ships a version-scoped server
+entry point that moves `finish_write` before `event.record` and installs the
+exact candidate index described above; it does not vendor or replace LMCache.
+The exact source and upstream issue analysis are linked in
 `storage/lmcache_server_v0_4_3.py`.
 
 ### Code that is absent
