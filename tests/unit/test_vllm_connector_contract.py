@@ -1012,10 +1012,13 @@ def test_transfer_mode_loads_verified_moved_candidate_before_full_recompute(
 
     worker_metadata = worker.build_connector_worker_meta()
     assert worker_metadata is not None
+    # vLLM may finish/free the scheduler request before applying the worker
+    # receipt in the same engine step.  The connector must retain state for
+    # that late receipt rather than raising UNKNOWN_REQUEST.
+    scheduler.request_finished_all_groups(request, group_ids)
     scheduler.update_connector_output(
         SimpleNamespace(kv_connector_worker_meta=worker_metadata)
     )
-    scheduler.request_finished_all_groups(request, group_ids)
     assert scheduler_resources.runtime.discards == [request.request_id]
     scheduler.shutdown()
     worker.shutdown()

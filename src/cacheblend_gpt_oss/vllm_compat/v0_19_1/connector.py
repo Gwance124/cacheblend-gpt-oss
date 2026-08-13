@@ -327,6 +327,10 @@ class GptOssCacheBlendConnector(
         self._request_preemptions: dict[str, int] = {}
         self._pending_handoff_ids: list[str] = []
         self._pending_worker_receipts: list[WorkerValidationReceipt] = []
+        # vLLM 0.19.1 may free a completed request before the same
+        # ``KVConnectorOutput`` is applied to the scheduler.  Retain the
+        # scheduler control-plane state until that worker receipt arrives.
+        self._finished_request_ids: set[str] = set()
         self._registered_kv_caches: dict[str, torch.Tensor] = {}
         self._scheduler_lookup_metadata: dict[str, SchedulerLookupMetadata] = {}
         self._scheduler_lookup_observations: dict[
@@ -911,6 +915,9 @@ class GptOssCacheBlendConnector(
             raise RuntimeError("Received incompatible CacheBlend worker metadata.")
         for receipt in worker_metadata.receipts:
             self._control_plane.apply_worker_validation(receipt)
+            if receipt.request_id in self._finished_request_ids:
+                self._control_plane.discard(receipt.request_id)
+                self._finished_request_ids.discard(receipt.request_id)
 
     # vLLM selects this hook for SupportsHMA connectors and supplies one block
     # list per group:
@@ -949,7 +956,13 @@ class GptOssCacheBlendConnector(
             self._scheduler_resources.runtime.discard(request_id)
         self._scheduler_lookup_metadata.pop(request_id, None)
         self._scheduler_lookup_observations.pop(request_id, None)
-        self._control_plane.discard(request_id)
+        # The pinned scheduler can invoke this completion hook before it
+        # applies the worker's validation receipt (see
+        # ``Scheduler._update_from_kv_xfer_finished``).  Discarding here would
+        # make that valid late receipt look like an unknown request and kill
+        # EngineCore.  Keep the state until ``update_connector_output`` applies
+        # the receipt; the TP=1 target has one synchronous worker receipt.
+        self._finished_request_ids.add(request_id)
         self._known_request_ids.discard(request_id)
         self._request_preemptions.pop(request_id, None)
         return False, None
@@ -989,6 +1002,7 @@ class GptOssCacheBlendConnector(
         self._request_preemptions.clear()
         self._pending_handoff_ids.clear()
         self._pending_worker_receipts.clear()
+        self._finished_request_ids.clear()
         self._scheduler_lookup_metadata.clear()
         self._scheduler_lookup_observations.clear()
         self._active_worker_transfer = None
