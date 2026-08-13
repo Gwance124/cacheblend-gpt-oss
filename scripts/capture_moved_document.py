@@ -50,7 +50,6 @@ from cacheblend_gpt_oss.correctness import (  # noqa: E402
     connector_store_counter_delta,
     has_connector_metric_surface,
     has_vllm_prefill_work_metric_surface,
-    has_vllm_prompt_metric_surface,
     has_vllm_prompt_source_metric_surface,
     has_vllm_timing_metric_surface,
     parse_completion_distribution,
@@ -339,18 +338,17 @@ def main() -> int:
     if mode is CorrectnessRunMode.CACHEBLEND_100PCT:
         initial_metrics = client.get_text("/metrics")
         _require_connector_metric_surface(initial_metrics, expected=True)
-        if not has_vllm_prompt_metric_surface(initial_metrics):
-            raise ValueError("pinned vLLM prompt metrics are not present")
         if not has_vllm_timing_metric_surface(initial_metrics):
             raise ValueError("pinned vLLM timing metrics are not present")
         if not has_vllm_prefill_work_metric_surface(initial_metrics):
             raise ValueError("pinned vLLM prefill-work metrics are not present")
-        if not has_vllm_prompt_source_metric_surface(initial_metrics):
-            raise ValueError("pinned vLLM prompt-source metrics are not present")
         initial = parse_connector_counter_snapshot(initial_metrics)
         initial_store = parse_connector_store_counter_snapshot(initial_metrics)
         initial_prompt = parse_vllm_prompt_counter_snapshot(initial_metrics)
-        initial_prompt_source = parse_vllm_prompt_source_snapshot(initial_metrics)
+        initial_prompt_source = parse_vllm_prompt_source_snapshot(
+            initial_metrics,
+            allow_missing=True,
+        )
         initial_prefill_work = parse_vllm_prefill_work_snapshot(initial_metrics)
         initial_timing = parse_vllm_timing_snapshot(initial_metrics)
         source_store_tokens = (
@@ -493,16 +491,15 @@ def main() -> int:
     else:
         initial_metrics = client.get_text("/metrics")
         _require_connector_metric_surface(initial_metrics, expected=False)
-        if not has_vllm_prompt_metric_surface(initial_metrics):
-            raise ValueError("pinned vLLM prompt metrics are not present")
         if not has_vllm_timing_metric_surface(initial_metrics):
             raise ValueError("pinned vLLM timing metrics are not present")
         if not has_vllm_prefill_work_metric_surface(initial_metrics):
             raise ValueError("pinned vLLM prefill-work metrics are not present")
-        if not has_vllm_prompt_source_metric_surface(initial_metrics):
-            raise ValueError("pinned vLLM prompt-source metrics are not present")
         initial_prompt = parse_vllm_prompt_counter_snapshot(initial_metrics)
-        initial_prompt_source = parse_vllm_prompt_source_snapshot(initial_metrics)
+        initial_prompt_source = parse_vllm_prompt_source_snapshot(
+            initial_metrics,
+            allow_missing=True,
+        )
         initial_prefill_work = parse_vllm_prefill_work_snapshot(initial_metrics)
         initial_timing = parse_vllm_timing_snapshot(initial_metrics)
         target_response = client.post_json(

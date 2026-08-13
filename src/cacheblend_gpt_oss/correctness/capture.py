@@ -358,8 +358,18 @@ def has_vllm_prompt_source_metric_surface(text: str) -> bool:
     return found == set(_VLLM_PROMPT_SOURCES)
 
 
-def parse_vllm_prompt_source_snapshot(text: str) -> dict[str, int]:
-    """Parse the three native prompt-token source counters."""
+def parse_vllm_prompt_source_snapshot(
+    text: str,
+    *,
+    allow_missing: bool = False,
+) -> dict[str, int]:
+    """Parse the three native prompt-token source counters.
+
+    vLLM 0.19.1 may not emit this counter family until the first request has
+    completed.  ``allow_missing`` is therefore only for a cold initial
+    snapshot; a partial family remains an error and all post-request callers
+    keep the strict default.
+    """
 
     if not isinstance(text, str):
         raise TypeError("Prometheus snapshot must be text")
@@ -388,6 +398,8 @@ def parse_vllm_prompt_source_snapshot(text: str) -> dict[str, int]:
         if not math.isfinite(value) or value < 0.0 or not value.is_integer():
             raise ValueError("invalid vLLM prompt-source metric value")
         values[match.group(1)] += value
+    if not found and allow_missing:
+        return {source: 0 for source in _VLLM_PROMPT_SOURCES}
     if found != set(_VLLM_PROMPT_SOURCES):
         raise ValueError("vLLM prompt-source metric family is incomplete")
     return {source: int(values[source]) for source in _VLLM_PROMPT_SOURCES}

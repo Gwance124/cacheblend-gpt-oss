@@ -35,7 +35,6 @@ from cacheblend_gpt_oss.correctness import (  # noqa: E402
     connector_counter_delta,
     has_connector_metric_surface,
     has_vllm_prefill_work_metric_surface,
-    has_vllm_prompt_metric_surface,
     has_vllm_prompt_source_metric_surface,
     has_vllm_timing_metric_surface,
     parse_connector_counter_snapshot,
@@ -265,15 +264,14 @@ def main() -> int:
         raise ValueError("CacheBlend connector metrics are not present")
     if not has_vllm_timing_metric_surface(initial_metrics):
         raise ValueError("pinned vLLM timing metrics are not present")
-    if not has_vllm_prompt_metric_surface(initial_metrics):
-        raise ValueError("pinned vLLM prompt metrics are not present")
     if not has_vllm_prefill_work_metric_surface(initial_metrics):
         raise ValueError("pinned vLLM prefill-work metrics are not present")
-    if not has_vllm_prompt_source_metric_surface(initial_metrics):
-        raise ValueError("pinned vLLM prompt-source metrics are not present")
     before = parse_connector_counter_snapshot(initial_metrics)
     before_prompt = parse_vllm_prompt_counter_snapshot(initial_metrics)
-    before_prompt_source = parse_vllm_prompt_source_snapshot(initial_metrics)
+    before_prompt_source = parse_vllm_prompt_source_snapshot(
+        initial_metrics,
+        allow_missing=True,
+    )
     before_prefill_work = parse_vllm_prefill_work_snapshot(initial_metrics)
     before_timing = parse_vllm_timing_snapshot(initial_metrics)
 

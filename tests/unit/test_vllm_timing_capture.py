@@ -171,6 +171,21 @@ def test_prompt_source_counters_require_zero_external_credit() -> None:
     }
 
 
+def test_prompt_source_counters_allow_a_cold_initial_snapshot_only() -> None:
+    assert parse_vllm_prompt_source_snapshot(
+        "", allow_missing=True
+    ) == {
+        "local_compute": 0,
+        "local_cache_hit": 0,
+        "external_kv_transfer": 0,
+    }
+    with pytest.raises(ValueError, match="family is incomplete"):
+        parse_vllm_prompt_source_snapshot(
+            'vllm:prompt_tokens_by_source{source="local_compute"} 1\n',
+            allow_missing=True,
+        )
+
+
 def test_prompt_source_counters_sum_engines_and_label_order() -> None:
     text = _prompt_source_text(2, 1, 0) + (
         'vllm:prompt_tokens_by_source{source="local_compute",engine="1"} 3\n'
