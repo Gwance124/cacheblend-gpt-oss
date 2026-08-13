@@ -45,9 +45,16 @@ _STORE_COUNTER_METRICS = {
     "store_fallbacks": "vllm:cacheblend_store_fallbacks_total",
 }
 _VLLM_PROMPT_COUNTER_METRICS = {
-    "prompt_tokens": "vllm:prompt_tokens",
+    # Counter constructors in the pinned logger use ``vllm:prompt_tokens``;
+    # prometheus_client emits the concrete sample as ``*_total``.
+    "prompt_tokens": "vllm:prompt_tokens_total",
 }
-_VLLM_PROMPT_SOURCE_METRIC = "vllm:prompt_tokens_by_source"
+_VLLM_PROMPT_COUNTER_METRIC_ALIASES = frozenset(
+    {"vllm:prompt_tokens", "vllm:prompt_tokens_total"}
+)
+_VLLM_PROMPT_SOURCE_METRIC_ALIASES = frozenset(
+    {"vllm:prompt_tokens_by_source", "vllm:prompt_tokens_by_source_total"}
+)
 _VLLM_PROMPT_SOURCES = (
     "local_compute",
     "local_cache_hit",
@@ -303,13 +310,35 @@ def has_vllm_prompt_metric_surface(text: str) -> bool:
         if not parts or parts[0].startswith("#"):
             continue
         names.add(parts[0].split("{", 1)[0])
-    return _VLLM_PROMPT_COUNTER_METRICS["prompt_tokens"] in names
+    return bool(names & _VLLM_PROMPT_COUNTER_METRIC_ALIASES)
 
 
 def parse_vllm_prompt_counter_snapshot(text: str) -> dict[str, int]:
     """Parse vLLM's aggregate prompt-token counter without retaining labels."""
 
-    return _parse_counter_snapshot(text, _VLLM_PROMPT_COUNTER_METRICS)
+    if not isinstance(text, str):
+        raise TypeError("Prometheus snapshot must be text")
+    total = 0.0
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        parts = stripped.split()
+        if len(parts) < 2:
+            raise ValueError("invalid Prometheus sample")
+        sample_name = parts[0].split("{", 1)[0]
+        if sample_name not in _VLLM_PROMPT_COUNTER_METRIC_ALIASES:
+            continue
+        try:
+            value = float(parts[1])
+        except ValueError as exc:
+            raise ValueError("invalid vLLM prompt counter value") from exc
+        if not math.isfinite(value) or value < 0:
+            raise ValueError("invalid vLLM prompt counter value")
+        total += value
+    if not total.is_integer():
+        raise ValueError("vLLM prompt counter is not integer-valued")
+    return {"prompt_tokens": int(total)}
 
 
 def vllm_prompt_counter_delta(
@@ -347,10 +376,13 @@ def has_vllm_prompt_source_metric_surface(text: str) -> bool:
         if not stripped or stripped.startswith("#"):
             continue
         parts = stripped.split()
-        if len(parts) < 2 or not parts[0].startswith(_VLLM_PROMPT_SOURCE_METRIC):
+        if len(parts) < 2:
             continue
         sample_name, _, labels = parts[0].partition("{")
-        if sample_name != _VLLM_PROMPT_SOURCE_METRIC or not labels.endswith("}"):
+        if (
+            sample_name not in _VLLM_PROMPT_SOURCE_METRIC_ALIASES
+            or not labels.endswith("}")
+        ):
             continue
         match = _SOURCE_LABEL.search(labels[:-1])
         if match is not None:
@@ -383,7 +415,7 @@ def parse_vllm_prompt_source_snapshot(
         if len(parts) < 2:
             raise ValueError("invalid Prometheus sample")
         sample_name, _, labels = parts[0].partition("{")
-        if sample_name != _VLLM_PROMPT_SOURCE_METRIC:
+        if sample_name not in _VLLM_PROMPT_SOURCE_METRIC_ALIASES:
             continue
         if not labels.endswith("}"):
             raise ValueError("invalid vLLM prompt-source labels")

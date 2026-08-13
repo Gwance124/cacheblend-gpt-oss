@@ -102,6 +102,12 @@ def test_native_prompt_counter_is_aggregated_and_delta_checked() -> None:
     )
     assert vllm_prompt_counter_delta(before, after) == 280
 
+    emitted = parse_vllm_prompt_counter_snapshot(
+        'vllm:prompt_tokens_total{engine="0"} 291\n'
+        'vllm:prompt_tokens_total{engine="1"} 4\n'
+    )
+    assert emitted == {"prompt_tokens": 295}
+
 
 def test_native_prompt_counter_rejects_missing_or_backwards_intervals() -> None:
     assert not has_vllm_prompt_metric_surface("vllm:num_requests_running 0\n")
@@ -195,6 +201,16 @@ def test_prompt_source_counters_sum_engines_and_label_order() -> None:
     assert parse_vllm_prompt_source_snapshot(text) == {
         "local_compute": 5,
         "local_cache_hit": 5,
+        "external_kv_transfer": 5,
+    }
+
+    emitted = _prompt_source_text(3, 4, 5).replace(
+        "vllm:prompt_tokens_by_source{",
+        "vllm:prompt_tokens_by_source_total{",
+    )
+    assert parse_vllm_prompt_source_snapshot(emitted) == {
+        "local_compute": 3,
+        "local_cache_hit": 4,
         "external_kv_transfer": 5,
     }
 
