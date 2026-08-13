@@ -263,13 +263,18 @@ def _wait_for_prompt_counter(
     while True:
         metrics = client.get_text("/metrics")
         snapshot = parse_vllm_prompt_counter_snapshot(metrics)
+        prompt_source_snapshot: dict[str, int] | None = None
         native_prompt_source_ready = True
         if minimum_prompt_source_local_compute is not None:
-            native_prompt_source_ready = (
-                has_vllm_prompt_source_metric_surface(metrics)
-                and parse_vllm_prompt_source_snapshot(metrics)["local_compute"]
-                >= minimum_prompt_source_local_compute
-            )
+            if has_vllm_prompt_source_metric_surface(metrics):
+                prompt_source_snapshot = parse_vllm_prompt_source_snapshot(metrics)
+                native_prompt_source_ready = (
+                    prompt_source_snapshot["local_compute"]
+                    >= minimum_prompt_source_local_compute
+                )
+            else:
+                native_prompt_source_ready = False
+        timing: VllmTimingSnapshot | None = None
         native_timing_ready = True
         if minimum_timing_count is not None:
             timing = parse_vllm_timing_snapshot(metrics)
@@ -283,6 +288,7 @@ def _wait_for_prompt_counter(
                     timing.decode_latency_seconds,
                 )
             )
+        prefill_work: VllmPrefillWorkSnapshot | None = None
         native_prefill_ready = True
         if minimum_prefill_observations is not None:
             prefill_work = parse_vllm_prefill_work_snapshot(metrics)
@@ -297,7 +303,28 @@ def _wait_for_prompt_counter(
         ):
             return snapshot, metrics
         if time.monotonic() >= deadline:
-            raise TimeoutError("vLLM prompt-token metrics did not reach the expected")
+            source_value = (
+                "missing"
+                if prompt_source_snapshot is None
+                else str(prompt_source_snapshot["local_compute"])
+            )
+            timing_count = "not-required" if timing is None else str(
+                timing.ttft_seconds.count
+            )
+            prefill_count = "not-required" if prefill_work is None else str(
+                prefill_work.observations
+            )
+            raise TimeoutError(
+                "vLLM prompt-token metrics did not reach the expected milestone: "
+                f"prompt_tokens={snapshot['prompt_tokens']}/{minimum}, "
+                f"prompt_source_local_compute={source_value}/"
+                f"{minimum_prompt_source_local_compute}, "
+                f"prompt_source_ready={native_prompt_source_ready}, "
+                f"ttft_observations={timing_count}/"
+                f"{minimum_timing_count}, "
+                f"prefill_observations={prefill_count}/"
+                f"{minimum_prefill_observations}"
+            )
         time.sleep(0.25)
 
 
