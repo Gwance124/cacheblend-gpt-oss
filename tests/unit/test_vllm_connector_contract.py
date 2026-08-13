@@ -463,7 +463,10 @@ def test_scheduler_records_all_groups_while_recomputing_every_token(
         RuntimeError, match="not compatible with the request allocation"
     ):
         connector.request_finished_all_groups(request, ([99], [11]))
-    assert connector.request_finished_all_groups(request, ([3], [11])) == (
+    # The pinned sliding-window manager replaces released entries with its
+    # permanent null block (ID 0) before this hook; the ID-only hook cannot
+    # expose the original ``is_null`` bit.
+    assert connector.request_finished_all_groups(request, ([0, 3], [0, 11])) == (
         False,
         None,
     )

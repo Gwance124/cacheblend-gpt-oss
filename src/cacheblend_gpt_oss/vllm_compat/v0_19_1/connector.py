@@ -124,6 +124,14 @@ if TYPE_CHECKING:
 
 _SUPPORTED_VLLM_VERSION = "0.19.1"
 _METADATA_SCHEMA_VERSION = METADATA_SCHEMA_VERSION
+# vLLM's pinned BlockPool reserves block 0 as the permanent null block.  The
+# ``request_finished_all_groups`` hook receives only integer IDs, so it cannot
+# preserve the ``KVCacheBlock.is_null`` bit after sliding-window blocks have
+# been replaced.  Keep this value version-scoped and strip it only from the
+# completion observation; block 0 is rejected from allocation snapshots by
+# ``adapt_kv_cache_blocks``.
+# https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/v1/core/block_pool.py#L95-L108
+_VLLM_NULL_BLOCK_ID = 0
 
 
 def _is_ordered_subsequence(
@@ -147,8 +155,18 @@ def _is_ordered_subsequence(
             for block_id in current
         ):
             return False
+        # Sliding-window ``remove_skipped_blocks`` replaces released entries
+        # with the permanent null block.  ``KVCacheBlocks.get_block_ids``
+        # discards ``is_null``, so the pinned block ID is the only safe marker
+        # available at this hook.  Real allocation snapshots cannot contain
+        # this ID because the adapter rejects null blocks earlier.
+        current_real_blocks = tuple(
+            block_id
+            for block_id in current
+            if block_id != _VLLM_NULL_BLOCK_ID
+        )
         cursor = 0
-        for block_id in current:
+        for block_id in current_real_blocks:
             while cursor < len(original) and original[cursor] != block_id:
                 cursor += 1
             if cursor == len(original):
