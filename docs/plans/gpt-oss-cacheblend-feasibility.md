@@ -7,12 +7,13 @@ out-of-tree connector and a **no-patch** decision for the 100%-recomputation
 transfer proof. The connector, scheduler lookup, LMCache transport, persistent
 sidecar, worker staging bridge, YaRN corrector, and full/sliding scatter-gather
 path are now implemented and CPU-tested. Identifier-free aggregate connector
-metrics are wired through vLLM 0.19.1's public stats/Prometheus hooks. A
-dependency-free validator and manual runbook now bind those metrics to one
-private, append-only BrowseComp-Plus trajectory from the read-only
-`rag-system` repository. The next gate is manual CUDA and connector/model
-execution on `solab-g3`, followed by that one-query orchestration run on
-`solab-p7`; no such pass is claimed yet.
+metrics are wired through vLLM 0.19.1's public stats/Prometheus hooks. User-
+supplied `solab-g3` evidence now proves the all-layer transfer/overwrite
+instrumentation, but the formal numerical M3 gate remains unpassed: the old
+two-baseline verdict failed, and the later five-control comparison was defined
+after the candidate was observed. The next gate is a policy-first M3 rerun
+with five source-warmed 1024-token controls frozen before a fresh candidate;
+no BrowseComp-Plus pass is claimed.
 
 The connector stats schema now includes separate position-correction and
 selective-recomputation latency histograms. Position-correction latency is
@@ -34,15 +35,15 @@ be tested before deciding whether a pinned vLLM patch is necessary.
 | Milestone | State | Primary result | Patch policy |
 |---|---|---|---|
 | M0. Pinned audit and scaffold | Complete | Exact integration boundary and CPU/GPU test scaffold | No patch |
-| M1. Connector-load smoke test | Implemented; GPU pending | Scheduler and worker load an external connector | No patch |
+| M1. Connector-load smoke test | Implemented; user-supplied GPU evidence | Scheduler and worker load an external connector | No patch |
 | M2. Segmentation and verified lookup | CPU complete | One document is found after moving positions with exact verification | No patch |
-| M3. 100% recomputation transfer proof | Implemented; GPU/logit gate pending | Candidate KV is transferred, verified, then fully overwritten | No patch |
+| M3. 100% recomputation transfer proof | Transfer evidence passed; formal numerical gate pending | Candidate KV is transferred, verified, then fully overwritten; full-prefill equivalence is not formally passed | No patch |
 | M4. GPT-OSS YaRN correction | Implemented; CUDA gate pending | Shifted cached K matches direct target-position K | No patch |
 | M5. Hybrid groups and sinks | CPU layout/data-plane complete; model gate pending | Full/sliding layers map correctly and sink behavior is unchanged | No patch |
 | M6. Out-of-tree selective-data-plane spike | Pinned boundary audited; implementation waits for M3--M5 GPU evidence | Registered model/backend must skip selected rows while preserving runner output shape | Decide at gate |
 | M7. Reduced recomputation correctness | CPU policy contract; GPU pending | Deterministic check-layer row plans; error/work curves still require model runs | No optimization yet |
 | M8. Responses/Harmony/multi-turn validation | CPU harness and offline evidence validator complete; GPU/API run pending | Transparent validated endpoint with native source-credit proof | Patch only for proven API blocker |
-| M8.5. BrowseComp-Plus append-only transfer smoke | Offline evidence validator and cross-host runbook implemented; g3/p7 run pending | One private real-agent trajectory with positive verified KV load and 100% recomputation | No `rag-system` changes |
+| M8.5. BrowseComp-Plus append-only transfer smoke | Blocked pending formal M3--M5 and M8 gates | One private real-agent trajectory with positive verified KV load and 100% recomputation | No `rag-system` changes |
 | M9. Controlled benchmark | CPU evidence contract; GPU pending | Full-prefill and prefix-cache comparisons with complete metrics and confidence intervals | Optimize only after correctness |
 
 ## M0: pinned audit and repository scaffold
@@ -181,15 +182,16 @@ Stop criteria:
 ## M3: 100% recomputation transfer proof
 
 Implementation status: the complete control/data path is wired into the
-connector. GPU evidence that transfer occurred, was overwritten, and preserved
-deterministic logits is still required.
+connector. User-supplied GPU evidence shows that transfer occurred across all
+24 GPT-OSS layers/groups, was overwritten by ordinary prefill, and was bound to
+the CacheBlend artifact. The numerical equivalence gate is still unpassed.
 
 The first live artifact harness and exact manual commands are now implemented
 in `docs/runbooks/solab-g3-moved-document-correctness.md`. Because pinned
 vLLM's Harmony Responses service rejects GPT-OSS logprobs, this gate uses raw
 token IDs through `/v1/completions` and compares all 201,088 normalized output
 logprobs. `/v1/responses` Harmony/tool/multi-turn behavior remains a separate
-M8 contract gate. No live result has yet been supplied from `solab-g3`.
+M8 contract gate.
 
 Deliverables:
 
@@ -212,8 +214,24 @@ this evidence boundary: every layer carries K/V digests for
 destination-before, loaded source, and fresh-prefill values, with exact
 source/loaded and target/prefill agreement. Schema v2 separately records the
 successful load-copy and ordinary-attention save operations, because a real
-write may legitimately reproduce identical bytes. A `solab-g3` run is still
-required before claiming the probe passed on GPU.
+write may legitimately reproduce identical bytes. The supplied report passed
+with 12 sliding-window layers and 12 full-attention layers, 256 loaded tokens,
+280 recomputed tokens, zero avoided prefill tokens, all layers loaded and
+overwritten, and artifact binding passed.
+
+The same supplied run also records the numerical-policy boundary. The old
+two-baseline verdict failed with CacheBlend/reference
+`max_abs_error=0.07559013366699219` and
+`mean_abs_error=0.009438995041906416`, against frozen limits
+`0.07054328918457031` and `0.006880644322352224`; sampled and top-token
+agreement were nevertheless true. A later same-configuration comparison used
+`--max-num-batched-tokens 1024` and source-warm-up-then-target ordering for
+five ordinary controls. Its diagnostic envelope was
+`Umax=0.07423019409179688` and `Umean=0.01318507041618522`. The already
+observed candidate had `Qmax=0.05914115905761719` and
+`Qmean=0.01111537456170986`, with sampled/top agreement. Because that
+five-control policy was defined after candidate observation, the candidate is
+diagnostic-only and does not establish formal M3.
 
 The dependency-free `TransferEvidenceBuilder` now supplies the worker probe's
 assembly seam. It accepts only the next canonical layer, rejects duplicates or
@@ -239,16 +257,23 @@ GPU correctness sequence:
 6. Compare prompt-B per-layer hidden states or final logits with an ordinary
    full-prefill prompt-B run under identical deterministic settings.
 
-Go criteria:
+Formal go criteria:
 
 - Transfer coverage and checksums pass for every tested layer/group.
 - No loaded KV affects attention output in this phase.
-- CacheBlend-versus-full error is no worse than the frozen full-versus-full
-  numerical envelope, and the selected next token agrees.
+- Five ordinary full-prefill controls use the same 1024-token serving
+  configuration and source-warm-up-then-target protocol; their artifact
+  manifest and `Umax`/`Umean` envelope are frozen before a fresh candidate.
+- The fresh candidate is captured only after that freeze, with no post-hoc
+  loosening, and satisfies `Qmax <= Umax` and `Qmean <= Umean` with sampled and
+  top-token agreement.
 - Metrics show requested/found/loaded tokens, all prompt rows recomputed, and
   exactly zero effective saved-prefill fraction.
 - A miss and every injected validation/transfer failure either visibly fail or
   execute ordinary full prefill according to the configured policy.
+
+The current candidate is diagnostic-only, so these formal M3 criteria are not
+yet satisfied even though the independent transfer report passed.
 
 Stop criteria:
 
@@ -579,6 +604,12 @@ described in the architecture. The private question, retrieval results,
 reasoning, and answer stay on `solab-p7`; only the identifier-free report may
 leave the private artifact directory.
 
+This gate remains blocked until formal M3 numerical equivalence, M4 YaRN/RoPE,
+M5 hybrid-group/sink, and M8 Responses-contract evidence are complete. The
+supplied all-layer transfer report is necessary evidence but is not a formal
+M3 pass, and the five-control candidate comparison is diagnostic-only because
+its policy was defined after observation.
+
 ## M9: benchmark design
 
 The dependency-free `cacheblend_gpt_oss.benchmark` package now defines the
@@ -662,12 +693,17 @@ Go criteria:
 | Sink behavior | Sink is not in cached record | Stock sink result unchanged | Custom backend matches sink semantics |
 | Harmony tool/multi-turn | Transparent request | Serialized response contract unchanged | Same contract plus measured approximation |
 
-Numerical thresholds are frozen before judging CacheBlend. First measure
-full-prefill versus repeated full-prefill under identical deterministic BF16
-settings. At 100%, CacheBlend error must remain inside that recorded envelope
-for each compared tensor, with identical top-token selection. Lower ratios use a
-written error budget derived from data; no universal tolerance is invented
-after seeing a failing result.
+Numerical thresholds are frozen before judging CacheBlend. For the moved-
+document M3 gate, capture five ordinary full-prefill controls under identical
+deterministic BF16 settings with `--max-num-batched-tokens 1024`; each control
+must warm the 256-token source prompt and then capture the 280-token target.
+Freeze the five artifact digests and the pairwise envelope
+`Umax=max(max_abs(B_i,B_j))` and
+`Umean=max(mean_abs(B_i,B_j))` before capturing a fresh CacheBlend candidate.
+At 100%, require `Qmax<=Umax`, `Qmean<=Umean`, and identical sampled/top-token
+selection. Do not widen or otherwise loosen the envelope after observing the
+candidate. Lower ratios use a written error budget derived from data; no
+universal tolerance is invented after seeing a failing result.
 
 ## Risk register
 

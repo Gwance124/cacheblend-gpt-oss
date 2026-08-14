@@ -38,17 +38,13 @@ Use a clean `main` checkout. Install exactly as described in
 `solab-g3-connector-smoke.md`, then record these immutable values:
 
 ```bash
-cd /path/to/cacheblend-gpt-oss
+cd /mnt/nvme3n1/mlee/cacheblend-gpt-oss
 
-CACHEBLEND_MODEL_PATH=/path/to/pinned/gpt-oss-20b
-CACHEBLEND_MODEL_REVISION=replace-with-model-commit-or-manifest-sha
-CACHEBLEND_TOKENIZER_REVISION=replace-with-tokenizer-commit-or-manifest-sha
-CACHEBLEND_PLUGIN_COMMIT=$(git rev-parse HEAD)
-CACHEBLEND_RUN_DIR=/absolute/path/to/new/cacheblend-m3-run
-
-export CACHEBLEND_MODEL_PATH CACHEBLEND_MODEL_REVISION
-export CACHEBLEND_TOKENIZER_REVISION CACHEBLEND_PLUGIN_COMMIT
-export CACHEBLEND_RUN_DIR
+export CACHEBLEND_MODEL_PATH=/mnt/nvme3n1/labuser/.cache/huggingface/hub/models--openai--gpt-oss-20b/snapshots/6cee5e81ee83917806bbde320786a8fb61efebee
+export CACHEBLEND_MODEL_REVISION=6cee5e81ee83917806bbde320786a8fb61efebee
+export CACHEBLEND_TOKENIZER_REVISION=6cee5e81ee83917806bbde320786a8fb61efebee
+export CACHEBLEND_PLUGIN_COMMIT="$(git rev-parse HEAD)"
+export CACHEBLEND_RUN_DIR="/mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/solab-g3-m3-${CACHEBLEND_PLUGIN_COMMIT:0:7}-formal1-20260813"
 
 test "$(git branch --show-current)" = main
 test -z "$(git status --porcelain)"
@@ -81,7 +77,7 @@ export VLLM_USE_V2_MODEL_RUNNER=0
   --max-model-len 131072 \
   --gpu-memory-utilization 0.90 \
   --max-num-seqs 1 \
-  --max-num-batched-tokens 512 \
+  --max-num-batched-tokens 1024 \
   --long-prefill-token-threshold 0 \
   --no-async-scheduling \
   --enforce-eager \
@@ -95,20 +91,21 @@ export VLLM_USE_V2_MODEL_RUNNER=0
   2>&1 | tee "$CACHEBLEND_RUN_DIR/compatibility-probe.log"
 ```
 
-A successful probe intentionally terminates startup after printing two
-lowercase SHA-256 values. Copy them exactly:
+A successful probe intentionally terminates startup after printing the two
+lowercase SHA-256 values below. Export the pinned values and stop if the probe
+prints anything different:
 
 ```bash
-CACHEBLEND_MODEL_CONFIG_DIGEST=replace-with-probe-model-config-digest
-CACHEBLEND_KV_CONFIG_DIGEST=replace-with-probe-kv-cache-config-digest
-export CACHEBLEND_MODEL_CONFIG_DIGEST CACHEBLEND_KV_CONFIG_DIGEST
+export CACHEBLEND_MODEL_CONFIG_DIGEST=1c69c7868c1206ea76c372df01e5baa2abcadcd2ca5b9f93b97d94fa6070aae0
+export CACHEBLEND_KV_CONFIG_DIGEST=131eb7ec025bc9a4fa1dabd220bb41b75c7d8f921e537fd8be505e91c6850742
 ```
 
 Any other startup failure is not a successful probe.
 
 ## 3. Capture and freeze ordinary full-prefill behavior
 
-Start a fresh server with no connector and otherwise identical flags:
+Start a fresh server with no connector and otherwise identical flags. The
+baseline uses `--max-num-batched-tokens 1024`, matching the CacheBlend server:
 
 ```bash
 export VLLM_USE_V2_MODEL_RUNNER=0
@@ -120,7 +117,7 @@ export VLLM_USE_V2_MODEL_RUNNER=0
   --max-model-len 131072 \
   --gpu-memory-utilization 0.90 \
   --max-num-seqs 1 \
-  --max-num-batched-tokens 512 \
+  --max-num-batched-tokens 1024 \
   --long-prefill-token-threshold 0 \
   --no-async-scheduling \
   --enforce-eager \
@@ -133,42 +130,72 @@ export VLLM_USE_V2_MODEL_RUNNER=0
   2>&1 | tee "$CACHEBLEND_RUN_DIR/full-prefill-server.log"
 ```
 
-From a second shell, capture the target prompt twice:
+From a second shell, capture five ordinary full-prefill controls. Every control
+uses the same source-warm-up-then-target protocol: the harness first issues the
+256-token source prompt, waits for the native prompt/prefill/timing metrics, and
+then captures the 280-token target prompt. This warm-up is ordinary full
+prefill; it does not load external KV. The `--warm-source-before-target` flag
+enforces this ordering:
 
 ```bash
-cd /path/to/cacheblend-gpt-oss
+cd /mnt/nvme3n1/mlee/cacheblend-gpt-oss
 
-.venv/bin/python scripts/capture_moved_document.py \
-  --mode full_prefill \
-  --model-revision "$CACHEBLEND_MODEL_REVISION" \
-  --tokenizer-revision "$CACHEBLEND_TOKENIZER_REVISION" \
-  --plugin-commit "$CACHEBLEND_PLUGIN_COMMIT" \
-  --model-config-digest "$CACHEBLEND_MODEL_CONFIG_DIGEST" \
-  --kv-cache-config-digest "$CACHEBLEND_KV_CONFIG_DIGEST" \
-  --output "$CACHEBLEND_RUN_DIR/full-prefill-reference.json"
+export CACHEBLEND_MODEL_PATH=/mnt/nvme3n1/labuser/.cache/huggingface/hub/models--openai--gpt-oss-20b/snapshots/6cee5e81ee83917806bbde320786a8fb61efebee
+export CACHEBLEND_MODEL_REVISION=6cee5e81ee83917806bbde320786a8fb61efebee
+export CACHEBLEND_TOKENIZER_REVISION=6cee5e81ee83917806bbde320786a8fb61efebee
+export CACHEBLEND_PLUGIN_COMMIT="$(git rev-parse HEAD)"
+export CACHEBLEND_MODEL_CONFIG_DIGEST=1c69c7868c1206ea76c372df01e5baa2abcadcd2ca5b9f93b97d94fa6070aae0
+export CACHEBLEND_KV_CONFIG_DIGEST=131eb7ec025bc9a4fa1dabd220bb41b75c7d8f921e537fd8be505e91c6850742
+export CACHEBLEND_RUN_DIR="/mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/solab-g3-m3-${CACHEBLEND_PLUGIN_COMMIT:0:7}-formal1-20260813"
 
-.venv/bin/python scripts/capture_moved_document.py \
-  --mode full_prefill \
-  --model-revision "$CACHEBLEND_MODEL_REVISION" \
-  --tokenizer-revision "$CACHEBLEND_TOKENIZER_REVISION" \
-  --plugin-commit "$CACHEBLEND_PLUGIN_COMMIT" \
-  --model-config-digest "$CACHEBLEND_MODEL_CONFIG_DIGEST" \
-  --kv-cache-config-digest "$CACHEBLEND_KV_CONFIG_DIGEST" \
-  --output "$CACHEBLEND_RUN_DIR/full-prefill-repeat.json"
-
-.venv/bin/python scripts/freeze_correctness_tolerance.py \
-  --reference "$CACHEBLEND_RUN_DIR/full-prefill-reference.json" \
-  --repeat "$CACHEBLEND_RUN_DIR/full-prefill-repeat.json" \
-  --max-abs-floor 0 \
-  --mean-abs-floor 0 \
-  --multiplier 1 \
-  --output "$CACHEBLEND_RUN_DIR/frozen-bf16-tolerance.json" \
-  | tee "$CACHEBLEND_RUN_DIR/frozen-bf16-tolerance.txt"
+for CONTROL in 1 2 3 4 5; do
+  .venv/bin/python scripts/capture_moved_document.py \
+    --mode full_prefill \
+    --warm-source-before-target \
+    --model-revision "$CACHEBLEND_MODEL_REVISION" \
+    --tokenizer-revision "$CACHEBLEND_TOKENIZER_REVISION" \
+    --plugin-commit "$CACHEBLEND_PLUGIN_COMMIT" \
+    --model-config-digest "$CACHEBLEND_MODEL_CONFIG_DIGEST" \
+    --kv-cache-config-digest "$CACHEBLEND_KV_CONFIG_DIGEST" \
+    --output "$CACHEBLEND_RUN_DIR/full-prefill-1024-control-${CONTROL}.json" \
+    | tee "$CACHEBLEND_RUN_DIR/full-prefill-1024-control-${CONTROL}.txt"
+done
 ```
 
-This BF16 policy allows exactly the observed repeated-full-prefill maximum and
-mean error, with zero added floor and no multiplier. Freeze the file before
-starting CacheBlend. Do not relax it after seeing the CacheBlend result.
+Before starting CacheBlend, freeze an immutable manifest containing all five
+control artifact digests, their identical runtime/prompt identity, and the
+empirical full-vocabulary envelope:
+
+```text
+Umax  = max(max_abs_error(B_i, B_j))  for every i < j
+Umean = max(mean_abs_error(B_i, B_j)) for every i < j
+```
+
+Freeze the manifest with the pre-registered BF16 baseline-stability ceilings
+`max_abs <= 0.08` and `mean_abs <= 0.014`. These ceilings decide whether the
+ordinary baseline itself is stable enough to judge a candidate; they do not
+replace the tighter empirical `Umax` and `Umean` candidate limits:
+
+```bash
+.venv/bin/python scripts/freeze_correctness_ensemble.py \
+  --baseline "$CACHEBLEND_RUN_DIR/full-prefill-1024-control-1.json" \
+  --baseline "$CACHEBLEND_RUN_DIR/full-prefill-1024-control-2.json" \
+  --baseline "$CACHEBLEND_RUN_DIR/full-prefill-1024-control-3.json" \
+  --baseline "$CACHEBLEND_RUN_DIR/full-prefill-1024-control-4.json" \
+  --baseline "$CACHEBLEND_RUN_DIR/full-prefill-1024-control-5.json" \
+  --hard-max-abs-ceiling 0.08 \
+  --hard-mean-abs-ceiling 0.014 \
+  --output "$CACHEBLEND_RUN_DIR/frozen-five-baseline-manifest.json" \
+  | tee "$CACHEBLEND_RUN_DIR/frozen-five-baseline-report.json"
+```
+
+Stop if the report does not show `stable: true`. Preserve its manifest digest
+before stopping the ordinary server.
+
+The five controls and this policy must be complete before the candidate is
+captured. Do not use a CacheBlend output to choose, widen, or otherwise loosen
+`Umax` or `Umean`. The older two-artifact `frozen-bf16-tolerance.json` remains
+useful as historical evidence, but it is not the formal five-control M3 policy.
 
 Stop the ordinary server before continuing.
 
@@ -264,6 +291,11 @@ prompt-source, prefill-work, and timing deltas, plus a reconciled
 `native_request_evidence` object, alongside the artifact path;
 preserve that summary from the `tee` output with the server metrics and logs.
 
+The candidate below must be fresh and captured only after the five-control
+manifest was frozen. The ensemble evaluator re-reads all five controls,
+recomputes their envelope, requires an exact manifest match, binds the transfer
+sidecar, and compares the candidate with every control.
+
 ```bash
 .venv/bin/python scripts/capture_moved_document.py \
   --mode cacheblend_100pct \
@@ -275,13 +307,17 @@ preserve that summary from the `tee` output with the server metrics and logs.
   --output "$CACHEBLEND_RUN_DIR/cacheblend-100pct.json" \
   | tee "$CACHEBLEND_RUN_DIR/cacheblend-capture.txt"
 
-.venv/bin/python scripts/evaluate_cacheblend_correctness.py \
-  --reference "$CACHEBLEND_RUN_DIR/full-prefill-reference.json" \
+.venv/bin/python scripts/evaluate_cacheblend_ensemble.py \
+  --manifest "$CACHEBLEND_RUN_DIR/frozen-five-baseline-manifest.json" \
+  --baseline "$CACHEBLEND_RUN_DIR/full-prefill-1024-control-1.json" \
+  --baseline "$CACHEBLEND_RUN_DIR/full-prefill-1024-control-2.json" \
+  --baseline "$CACHEBLEND_RUN_DIR/full-prefill-1024-control-3.json" \
+  --baseline "$CACHEBLEND_RUN_DIR/full-prefill-1024-control-4.json" \
+  --baseline "$CACHEBLEND_RUN_DIR/full-prefill-1024-control-5.json" \
   --cacheblend "$CACHEBLEND_RUN_DIR/cacheblend-100pct.json" \
-  --tolerance "$CACHEBLEND_RUN_DIR/frozen-bf16-tolerance.json" \
   --transfer-evidence "$CACHEBLEND_RUN_DIR/transfer-evidence.json" \
-  --output "$CACHEBLEND_RUN_DIR/cacheblend-verdict.json" \
-  | tee "$CACHEBLEND_RUN_DIR/cacheblend-verdict.txt"
+  --output "$CACHEBLEND_RUN_DIR/cacheblend-ensemble-verdict.json" \
+  | tee "$CACHEBLEND_RUN_DIR/cacheblend-ensemble-verdict.txt"
 
 curl --fail-with-body http://127.0.0.1:8000/metrics \
   | grep 'vllm:cacheblend_' \
@@ -316,36 +352,80 @@ This first probe intentionally supports the M3 fixture in which the cached
 256-token document is the complete source prompt. It is not yet a generic
 BrowseComp+ per-request evidence producer.
 
-The evaluator exits nonzero unless sampled/top tokens agree and complete-vector
-maximum and mean errors stay inside the already-frozen envelope. Preserve the
-three artifacts, verdict, metrics, both server logs, compatibility probe, and
-identity outputs.
+The formal evaluator exits nonzero unless the baseline is stable, every digest
+and identity matches, sampled/top tokens agree, `Qmax <= Umax`,
+`Qmean <= Umean`, and the transfer sidecar binds to the candidate. Preserve the
+manifest, report, verdict, all six artifacts, metrics, and service logs.
+
+## Observed solab-g3 evidence (diagnostic only)
+
+The user-supplied run produced two distinct results. The historical
+two-baseline evaluator returned `passed: false`: CacheBlend versus the selected
+reference had `max_abs_error=0.07559013366699219` and
+`mean_abs_error=0.009438995041906416`, exceeding the then-frozen limits of
+`0.07054328918457031` and `0.006880644322352224`. Sampled and top-token
+agreement were both true, and transfer evidence was bound and complete; the
+failure was numerical under that two-baseline policy.
+
+A later same-configuration comparison used `--max-num-batched-tokens 1024`
+and the source-warm-up-then-target protocol for five ordinary controls. Its
+empirical envelope was:
+
+```text
+Umax  = 0.07423019409179688
+Umean = 0.01318507041618522
+```
+
+The already-observed CacheBlend candidate had the following diagnostic
+distances to those controls:
+
+```text
+Qmax  = 0.05914115905761719
+Qmean = 0.01111537456170986
+```
+
+Sampled-token and top-token agreement were true for every comparison. The
+independent schema-v2 transfer report also passed: 256 tokens loaded, 280
+tokens recomputed, zero prefill tokens avoided, 12 sliding-window layers and
+12 full-attention layers covered, all layers loaded and overwritten, and the
+artifact binding passed.
+
+The five-control policy was defined after this candidate had already been
+observed. Therefore the candidate is **diagnostic-only**: its `Q` values must
+not be promoted to a formal M3 pass. A formal M3 candidate must be captured
+after the five-control manifest and envelope are frozen, with no post-hoc
+loosening. Formal M3 remains unpassed.
 
 ## Required case matrix
 
 The capture harness also has deterministic fixtures for the other required
-correctness cases. Each case needs its own fresh baseline pair, frozen
-tolerance, and CacheBlend artifact because the target prompt digest changes.
+correctness cases. Each case needs its own five source-warmed baseline controls,
+frozen manifest/envelope, and fresh CacheBlend candidate because the target
+prompt digest changes. Do not reuse one case's policy for another case.
 Keep the same server identity and run directory, but use distinct filenames:
 
 ```bash
 for CASE in exact_prefix moved_document reordered_documents cache_miss; do
-  .venv/bin/python scripts/capture_moved_document.py \
-    --mode full_prefill \
-    --case "$CASE" \
-    --model-revision "$CACHEBLEND_MODEL_REVISION" \
-    --tokenizer-revision "$CACHEBLEND_TOKENIZER_REVISION" \
-    --plugin-commit "$CACHEBLEND_PLUGIN_COMMIT" \
-    --model-config-digest "$CACHEBLEND_MODEL_CONFIG_DIGEST" \
-    --kv-cache-config-digest "$CACHEBLEND_KV_CONFIG_DIGEST" \
-    --output "$CACHEBLEND_RUN_DIR/${CASE}-full.json"
+  for CONTROL in 1 2 3 4 5; do
+    .venv/bin/python scripts/capture_moved_document.py \
+      --mode full_prefill \
+      --case "$CASE" \
+      --warm-source-before-target \
+      --model-revision "$CACHEBLEND_MODEL_REVISION" \
+      --tokenizer-revision "$CACHEBLEND_TOKENIZER_REVISION" \
+      --plugin-commit "$CACHEBLEND_PLUGIN_COMMIT" \
+      --model-config-digest "$CACHEBLEND_MODEL_CONFIG_DIGEST" \
+      --kv-cache-config-digest "$CACHEBLEND_KV_CONFIG_DIGEST" \
+      --output "$CACHEBLEND_RUN_DIR/${CASE}-full-${CONTROL}.json"
+  done
 done
 ```
 
 With the CacheBlend server and a clean sidecar state appropriate to the case,
 repeat the same loop with `--mode cacheblend_100pct` and output names
-`${CASE}-cacheblend.json`; then evaluate each pair with its own frozen
-tolerance. Supply `--transfer-evidence` for every case with positive loaded KV.
+`${CASE}-cacheblend.json`; then evaluate the fresh candidate against that
+case's already-frozen five-control envelope. Supply `--transfer-evidence` for
+every case with positive loaded KV.
 For the explicit cache miss, omit that file only with
 `--allow-cache-miss-no-transfer`; the evaluator then requires zero found,
 loaded, and rejected KV counters before comparing the ordinary full-prefill
@@ -364,20 +444,35 @@ artifact explicitly reports zero found/loaded/rejected tokens and the final
 distribution passes the corresponding full-prefill comparison. Do not use one
 case's tolerance or sidecar evidence to judge another case.
 
-## Stop/go decision
+## Formal M3 status and stop/go decision
+
+The current user-supplied artifact is not a formal M3 pass. Its all-layer
+transfer evidence passes, but the historical two-baseline numerical verdict
+failed and the later five-control comparison was defined after the candidate
+was observed. Do not advance to the `/v1/responses` or BrowseComp gates on the
+diagnostic candidate alone.
 
 Go to the `/v1/responses` Harmony/tool/multi-turn gate only if:
 
+- five same-configuration 1024-token controls were captured with
+  source-warm-up-then-target ordering and their immutable envelope was frozen
+  before the candidate;
+- the fresh candidate was captured after that freeze, with no post-hoc
+  tolerance loosening;
+- the candidate satisfies `Qmax <= Umax` and `Qmean <= Umean`, with sampled and
+  top-token agreement;
 - the artifact reports `kv_tokens_loaded == 256`;
 - `tokens_recomputed == 280` and `prefill_tokens_avoided == 0`;
-- the evaluator reports `passed: true`;
+- independent schema-v2 transfer evidence reports all 24 layers loaded and
+  overwritten and passes artifact binding;
 - all identities/digests match; and
 - no server log contains a fallback, rejected configuration, transfer error,
   correction error, or partial group/layer operation.
 
-Stop on any failed invariant, timeout, fallback, distribution mismatch, or
-identity drift. Do not lower recomputation or interpret generated text as
-evidence. This gate demonstrates the final output distribution and the
-connector's all-layer/group success accounting. A supplied transfer sidecar
-must validate independently; raw per-layer evidence cannot be inferred from
-the output artifact or connector counters.
+Until those conditions are met, formal M3 remains blocked. Stop on any failed
+invariant, timeout, fallback, distribution mismatch, or identity drift. Do not
+lower recomputation or interpret generated text as evidence. This gate
+demonstrates the final output distribution and the connector's all-layer/group
+success accounting. A supplied transfer sidecar must validate independently;
+raw per-layer evidence cannot be inferred from the output artifact or
+connector counters.

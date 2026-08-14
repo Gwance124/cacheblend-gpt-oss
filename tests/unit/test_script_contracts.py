@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import json
 import runpy
+import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from cacheblend_gpt_oss.correctness import CorrectnessCase
 from cacheblend_gpt_oss.targets import PINNED_TARGET
 from cacheblend_gpt_oss.vllm_compat.v0_19_1.selective_registry import (
     SelectiveGateEvidence,
@@ -25,6 +28,14 @@ _responses = runpy.run_path(
 _gate_hash = runpy.run_path(
     "scripts/hash_selective_gate_artifacts.py",
     run_name="cacheblend_gate_hash_script_test",
+)
+_ensemble_freeze = runpy.run_path(
+    "scripts/freeze_correctness_ensemble.py",
+    run_name="cacheblend_ensemble_freeze_script_test",
+)
+_ensemble_evaluate = runpy.run_path(
+    "scripts/evaluate_cacheblend_ensemble.py",
+    run_name="cacheblend_ensemble_evaluate_script_test",
 )
 _gate_verify = runpy.run_path(
     "scripts/verify_selective_gate_artifacts.py",
@@ -102,8 +113,86 @@ def test_capture_payload_is_json_serializable_without_nonfinite_values() -> None
     assert '"prompt": [1, 2]' in encoded
 
 
+def test_capture_parser_exposes_explicit_source_warmup_protocol() -> None:
+    parser = _capture["_parser"]()
+    args = parser.parse_args(
+        [
+            "--mode",
+            "full_prefill",
+            "--model-revision",
+            "model-revision",
+            "--tokenizer-revision",
+            "tokenizer-revision",
+            "--plugin-commit",
+            "a" * 40,
+            "--model-config-digest",
+            "b" * 64,
+            "--kv-cache-config-digest",
+            "c" * 64,
+            "--output",
+            "artifact.json",
+            "--warm-source-before-target",
+        ]
+    )
+
+    assert args.warm_source_before_target is True
+
+
 def test_gate_hash_script_exposes_a_callable_main() -> None:
     assert callable(_gate_hash["main"])
+
+
+def test_ensemble_scripts_expose_callable_mains() -> None:
+    assert callable(_ensemble_freeze["main"])
+    assert callable(_ensemble_evaluate["main"])
+
+
+def test_ensemble_evaluator_requires_transfer_or_explicit_cache_miss() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/evaluate_cacheblend_ensemble.py",
+            "--manifest",
+            "manifest.json",
+            "--baseline",
+            "one.json",
+            "--baseline",
+            "two.json",
+            "--baseline",
+            "three.json",
+            "--baseline",
+            "four.json",
+            "--baseline",
+            "five.json",
+            "--cacheblend",
+            "candidate.json",
+            "--output",
+            "verdict.json",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "--transfer-evidence" in result.stderr
+
+
+def test_ensemble_no_transfer_exception_is_cache_miss_only() -> None:
+    validate = _ensemble_evaluate["_validate_no_transfer_cache_miss"]
+    cache_miss = SimpleNamespace(
+        prompt=SimpleNamespace(case=CorrectnessCase.CACHE_MISS),
+        connector=SimpleNamespace(
+            kv_tokens_found=0,
+            kv_tokens_loaded=0,
+            kv_tokens_rejected=0,
+        ),
+    )
+    validate(cache_miss)
+
+    cache_miss.prompt.case = CorrectnessCase.MOVED_DOCUMENT
+    with pytest.raises(ValueError, match="CACHE_MISS"):
+        validate(cache_miss)
 
 
 def test_gate_verify_script_exposes_a_callable_main() -> None:

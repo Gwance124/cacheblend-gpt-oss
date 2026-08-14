@@ -16,12 +16,32 @@ Only user-supplied `solab-g3`/`solab-p7` output can pass the gate.
 
 ## Preconditions and stop rules
 
-Complete and preserve the passing artifacts from:
+Do not start this smoke from the current diagnostic artifact. First complete
+and preserve the formal artifacts from:
 
-1. `solab-g3-moved-document-correctness.md` (M3/M4/M5 numerical and transfer
-   evidence); and
+1. `solab-g3-moved-document-correctness.md` (a formal M3 numerical and
+   all-layer transfer pass, followed by M4/M5 evidence); and
 2. `solab-g3-responses-contract.md` (M8 Harmony, tools, and append-only API
    evidence).
+
+The current user-supplied g3 evidence is not that precondition. Its schema-v2
+transfer report passed for all 24 layers/groups, with 256 tokens loaded, 280
+tokens recomputed, zero prefill tokens avoided, and artifact binding passed.
+However, the old two-baseline numerical verdict failed: CacheBlend/reference
+`max_abs_error=0.07559013366699219` and
+`mean_abs_error=0.009438995041906416` exceeded frozen limits
+`0.07054328918457031` and `0.006880644322352224`. A later five-control
+1024-token comparison produced diagnostic `Umax=0.07423019409179688`,
+`Umean=0.01318507041618522`, `Qmax=0.05914115905761719`, and
+`Qmean=0.01111537456170986`, with sampled/top-token agreement. That candidate
+is diagnostic-only because the five-control policy was defined after the
+candidate was observed; it does not satisfy formal M3.
+
+For the formal M3 rerun, capture five ordinary controls with the same
+`--max-num-batched-tokens 1024` setting and source-warm-up-then-target ordering,
+freeze their manifest and numerical envelope before capturing a fresh
+candidate, and do not loosen the policy post hoc. BrowseComp-Plus remains
+blocked until that fresh candidate passes.
 
 Use only vLLM `0.19.1`, LMCache `0.4.3`, PyTorch `2.10.0+cu128`, CUDA runtime
 `12.8`, and the NVIDIA A100-SXM4-80GB. Keep the hybrid KV-cache manager enabled
@@ -334,7 +354,8 @@ occurred. It does not establish non-prefix document reuse, because an
 append-only request naturally repeats prompt-aligned chunks at their old
 positions. It also does **not** authorize selective recomputation or a dev-100
 performance claim. Reduced recomputation remains blocked until the required
-M3--M5 GPU evidence passes and a sink-aware selective backend preserves
+formal M3--M5 GPU evidence passes and a sink-aware selective backend preserves
 deterministic logits/hidden states. The append-only prefix-cache baseline must
 remain a separate arm; ordinary vLLM prefix caching is expected to be a strong
-baseline for byte-identical growing history.
+baseline for byte-identical growing history. The current all-layer transfer
+report alone does not unlock this runbook.

@@ -94,6 +94,14 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--timeout-seconds", type=float, default=120.0)
     parser.add_argument("--metric-wait-seconds", type=float, default=30.0)
+    parser.add_argument(
+        "--warm-source-before-target",
+        action="store_true",
+        help=(
+            "in full_prefill mode, issue the fixture source request and wait "
+            "for native metrics before capturing the target"
+        ),
+    )
     return parser
 
 
@@ -351,6 +359,13 @@ def _runtime_identity(args: argparse.Namespace) -> CorrectnessRuntimeIdentity:
 def main() -> int:
     args = _parser().parse_args()
     mode = CorrectnessRunMode(args.mode)
+    if (
+        args.warm_source_before_target
+        and mode is not CorrectnessRunMode.FULL_PREFILL
+    ):
+        raise ValueError(
+            "--warm-source-before-target is valid only in full_prefill mode"
+        )
     if args.output.exists():
         raise FileExistsError("correctness output already exists")
     runtime = _runtime_identity(args)
@@ -529,6 +544,63 @@ def main() -> int:
         )
         initial_prefill_work = parse_vllm_prefill_work_snapshot(initial_metrics)
         initial_timing = parse_vllm_timing_snapshot(initial_metrics)
+        if args.warm_source_before_target:
+            client.post_json(
+                "/v1/completions",
+                _completion_payload(fixture.source_prompt_token_ids, full=False),
+            )
+            after_source_prompt, after_source_metrics = _wait_for_prompt_counter(
+                client,
+                initial_prompt["prompt_tokens"]
+                + len(fixture.source_prompt_token_ids),
+                args.metric_wait_seconds,
+                minimum_timing_count=initial_timing.ttft_seconds.count + 1,
+                minimum_prompt_source_local_compute=(
+                    initial_prompt_source["local_compute"]
+                    + len(fixture.source_prompt_token_ids)
+                ),
+                minimum_prefill_observations=(
+                    initial_prefill_work.observations + 1
+                ),
+            )
+            source_prompt_delta = vllm_prompt_counter_delta(
+                initial_prompt, after_source_prompt
+            )
+            if source_prompt_delta != len(fixture.source_prompt_token_ids):
+                raise ValueError(
+                    "source warm-up prompt-token delta does not match fixture"
+                )
+            after_source_prompt_source = parse_vllm_prompt_source_snapshot(
+                after_source_metrics
+            )
+            require_full_prefill_prompt_source_delta(
+                vllm_prompt_source_delta(
+                    initial_prompt_source,
+                    after_source_prompt_source,
+                ),
+                expected_prompt_tokens=len(fixture.source_prompt_token_ids),
+            )
+            after_source_prefill_work = parse_vllm_prefill_work_snapshot(
+                after_source_metrics
+            )
+            require_vllm_prefill_work_delta(
+                vllm_prefill_work_snapshot_delta(
+                    initial_prefill_work,
+                    after_source_prefill_work,
+                ),
+                expected_prompt_tokens=len(fixture.source_prompt_token_ids),
+            )
+            require_vllm_timing_delta(
+                vllm_timing_snapshot_delta(
+                    initial_timing,
+                    parse_vllm_timing_snapshot(after_source_metrics),
+                ),
+                expected_requests=1,
+            )
+            initial_prompt = after_source_prompt
+            initial_prompt_source = after_source_prompt_source
+            initial_prefill_work = after_source_prefill_work
+            initial_timing = parse_vllm_timing_snapshot(after_source_metrics)
         target_response = client.post_json(
             "/v1/completions",
             _completion_payload(fixture.target_prompt_token_ids, full=True),
