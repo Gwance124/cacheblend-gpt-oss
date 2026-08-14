@@ -475,8 +475,19 @@ def test_scheduler_records_all_groups_while_recomputing_every_token(
     assert connector.get_kv_connector_stats() is None
 
 
-def test_completion_accepts_short_prompt_with_decode_growth(
+@pytest.mark.parametrize(
+    "completion_block_ids",
+    [
+        ([3, 4, 5], [11, 12, 13]),
+        # One decode-grown sliding block was also skipped before completion.
+        ([0, 0, 0, 5, 6, 7], [11, 12, 13, 14, 15]),
+        # A longer decode can skip several blocks beyond the prompt table.
+        ([0, 0, 0, 0, 0, 8, 9], [11, 12, 13, 14, 15, 16, 17]),
+    ],
+)
+def test_completion_accepts_long_decode_after_sliding_blocks_are_skipped(
     loaded_connector: tuple[ModuleType, SimpleNamespace],
+    completion_block_ids: tuple[list[int], list[int]],
 ) -> None:
     module, fake = loaded_connector
     connector = module.GptOssCacheBlendConnector(
@@ -484,26 +495,83 @@ def test_completion_accepts_short_prompt_with_decode_growth(
     )
     request = SimpleNamespace(
         request_id="request-decode-growth",
-        prompt_token_ids=[1, 2, 3, 4],
+        prompt_token_ids=list(range(32)),
         prompt_embeds=None,
-        num_prompt_tokens=4,
+        num_prompt_tokens=32,
         num_preemptions=0,
     )
     blocks = SimpleNamespace(
-        get_block_ids=lambda: ([3], [11]),
+        get_block_ids=lambda: ([3, 4], [11, 12]),
         blocks=(
-            [SimpleNamespace(block_id=3, is_null=False)],
-            [SimpleNamespace(block_id=11, is_null=False)],
+            [
+                SimpleNamespace(block_id=3, is_null=False),
+                SimpleNamespace(block_id=4, is_null=False),
+            ],
+            [
+                SimpleNamespace(block_id=11, is_null=False),
+                SimpleNamespace(block_id=12, is_null=False),
+            ],
         ),
     )
 
     assert connector.get_num_new_matched_tokens(request, 0) == (0, False)
     connector.update_state_after_alloc(request, blocks, num_external_tokens=0)
 
-    # A short prompt can grow into a second physical block while decoding.
     assert connector.request_finished_all_groups(
-        request, ([3, 4], [11, 12])
+        request, completion_block_ids
     ) == (False, None)
+
+
+@pytest.mark.parametrize(
+    "completion_block_ids",
+    [
+        # Null blocks are only valid for the sliding-window group.
+        ([0, 0, 0, 5, 6, 7], [0, 11, 12, 13, 14]),
+        # Full attention must retain its allocation prefix in order.
+        ([0, 0, 0, 5, 6, 7], [12, 11, 13, 14, 15]),
+        ([0, 0, 0, 5, 6, 7], [11, 13, 12, 14, 15]),
+        # A full-attention completion cannot drop an allocated block.
+        ([0, 0, 0, 5, 6, 7], [11]),
+        # Booleans are malformed block IDs, even though bool is an int subtype.
+        ([0, 0, 0, 5, 6, 7], [11, True, 13, 14]),
+    ],
+)
+def test_completion_rejects_malformed_or_wrong_full_attention_after_long_decode(
+    loaded_connector: tuple[ModuleType, SimpleNamespace],
+    completion_block_ids: tuple[list[int], list[int]],
+) -> None:
+    module, fake = loaded_connector
+    connector = module.GptOssCacheBlendConnector(
+        _config(), fake.role.SCHEDULER, _kv_cache_config()
+    )
+    request = SimpleNamespace(
+        request_id="request-invalid-full-attention-completion",
+        prompt_token_ids=list(range(32)),
+        prompt_embeds=None,
+        num_prompt_tokens=32,
+        num_preemptions=0,
+    )
+    blocks = SimpleNamespace(
+        get_block_ids=lambda: ([3, 4], [11, 12]),
+        blocks=(
+            [
+                SimpleNamespace(block_id=3, is_null=False),
+                SimpleNamespace(block_id=4, is_null=False),
+            ],
+            [
+                SimpleNamespace(block_id=11, is_null=False),
+                SimpleNamespace(block_id=12, is_null=False),
+            ],
+        ),
+    )
+
+    assert connector.get_num_new_matched_tokens(request, 0) == (0, False)
+    connector.update_state_after_alloc(request, blocks, num_external_tokens=0)
+
+    with pytest.raises(
+        RuntimeError, match="not compatible with the request allocation"
+    ):
+        connector.request_finished_all_groups(request, completion_block_ids)
 
 
 @pytest.mark.parametrize(

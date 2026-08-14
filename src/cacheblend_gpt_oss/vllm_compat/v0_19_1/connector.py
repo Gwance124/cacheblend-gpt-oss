@@ -216,21 +216,27 @@ def _is_ordered_subsequence(
         if group_kind is not AttentionKind.SLIDING:
             return False
 
-        # Sliding-window cleanup replaces only a leading allocation prefix.
-        # After that prefix, the allocation suffix must remain in order, and
-        # the suffix after the original table must contain only real decode
-        # blocks.
+        # Sliding-window cleanup replaces a leading allocation prefix with
+        # null blocks.  The prefix can extend beyond the allocation-time table
+        # after a long decode: vLLM caps the skipped-block count to the
+        # request's current table length and replaces every skipped entry in
+        # place.  See the pinned ``remove_skipped_blocks`` implementation:
+        # https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/v1/core/single_type_kv_cache_manager.py#L327-L367
+        #
+        # When that happens, there is no allocation suffix left to bind.  The
+        # structural checks above still require a sliding group, a leading
+        # null-only prefix, in-range IDs, unique real IDs, and no later nulls;
+        # any surviving allocation suffix must remain in order.
         null_prefix_length = 0
         while (
             null_prefix_length < len(current)
             and current[null_prefix_length] == _VLLM_NULL_BLOCK_ID
         ):
             null_prefix_length += 1
-        if null_prefix_length > len(original):
-            return False
+        allocation_suffix_start = min(null_prefix_length, len(original))
         if (
-            current[null_prefix_length : len(original)]
-            != original[null_prefix_length:]
+            current[allocation_suffix_start : len(original)]
+            != original[allocation_suffix_start:]
             or any(
                 block_id == _VLLM_NULL_BLOCK_ID
                 for block_id in current[null_prefix_length:]
