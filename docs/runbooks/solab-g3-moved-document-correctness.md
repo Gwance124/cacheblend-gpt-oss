@@ -352,12 +352,14 @@ This first probe intentionally supports the M3 fixture in which the cached
 256-token document is the complete source prompt. It is not yet a generic
 BrowseComp+ per-request evidence producer.
 
-The formal evaluator exits nonzero unless the baseline is stable, every digest
-and identity matches, sampled/top tokens agree, `Qmax <= Umax`,
+The strict-v1 evaluator exits nonzero unless the baseline is stable, every
+digest and identity matches, sampled/top tokens agree, `Qmax <= Umax`,
 `Qmean <= Umean`, and the transfer sidecar binds to the candidate. Preserve the
-manifest, report, verdict, all six artifacts, metrics, and service logs.
+manifest, report, verdict, all six artifacts, metrics, and service logs. A
+strict-v1 result is immutable: a later probability-aware policy must not edit,
+replace, or reinterpret that verdict.
 
-## Observed solab-g3 evidence (diagnostic only)
+## Observed solab-g3 evidence and formal status
 
 The user-supplied run produced two distinct results. The historical
 two-baseline evaluator returned `passed: false`: CacheBlend versus the selected
@@ -395,6 +397,68 @@ observed. Therefore the candidate is **diagnostic-only**: its `Q` values must
 not be promoted to a formal M3 pass. A formal M3 candidate must be captured
 after the five-control manifest and envelope are frozen, with no post-hoc
 loosening. Formal M3 remains unpassed.
+
+### Formal strict-v1 result and prospective probability-aware v2
+
+The fresh candidate captured after the five-control manifest was frozen received
+an immutable **strict-v1 `FAIL`**. Exactly one vocabulary coordinate violated
+the strict full-vocabulary maximum envelope: token ID `71784` had
+`Qmax=0.0984172821` versus `Umax=0.0742301941`. Its candidate rank was
+`199583`, its probability was `5.0698e-8`, and it was outside the baseline
+range by `0.0326042`. The full-vocabulary mean remained within its envelope
+(`Qmean=0.012911056652712563` versus `Umean=0.01318507041618522`); sampled
+token and top-token agreement remained true for every comparison; and the
+independent transfer evidence passed, including all-layer load/overwrite
+binding. These facts are the permanent v1 record. They do not constitute a
+v1 pass or an M3 pass.
+
+The probability-aware v2 response is **prospective only**. It reuses the same
+five ordinary control artifacts but freezes a separate probability-v2 manifest
+from them before capturing exactly one new CacheBlend candidate. The strict-v1
+manifest remains immutable historical evidence and is not a v2 policy input.
+The v2 manifest binds the strict-v1 failed candidate digest as an explicit
+excluded pilot, and the evaluator rejects reuse of that artifact as the v2
+candidate.
+
+The controls are not rerun or replaced. Their serving identity is commit
+`75bfe75db794a77d305c495be5f8114e520d119f`, so the new candidate must use
+that exact serving checkout; the later gate-tooling commit runs from a detached
+worktree. Any identity mismatch stops the run. V2 artifacts belong in a new
+directory, not over the v1 files:
+
+```bash
+cd /mnt/nvme3n1/mlee/cacheblend-gpt-oss
+
+export CACHEBLEND_SERVING_COMMIT=75bfe75db794a77d305c495be5f8114e520d119f
+export CACHEBLEND_V2_RUN_DIR=/mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/solab-g3-m3-75bfe75-formal-v2-20260813
+
+test "$(git rev-parse HEAD)" = "$CACHEBLEND_SERVING_COMMIT"
+test ! -e "$CACHEBLEND_V2_RUN_DIR/probability-v2-manifest.json"
+test ! -e "$CACHEBLEND_V2_RUN_DIR/cacheblend-100pct-v2.json"
+test ! -e "$CACHEBLEND_V2_RUN_DIR/probability-aware-v2-verdict.json"
+```
+
+The v2 evaluator uses a minimal descending token support covering at least
+`1-epsilon` probability mass with fixed `epsilon=1e-4`, so at most 0.01% of
+probability mass is outside the max-logprob check. Epsilon is code-owned and
+cannot be tuned from the CLI or after seeing the candidate. It must compute the
+full-vocabulary mean error, total variation (TV), Jensen--Shannon (JS)
+divergence, and the high-mass maximum error. The candidate must be within the
+empirical five-control baseline envelope for **every** one of those metrics,
+and must also satisfy these pre-registered hard ceilings:
+
+```text
+full-vocabulary mean error <= 0.014
+TV                         <= 0.02
+JS                         <= 0.001
+high-mass maximum error    <= 0.08
+```
+
+The v2 response is admissible only if all four metric-envelope checks pass,
+sampled/top-token agreement remains true, and the independent transfer report
+passes. The v1 `FAIL` remains unchanged even if a future v2 candidate passes;
+v2 has not been run or passed, and formal M3 remains blocked until that
+prospective evidence exists.
 
 ## Required case matrix
 

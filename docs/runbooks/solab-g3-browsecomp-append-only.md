@@ -37,11 +37,65 @@ However, the old two-baseline numerical verdict failed: CacheBlend/reference
 is diagnostic-only because the five-control policy was defined after the
 candidate was observed; it does not satisfy formal M3.
 
+The later fresh candidate used for the formal strict-v1 response is an
+immutable **`FAIL`**. Exactly one token, ID `71784`, violated the strict
+full-vocabulary maximum: `Qmax=0.0984172821` versus
+`Umax=0.0742301941`; its rank was `199583`, its probability was `5.0698e-8`,
+and it was `0.0326042` outside the baseline range. The full-vocabulary mean
+remained within its envelope (`Qmean=0.012911056652712563` versus
+`Umean=0.01318507041618522`), sampled and top-token agreement remained true,
+and transfer evidence passed. These v1 facts cannot be rewritten by a later
+policy, and they do not establish v1 or M3 passage.
+
+BrowseComp-Plus remains blocked pending a prospective probability-aware v2
+response. V2 reuses the same five controls, freezes a separate probability-v2
+manifest before one new candidate, and does not rerun the baselines. The
+strict-v1 manifest remains immutable historical evidence and is not the v2
+policy manifest. The failed strict-v1 candidate is digest-bound into v2 only as
+an excluded pilot and cannot be reused as the prospective candidate.
+It uses fixed `epsilon=1e-4` and requires the new candidate to be within the
+empirical baseline envelope on full-vocabulary mean error, TV, JS divergence,
+and high-mass maximum error, with hard ceilings full mean `0.014`, TV `0.02`,
+JS `0.001`, and high-mass maximum `0.08`. Sampled/top-token agreement and
+independent transfer pass are also required. Do not claim v2 or M3 passed
+until that evidence exists.
+
+The five controls are the existing Solab artifacts below. The final path is the
+strict-v1 manifest retained only as historical evidence:
+
+```text
+/mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/solab-g3-m3-75bfe75-probe1-20260813/full-prefill-1024-control-1.json
+/mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/solab-g3-m3-75bfe75-probe1-20260813/full-prefill-1024-control-2.json
+/mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/solab-g3-m3-75bfe75-probe1-20260813/full-prefill-1024-control-3.json
+/mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/solab-g3-m3-75bfe75-probe1-20260813/full-prefill-1024-control-4.json
+/mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/solab-g3-m3-75bfe75-probe1-20260813/full-prefill-1024-control-5.json
+/mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/solab-g3-m3-75bfe75-formal1-20260813/frozen-five-baseline-manifest.json
+```
+
+The eventual v2 candidate and verdict belong in a new create-only directory
+under `/mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/`, derived from the
+actual checkout commit at run time. Do not document or invent an eventual new
+plugin SHA. Conceptually, the command shell starts from:
+
+```bash
+cd /mnt/nvme3n1/mlee/cacheblend-gpt-oss
+export CACHEBLEND_SERVING_COMMIT=75bfe75db794a77d305c495be5f8114e520d119f
+export CACHEBLEND_V2_RUN_DIR=/mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/solab-g3-m3-75bfe75-formal-v2-20260813
+
+test "$(git rev-parse HEAD)" = "$CACHEBLEND_SERVING_COMMIT"
+```
+
+The new candidate must be captured and evaluated under
+`$CACHEBLEND_V2_RUN_DIR`; the v1 candidate and verdict remain in the existing
+`solab-g3-m3-75bfe75-formal1-20260813` directory.
+
 For the formal M3 rerun, capture five ordinary controls with the same
 `--max-num-batched-tokens 1024` setting and source-warm-up-then-target ordering,
 freeze their manifest and numerical envelope before capturing a fresh
-candidate, and do not loosen the policy post hoc. BrowseComp-Plus remains
-blocked until that fresh candidate passes.
+candidate, and do not loosen the policy post hoc. For the prospective v2
+response, use the already-frozen five controls above and capture one new
+candidate without rerunning those controls. BrowseComp-Plus remains blocked
+until the v2 response and the other M3--M8 preconditions pass.
 
 Use only vLLM `0.19.1`, LMCache `0.4.3`, PyTorch `2.10.0+cu128`, CUDA runtime
 `12.8`, and the NVIDIA A100-SXM4-80GB. Keep the hybrid KV-cache manager enabled
@@ -69,13 +123,13 @@ a CacheBlend run.
 Use a clean checkout and a new artifact directory:
 
 ```bash
-cd /path/to/cacheblend-gpt-oss
+cd /mnt/nvme3n1/mlee/cacheblend-gpt-oss
 
-CACHEBLEND_MODEL_PATH=/path/to/pinned/gpt-oss-20b
-CACHEBLEND_MODEL_REVISION=replace-with-model-commit-or-manifest-sha
-CACHEBLEND_TOKENIZER_REVISION=replace-with-tokenizer-commit-or-manifest-sha
+CACHEBLEND_MODEL_PATH=/mnt/nvme3n1/labuser/.cache/huggingface/hub/models--openai--gpt-oss-20b/snapshots/6cee5e81ee83917806bbde320786a8fb61efebee
+CACHEBLEND_MODEL_REVISION=6cee5e81ee83917806bbde320786a8fb61efebee
+CACHEBLEND_TOKENIZER_REVISION=6cee5e81ee83917806bbde320786a8fb61efebee
 CACHEBLEND_PLUGIN_COMMIT=$(git rev-parse HEAD)
-CACHEBLEND_RUN_DIR=/absolute/path/to/new/browsecomp-append-only-smoke
+CACHEBLEND_RUN_DIR="/mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/solab-g3-m8.5-${CACHEBLEND_PLUGIN_COMMIT:0:7}-browsecomp-append-only-20260813"
 CACHEBLEND_STAGING_TOKENS=131072
 
 export CACHEBLEND_MODEL_PATH CACHEBLEND_MODEL_REVISION
@@ -122,12 +176,11 @@ export VLLM_USE_V2_MODEL_RUNNER=0
   2>&1 | tee "$CACHEBLEND_RUN_DIR/compatibility-probe.log"
 ```
 
-Copy the two emitted lowercase SHA-256 values exactly:
+Verify that the two emitted lowercase SHA-256 values match these pinned values:
 
 ```bash
-CACHEBLEND_MODEL_CONFIG_DIGEST=replace-with-probe-model-config-digest
-CACHEBLEND_KV_CONFIG_DIGEST=replace-with-probe-kv-cache-config-digest
-export CACHEBLEND_MODEL_CONFIG_DIGEST CACHEBLEND_KV_CONFIG_DIGEST
+export CACHEBLEND_MODEL_CONFIG_DIGEST=1c69c7868c1206ea76c372df01e5baa2abcadcd2ca5b9f93b97d94fa6070aae0
+export CACHEBLEND_KV_CONFIG_DIGEST=131eb7ec025bc9a4fa1dabd220bb41b75c7d8f921e537fd8be505e91c6850742
 ```
 
 ## 2. Start LMCache and vLLM on g3
@@ -137,7 +190,7 @@ Do not launch LMCache's raw 0.4.3 module because it contains the audited store
 completion race:
 
 ```bash
-cd /path/to/cacheblend-gpt-oss
+cd /mnt/nvme3n1/mlee/cacheblend-gpt-oss
 export CUDA_VISIBLE_DEVICES=0
 
 .venv/bin/python -m cacheblend_gpt_oss.storage.lmcache_server_v0_4_3 \
@@ -155,7 +208,7 @@ export CUDA_VISIBLE_DEVICES=0
 In another shell, create a fresh sidecar and render the exact connector config:
 
 ```bash
-cd /path/to/cacheblend-gpt-oss
+cd /mnt/nvme3n1/mlee/cacheblend-gpt-oss
 
 CACHEBLEND_SIDECAR="$CACHEBLEND_RUN_DIR/sidecar.sqlite3"
 export CACHEBLEND_SIDECAR
@@ -313,7 +366,7 @@ record but emits no query ID, document ID, prompt text, answer text, reasoning,
 response ID, call ID, token sequence, or fingerprint:
 
 ```bash
-cd /path/to/cacheblend-gpt-oss
+cd /mnt/nvme3n1/mlee/cacheblend-gpt-oss
 
 python scripts/validate_browsecomp_append_only.py \
   --run-record "$CACHEBLEND_P7_RUN_DIR/run/run_${RAG_QUERY_ID}.json" \

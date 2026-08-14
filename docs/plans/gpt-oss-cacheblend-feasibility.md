@@ -233,6 +233,48 @@ observed candidate had `Qmax=0.05914115905761719` and
 five-control policy was defined after candidate observation, the candidate is
 diagnostic-only and does not establish formal M3.
 
+The subsequent five-control formal strict-v1 response is also immutable. It
+returned `FAIL` because exactly one token, ID `71784`, exceeded the strict
+full-vocabulary maximum envelope: `Qmax=0.0984172821` versus
+`Umax=0.0742301941`. The candidate rank for that token was `199583`, its
+probability was `5.0698e-8`, and it lay `0.0326042` outside the baseline range.
+The full-vocabulary mean still remained within its envelope
+(`Qmean=0.012911056652712563` versus `Umean=0.01318507041618522`), sampled
+and top-token agreement remained true, and the independent transfer evidence
+passed. Those v1 facts are frozen and must not be edited, relabeled, or
+reinterpreted by a later policy. Formal M3 is not passed.
+
+The planned response is a prospective probability-aware v2 evaluation. It
+reuses the same five controls, freezes a separate probability-v2 manifest
+before the next candidate, and does not rerun the baselines. The strict-v1
+manifest remains immutable historical evidence, not a v2 policy input. V2 uses
+the strict-v1 candidate only as a digest-bound excluded pilot, so that artifact
+cannot be reevaluated as the prospective candidate. V2 uses fixed
+`epsilon=1e-4`, with no candidate-dependent tuning, and evaluates all of
+the following metrics: full-vocabulary mean error, total variation (TV),
+Jensen--Shannon (JS) divergence, and high-mass maximum error. The candidate
+must be inside the empirical five-control envelope for every metric and below
+the hard ceilings `full mean <= 0.014`, `TV <= 0.02`, `JS <= 0.001`, and
+`high-mass max <= 0.08`. Sampled/top-token agreement and independent transfer
+pass remain required. This is a proposed v2 response only; v2 has not passed
+and it cannot retroactively turn the strict-v1 `FAIL` or M3 into a pass.
+
+The existing Solab inputs are preserved at:
+
+```text
+/mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/solab-g3-m3-75bfe75-probe1-20260813/full-prefill-1024-control-1.json
+/mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/solab-g3-m3-75bfe75-probe1-20260813/full-prefill-1024-control-2.json
+/mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/solab-g3-m3-75bfe75-probe1-20260813/full-prefill-1024-control-3.json
+/mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/solab-g3-m3-75bfe75-probe1-20260813/full-prefill-1024-control-4.json
+/mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/solab-g3-m3-75bfe75-probe1-20260813/full-prefill-1024-control-5.json
+/mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/solab-g3-m3-75bfe75-formal1-20260813/frozen-five-baseline-manifest.json
+```
+
+The new candidate and v2 verdict must be create-only files under a new
+derived path rooted at `/mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/`; do
+not invent or document an eventual plugin SHA before the prospective v2
+implementation is committed.
+
 The dependency-free `TransferEvidenceBuilder` now supplies the worker probe's
 assembly seam. It accepts only the next canonical layer, rejects duplicates or
 out-of-order samples, requires all 24 layers before finalization, and becomes
@@ -264,16 +306,20 @@ Formal go criteria:
 - Five ordinary full-prefill controls use the same 1024-token serving
   configuration and source-warm-up-then-target protocol; their artifact
   manifest and `Umax`/`Umean` envelope are frozen before a fresh candidate.
-- The fresh candidate is captured only after that freeze, with no post-hoc
-  loosening, and satisfies `Qmax <= Umax` and `Qmean <= Umean` with sampled and
-  top-token agreement.
+- The prospective v2 candidate is captured only after that freeze, with no
+  post-hoc loosening, and satisfies the empirical five-control envelopes for
+  full mean, TV, JS, and high-mass maximum error, plus the hard ceilings
+  `0.014`, `0.02`, `0.001`, and `0.08`, respectively, with fixed
+  `epsilon=1e-4`.
 - Metrics show requested/found/loaded tokens, all prompt rows recomputed, and
   exactly zero effective saved-prefill fraction.
 - A miss and every injected validation/transfer failure either visibly fail or
   execute ordinary full prefill according to the configured policy.
 
-The current candidate is diagnostic-only, so these formal M3 criteria are not
-yet satisfied even though the independent transfer report passed.
+The strict-v1 candidate failed the immutable criterion described above, and the
+probability-aware v2 candidate has not yet been captured or evaluated. These
+formal M3 criteria are therefore not satisfied even though the independent
+transfer report passed.
 
 Stop criteria:
 
@@ -607,8 +653,10 @@ leave the private artifact directory.
 This gate remains blocked until formal M3 numerical equivalence, M4 YaRN/RoPE,
 M5 hybrid-group/sink, and M8 Responses-contract evidence are complete. The
 supplied all-layer transfer report is necessary evidence but is not a formal
-M3 pass, and the five-control candidate comparison is diagnostic-only because
-its policy was defined after observation.
+M3 pass. The strict-v1 `FAIL` is immutable; a prospective v2 response may
+reuse the same five controls and capture one new candidate without rerunning
+the baselines, but v2 and M3 remain unpassed until all probability-aware
+envelopes, hard ceilings, agreement checks, and transfer evidence pass.
 
 ## M9: benchmark design
 
@@ -694,16 +742,21 @@ Go criteria:
 | Harmony tool/multi-turn | Transparent request | Serialized response contract unchanged | Same contract plus measured approximation |
 
 Numerical thresholds are frozen before judging CacheBlend. For the moved-
-document M3 gate, capture five ordinary full-prefill controls under identical
-deterministic BF16 settings with `--max-num-batched-tokens 1024`; each control
-must warm the 256-token source prompt and then capture the 280-token target.
-Freeze the five artifact digests and the pairwise envelope
-`Umax=max(max_abs(B_i,B_j))` and
-`Umean=max(mean_abs(B_i,B_j))` before capturing a fresh CacheBlend candidate.
-At 100%, require `Qmax<=Umax`, `Qmean<=Umean`, and identical sampled/top-token
-selection. Do not widen or otherwise loosen the envelope after observing the
-candidate. Lower ratios use a written error budget derived from data; no
-universal tolerance is invented after seeing a failing result.
+document M3 gate, the five ordinary full-prefill controls under identical
+deterministic BF16 settings with `--max-num-batched-tokens 1024` are already
+stored at `/mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/solab-g3-m3-75bfe75-probe1-20260813/` and their manifest is already stored at
+`/mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/solab-g3-m3-75bfe75-formal1-20260813/frozen-five-baseline-manifest.json`.
+That existing manifest is the immutable strict-v1 policy. The prospective v2
+response reuses those five controls and freezes a separate v2
+manifest, does not rerun them, and captures one new candidate after that
+freeze. It uses fixed
+`epsilon=1e-4` and requires the candidate to be inside the empirical
+five-control envelope for full-vocabulary mean error, TV, JS divergence, and
+high-mass maximum error, with hard ceilings full mean `0.014`, TV `0.02`, JS
+`0.001`, and high-mass maximum `0.08`. Sampled/top-token agreement and
+independent transfer pass remain mandatory. Do not widen or otherwise loosen
+any envelope after observing the v2 candidate. No v2 or M3 pass is implied by
+the existing strict-v1 failure or by the transfer report alone.
 
 ## Risk register
 
@@ -741,7 +794,7 @@ repository. The non-model GPU suite contains the environment contract, BF16
 YaRN shift comparison, and hybrid gather/scatter round trip:
 
 ```bash
-CACHEBLEND_REPO=/path/to/cacheblend-gpt-oss
+CACHEBLEND_REPO=/mnt/nvme3n1/mlee/cacheblend-gpt-oss
 cd "$CACHEBLEND_REPO"
 uv sync --extra gpu --extra test
 uv run pytest -m "gpu and integration and not model" -vv
@@ -751,7 +804,7 @@ The first model-marked gate loads only the local checkpoint configuration and
 asserts the exact GPT-OSS topology before weight or logits work:
 
 ```bash
-CACHEBLEND_MODEL_PATH=/path/to/pinned/gpt-oss-20b
+CACHEBLEND_MODEL_PATH=/mnt/nvme3n1/labuser/.cache/huggingface/hub/models--openai--gpt-oss-20b/snapshots/6cee5e81ee83917806bbde320786a8fb61efebee
 export CACHEBLEND_MODEL_PATH
 uv run pytest tests/gpu/test_gpt_oss_model_config.py \
   -m "gpu and integration and model" -vv
