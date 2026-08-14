@@ -174,7 +174,7 @@ def test_exact_matcher_rejects_chunk_hash_count_mismatch() -> None:
         matcher.on_new_token_hashes(list(range(256)), [])
 
 
-def test_store_completion_is_queued_before_client_event(
+def test_store_completion_is_published_before_client_event(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     order: list[str] = []
@@ -196,7 +196,7 @@ def test_store_completion_is_queued_before_client_event(
             return cls(interprocess=True)
 
         def wait(self, *, stream: object) -> None:
-            assert stream == "stream"
+            assert stream is gpu_stream
 
         def record(self) -> None:
             order.append("event")
@@ -209,7 +209,7 @@ def test_store_completion_is_queued_before_client_event(
 
         @staticmethod
         def stream(stream: object) -> Context:
-            assert stream == "stream"
+            assert stream is gpu_stream
             return Context()
 
     Cuda.Event = Event  # type: ignore[attr-defined]
@@ -217,12 +217,11 @@ def test_store_completion_is_queued_before_client_event(
     class Torch:
         cuda = Cuda()
 
-    class ExternalStream:
-        def launch_host_func(self, callback: object, keys: list[object]) -> None:
-            assert getattr(callback, "__self__", None) is storage
-            assert getattr(callback, "__name__", None) == "finish_write"
-            assert keys == ["key"]
-            order.append("finish_write")
+    class Stream:
+        def synchronize(self) -> None:
+            order.append("synchronize")
+
+    gpu_stream = Stream()
 
     class Storage:
         def reserve_write(
@@ -233,6 +232,7 @@ def test_store_completion_is_queued_before_client_event(
 
         def finish_write(self, keys: list[object]) -> None:
             assert keys == ["key"]
+            order.append("finish_write")
 
     class Lock:
         def __enter__(self) -> Lock:
@@ -247,8 +247,7 @@ def test_store_completion_is_queued_before_client_event(
 
     class GpuContext:
         device = "cuda:0"
-        stream = "stream"
-        cupy_stream = ExternalStream()
+        stream = gpu_stream
         dtype = "bf16"
 
         @staticmethod
@@ -297,4 +296,4 @@ def test_store_completion_is_queued_before_client_event(
         b"vllm-event",
     )
 
-    assert order == ["copy", "finish_write", "event"]
+    assert order == ["copy", "synchronize", "finish_write", "event"]

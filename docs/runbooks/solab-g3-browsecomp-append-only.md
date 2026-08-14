@@ -122,7 +122,7 @@ export CUDA_VISIBLE_DEVICES=0
 
 .venv/bin/python -m cacheblend_gpt_oss.storage.lmcache_server_v0_4_3 \
   --host 127.0.0.1 \
-  --port 5555 \
+  --port 5556 \
   --chunk-size 256 \
   --hash-algorithm blake3 \
   --l1-size-gb 16 \
@@ -144,6 +144,7 @@ test ! -e "$CACHEBLEND_SIDECAR"
 
 CACHEBLEND_KV_CONFIG=$(
   .venv/bin/python scripts/render_transfer_config.py \
+    --lmcache-server-url tcp://127.0.0.1:5556 \
     --sidecar-path "$CACHEBLEND_SIDECAR" \
     --model-revision "$CACHEBLEND_MODEL_REVISION" \
     --tokenizer-revision "$CACHEBLEND_TOKENIZER_REVISION" \

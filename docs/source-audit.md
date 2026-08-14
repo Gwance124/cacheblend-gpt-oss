@@ -362,12 +362,14 @@ The pinned 0.4.3 server also has a live store-completion race in
 `BlendEngineV2._cb_store_gpu_copy`: it records the client-visible CUDA event and
 only then queues `storage_manager.finish_write`. A subsequent lookup can observe
 the fingerprint, fail the storage prefetch, and evict that freshly stored
-fingerprint before the storage index is committed. Upstream later documented
-this ordering correction. The project therefore ships a version-scoped server
-entry point that moves `finish_write` before `event.record` and installs the
-exact candidate index described above; it does not vendor or replace LMCache.
-The exact source and upstream issue analysis are linked in
-`storage/lmcache_server_v0_4_3.py`.
+fingerprint before the storage index is committed. An initial backport queued
+the callback before the event, but a sequential live source/target gate still
+returned no storage-backed candidates. The version-scoped server entry point
+therefore synchronizes the server copy stream, calls `finish_write` directly,
+and records the client-visible event last. It also reports bounded aggregate
+matcher registration/window/hit counts so a remaining miss can be attributed
+without logging request IDs, token IDs, hashes, or prompt content. The exact
+pinned sources are linked in `storage/lmcache_server_v0_4_3.py`.
 
 ### Code that is absent
 

@@ -87,16 +87,16 @@ Start the pinned LMCache Blend V2 server in a separate shell on `solab-g3`.
 Use the repository wrapper, not the raw 0.4.3 module: the pinned server has a
 documented store-completion race where its CUDA event can become visible before
 the storage-index commit. The public direct-address matcher also missed the
-first live offset-17 fixture after a successful store. The wrapper backports the
-callback ordering and substitutes a bounded exact-token candidate index;
-LMCache 0.4.3 still owns object storage, prefetch, retrieval, and server
-lifecycle.
+first live offset-17 fixture after a successful store. The wrapper synchronizes
+the server copy stream before publishing the write, records the client event
+last, and substitutes a bounded exact-token candidate index. LMCache 0.4.3
+still owns object storage, prefetch, retrieval, and server lifecycle.
 
 ```bash
 export CUDA_VISIBLE_DEVICES=0
 .venv/bin/python -m cacheblend_gpt_oss.storage.lmcache_server_v0_4_3 \
   --host 127.0.0.1 \
-  --port 5555 \
+  --port 5556 \
   --chunk-size 256 \
   --hash-algorithm blake3 \
   --l1-size-gb 4 \

@@ -1,18 +1,22 @@
 """Pinned LMCache 0.4.3 Blend V2 server entry point with safe backports.
 
-LMCache 0.4.3 enqueues ``finish_write`` after the interprocess CUDA event in
-``BlendEngineV2._cb_store_gpu_copy``.  A client can therefore observe the event,
-submit the immediately following CacheBlend lookup, and have the server probe
-the storage index before the just-written object is committed.  The pinned
-server then removes the fresh fingerprint as stale and reports a miss.
+LMCache 0.4.3 records the interprocess CUDA event before it enqueues the
+``finish_write`` host callback in ``BlendEngineV2._cb_store_gpu_copy``.  A
+client can therefore observe the event, submit the immediately following
+CacheBlend lookup, and have the server probe the storage index before the
+just-written object is committed.  The pinned server then removes the fresh
+fingerprint as stale and reports a miss.
 
-The upstream issue analysis identified this ordering correction after the
-pinned release.  The minimal ordering change is backported here without
-copying or replacing LMCache: the
-``finish_write`` host callback is enqueued before the event is recorded on the
-same CUDA stream.  The wrapper imports LMCache lazily, patches only the exact
-0.4.3 class, and delegates all argument parsing, handlers, storage, and server
-lifecycle to the pinned public module.
+An initial backport placed the callback before the event on the external view
+of the same CUDA stream.  A live sequential source/target gate still observed
+zero storage-backed candidates.  This wrapper now takes the conservative
+correctness path: synchronize the server stream after the asynchronous D2H
+copies, call ``finish_write`` directly, and only then record the client-visible
+event.  The first transfer milestone is intentionally correctness-first, so
+the extra server-side barrier is accepted and measured rather than hidden.
+The wrapper imports LMCache lazily, patches only the exact 0.4.3 class, and
+delegates all argument parsing, handlers, storage, and server lifecycle to the
+pinned public module.
 
 The public matcher also uses only a truncated direct-address polynomial hash
 for candidate generation.  A live GPT-OSS gate stored an exact 256-token
@@ -27,8 +31,8 @@ Source attribution:
 
 * LMCache 0.4.3 ``BlendEngineV2._cb_store_gpu_copy``:
   https://github.com/LMCache/LMCache/blob/7f326118a2f1afc7801988dd02e3055bdf21ef6b/lmcache/v1/multiprocess/blend_server_v2.py#L450-L532
-* Upstream race-fix change (the ordering backport only):
-  https://github.com/LMCache/LMCache/pull/3179
+* LMCache 0.4.3 ``DistributedStorageManager.finish_write``:
+  https://github.com/LMCache/LMCache/blob/7f326118a2f1afc7801988dd02e3055bdf21ef6b/lmcache/v1/distributed/storage_manager.py#L164-L187
 
 This module is a server-process entry point.  It intentionally imports Torch
 and LMCache only inside the patch/``main`` paths so CPU unit tests can import it
@@ -110,6 +114,14 @@ def patched_on_new_token_hashes(
             by_hash[token_hash] = (chunk, start)
             bucket = by_first.setdefault(chunk[0], {})
             bucket[token_hash] = (chunk, start)
+        indexed_chunks = len(by_hash)
+    logger = getattr(type(self), "_cacheblend_logger", None)
+    if logger is not None:
+        logger.info(
+            "CacheBlend exact matcher registered %d chunks; indexed chunks: %d",
+            len(additions),
+            indexed_chunks,
+        )
 
 
 def patched_match_sub_sequence(
@@ -128,7 +140,13 @@ def patched_match_sub_sequence(
         )
     ):
         raise RuntimeError("LMCache exact matcher received invalid query tokens")
-    if len(token_ids) < chunk_size:
+    query_windows = max(0, len(token_ids) - chunk_size + 1)
+    if not query_windows:
+        logger = getattr(type(self), "_cacheblend_logger", None)
+        if logger is not None:
+            logger.info(
+                "CacheBlend exact matcher searched 0 windows; exact matches: 0"
+            )
         return []
     lock = getattr(self, "_cacheblend_exact_lock", None)
     by_first = getattr(self, "_cacheblend_exact_by_first_token", None)
@@ -165,6 +183,13 @@ def patched_match_sub_sequence(
                 )
             )
             seen_hashes.add(token_hash)
+    logger = getattr(type(self), "_cacheblend_logger", None)
+    if logger is not None:
+        logger.info(
+            "CacheBlend exact matcher searched %d windows; exact matches: %d",
+            query_windows,
+            len(results),
+        )
     return results
 
 
@@ -202,12 +227,13 @@ def patched_store_gpu_copy(
     offset: int,
     event_ipc_handle: bytes,
 ) -> tuple[Any, dict[Any, Any]]:
-    """Copy the pinned method with the upstream store-completion ordering fix.
+    """Publish copied chunks before recording the client-visible event.
 
-    ``cupy_stream`` is the external-stream view of ``gpu_context.stream`` in the
-    pinned LMCache implementation.  Queueing ``finish_write`` before
-    ``event.record`` makes the client's event wait cover storage-index commit,
-    eliminating the fresh-store lookup race.
+    The pinned D2H helper is explicitly asynchronous.  Synchronizing the
+    server stream makes those copies complete before the direct
+    ``finish_write`` call publishes the reserved objects to L1.  Recording the
+    interprocess event last makes a successful client wait strong evidence
+    that both the bytes and storage index are visible.
     """
 
     torch = import_module("torch")
@@ -246,12 +272,10 @@ def patched_store_gpu_copy(
                 tmp_buffer.copy_(gpu_kv_slice, non_blocking=True)
                 lmcache_memcpy_async_d2h(tmp_buffer, memory_obj)
 
-        # This ordering is the complete fix.  Both operations target the same
-        # underlying CUDA stream in pinned LMCache 0.4.3.
-        gpu_context.cupy_stream.launch_host_func(
-            self.storage_manager.finish_write,
-            list(reserved_dict.keys()),
-        )
+        # Correctness-first publication barrier for the 100%-recompute gate.
+        # The pinned copy helper does not synchronize the stream.
+        gpu_context.stream.synchronize()
+        self.storage_manager.finish_write(list(reserved_dict.keys()))
         event.record()
 
     return event, reserved_dict
@@ -280,6 +304,7 @@ def patch_lmcache_blend_module(module: Any) -> Callable[..., Any]:
         raise RuntimeError("LMCache matcher initializer is unavailable")
     matcher_class._cacheblend_original_init = original_init
     matcher_class._cacheblend_match_type = match_type
+    matcher_class._cacheblend_logger = getattr(module, "logger", None)
     matcher_class.__init__ = patched_matcher_init
     matcher_class.on_new_token_hashes = patched_on_new_token_hashes
     matcher_class.match_sub_sequence = patched_match_sub_sequence

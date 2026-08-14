@@ -122,6 +122,7 @@ export VLLM_USE_V2_MODEL_RUNNER=0
   --max-num-seqs 1 \
   --max-num-batched-tokens 512 \
   --long-prefill-token-threshold 0 \
+  --no-async-scheduling \
   --enforce-eager \
   --no-enable-prefix-caching \
   --kv-cache-dtype auto \
@@ -188,6 +189,7 @@ test ! -e "$CACHEBLEND_SIDECAR"
 
 CACHEBLEND_KV_CONFIG=$(
   .venv/bin/python scripts/render_transfer_config.py \
+    --lmcache-server-url tcp://127.0.0.1:5556 \
     --sidecar-path "$CACHEBLEND_SIDECAR" \
     --model-revision "$CACHEBLEND_MODEL_REVISION" \
     --tokenizer-revision "$CACHEBLEND_TOKENIZER_REVISION" \
