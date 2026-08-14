@@ -55,6 +55,7 @@ _TRANSFER_KEYS = frozenset(
         "transfer_failure_policy",
     }
 )
+_TRANSFER_OPTIONAL_KEYS = frozenset({"transfer_evidence_path"})
 _ATTESTATION_KEYS = frozenset(
     {
         "lmcache_version",
@@ -93,6 +94,7 @@ class TransferConfigErrorCode(str, Enum):
     ATTESTATION_MISMATCH = "attestation_mismatch"
     INVALID_LMCACHE_SERVER_URL = "invalid_lmcache_server_url"
     INVALID_SIDECAR_PATH = "invalid_sidecar_path"
+    INVALID_TRANSFER_EVIDENCE_PATH = "invalid_transfer_evidence_path"
     INVALID_IDENTITY_FIELD = "invalid_identity_field"
     INVALID_CONFIG_DIGEST = "invalid_config_digest"
     INVALID_STAGING_TOKEN_CAPACITY = "invalid_staging_token_capacity"
@@ -194,6 +196,17 @@ def _require_sidecar_path(value: object) -> str:
     return value
 
 
+def _require_transfer_evidence_path(value: object) -> str:
+    if not isinstance(value, str) or not value or "\x00" in value:
+        _fail(TransferConfigErrorCode.INVALID_TRANSFER_EVIDENCE_PATH)
+    if (
+        len(value.encode("utf-8")) > MAX_SIDECAR_PATH_BYTES
+        or not os.path.isabs(value)
+    ):
+        _fail(TransferConfigErrorCode.INVALID_TRANSFER_EVIDENCE_PATH)
+    return value
+
+
 def _require_staging_capacity(value: object) -> int:
     if (
         isinstance(value, bool)
@@ -280,6 +293,7 @@ class Transfer100PctConfig:
     staging_token_capacity: int
     request_timeout_seconds: float
     transfer_failure_policy: TransferFailurePolicy
+    transfer_evidence_path: str | None = None
     mode: ConnectorTransferMode = field(
         default=ConnectorTransferMode.TRANSFER_100PCT,
         init=False,
@@ -302,6 +316,12 @@ class Transfer100PctConfig:
         timeout = _require_request_timeout(self.request_timeout_seconds)
         if self.transfer_failure_policy is not TransferFailurePolicy.FULL_PREFILL:
             _fail(TransferConfigErrorCode.INVALID_TRANSFER_FAILURE_POLICY)
+        if self.transfer_evidence_path is not None:
+            evidence_path = _require_transfer_evidence_path(
+                self.transfer_evidence_path
+            )
+            if evidence_path == self.sidecar_path:
+                _fail(TransferConfigErrorCode.INVALID_TRANSFER_EVIDENCE_PATH)
         object.__setattr__(self, "request_timeout_seconds", timeout)
         object.__setattr__(
             self,
@@ -382,12 +402,13 @@ def parse_connector_extra_config(
     if mode != ConnectorTransferMode.TRANSFER_100PCT.value:
         _fail(TransferConfigErrorCode.MODE_UNSUPPORTED)
 
-    _require_exact_keys(
-        extra_config,
-        _TRANSFER_KEYS,
-        unknown_code=TransferConfigErrorCode.UNKNOWN_TOP_LEVEL_KEYS,
-        missing_code=TransferConfigErrorCode.MISSING_TRANSFER_KEYS,
-    )
+    actual_keys = set(extra_config)
+    if any(not isinstance(key, str) for key in extra_config) or (
+        actual_keys - (_TRANSFER_KEYS | _TRANSFER_OPTIONAL_KEYS)
+    ):
+        _fail(TransferConfigErrorCode.UNKNOWN_TOP_LEVEL_KEYS)
+    if _TRANSFER_KEYS - actual_keys:
+        _fail(TransferConfigErrorCode.MISSING_TRANSFER_KEYS)
     failure_policy = extra_config["transfer_failure_policy"]
     if failure_policy != TransferFailurePolicy.FULL_PREFILL.value:
         _fail(TransferConfigErrorCode.INVALID_TRANSFER_FAILURE_POLICY)
@@ -405,6 +426,7 @@ def parse_connector_extra_config(
         staging_token_capacity=extra_config["staging_token_capacity"],
         request_timeout_seconds=extra_config["request_timeout_seconds"],
         transfer_failure_policy=TransferFailurePolicy.FULL_PREFILL,
+        transfer_evidence_path=extra_config.get("transfer_evidence_path"),
     )
 
 

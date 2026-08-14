@@ -183,8 +183,10 @@ another model/config/plugin identity:
 
 ```bash
 CACHEBLEND_SIDECAR="$CACHEBLEND_RUN_DIR/sidecar.sqlite3"
-export CACHEBLEND_SIDECAR
+CACHEBLEND_TRANSFER_EVIDENCE="$CACHEBLEND_RUN_DIR/transfer-evidence.json"
+export CACHEBLEND_SIDECAR CACHEBLEND_TRANSFER_EVIDENCE
 test ! -e "$CACHEBLEND_SIDECAR"
+test ! -e "$CACHEBLEND_TRANSFER_EVIDENCE"
 .venv/bin/python -c "import os; from cacheblend_gpt_oss.storage.sidecar import SidecarMode, open_sidecar_index; index = open_sidecar_index(os.environ['CACHEBLEND_SIDECAR'], SidecarMode.WORKER_READ_WRITE); index.close()"
 
 CACHEBLEND_KV_CONFIG=$(
@@ -196,6 +198,7 @@ CACHEBLEND_KV_CONFIG=$(
     --model-config-digest "$CACHEBLEND_MODEL_CONFIG_DIGEST" \
     --kv-cache-config-digest "$CACHEBLEND_KV_CONFIG_DIGEST" \
     --adapter-revision "$CACHEBLEND_PLUGIN_COMMIT" \
+    --transfer-evidence-path "$CACHEBLEND_TRANSFER_EVIDENCE" \
     --staging-token-capacity 1024 \
     --request-timeout-seconds 120
 )
@@ -285,8 +288,9 @@ curl --fail-with-body http://127.0.0.1:8000/metrics \
   > "$CACHEBLEND_RUN_DIR/cacheblend-metrics.txt"
 ```
 
-If the worker-side probe has produced the required per-layer digest sidecar,
-validate it independently before accepting the final-distribution result:
+The explicit `--transfer-evidence-path` enables the worker-side probe for this
+single create-only capture. Validate its required per-layer digest sidecar
+independently before accepting the final-distribution result:
 
 ```bash
 .venv/bin/python scripts/validate_transfer_evidence.py \
@@ -304,6 +308,13 @@ different request fails this binding check.
 The report must show 12 sliding and 12 full layers, all layers loaded and
 overwritten, and zero prefill tokens avoided. This command is read-only with
 respect to KV; it cannot create evidence when the worker probe is absent.
+Schema v2 records successful load-copy and ordinary-attention save-hook
+observations explicitly. Digest equality proves source/load and
+fresh-prefill/final content; byte inequality is not used as proof of a write,
+because a real layer-0 write can legitimately reproduce identical K/V bytes.
+This first probe intentionally supports the M3 fixture in which the cached
+256-token document is the complete source prompt. It is not yet a generic
+BrowseComp+ per-request evidence producer.
 
 The evaluator exits nonzero unless sampled/top tokens agree and complete-vector
 maximum and mean errors stay inside the already-frozen envelope. Preserve the

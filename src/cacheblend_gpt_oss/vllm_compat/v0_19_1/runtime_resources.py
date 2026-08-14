@@ -57,6 +57,10 @@ from cacheblend_gpt_oss.vllm_compat.v0_19_1.staging import (
 from cacheblend_gpt_oss.vllm_compat.v0_19_1.transfer_config import (
     Transfer100PctConfig,
 )
+from cacheblend_gpt_oss.vllm_compat.v0_19_1.transfer_probe import (
+    TensorBytesReader,
+    load_torch_tensor_bytes_reader,
+)
 from cacheblend_gpt_oss.vllm_compat.v0_19_1.transfer_runtime import (
     TransferRuntime,
     WorkerDataPlane,
@@ -200,6 +204,17 @@ class OpenWorkerBridge(WorkerStorage, WorkerDataPlane, Protocol):
 
     def close(self) -> None: ...
 
+    def capture_prefill_layer(self, layer_name: str) -> None: ...
+
+    def finish_transfer_evidence(
+        self,
+        *,
+        recomputed_tokens: int,
+        prefill_tokens_avoided: int,
+    ) -> None: ...
+
+    def abort_transfer_evidence(self) -> None: ...
+
 
 class WorkerBridgeFactory(Protocol):
     def __call__(
@@ -212,6 +227,8 @@ class WorkerBridgeFactory(Protocol):
         tensor_ops: TensorOps,
         paged_caches: Mapping[str, object],
         correct_key_positions: KeyPositionCorrector,
+        transfer_evidence_path: str | None,
+        tensor_bytes_reader: TensorBytesReader | None,
     ) -> OpenWorkerBridge: ...
 
 
@@ -240,6 +257,8 @@ def _worker_bridge_factory(
     tensor_ops: TensorOps,
     paged_caches: Mapping[str, object],
     correct_key_positions: KeyPositionCorrector,
+    transfer_evidence_path: str | None,
+    tensor_bytes_reader: TensorBytesReader | None,
 ) -> OpenWorkerBridge:
     return GptOssWorkerBridge(
         staging_config=staging_config,
@@ -249,6 +268,8 @@ def _worker_bridge_factory(
         tensor_ops=tensor_ops,
         paged_caches=paged_caches,
         correct_key_positions=correct_key_positions,
+        transfer_evidence_path=transfer_evidence_path,
+        tensor_bytes_reader=tensor_bytes_reader,
     )
 
 
@@ -384,6 +405,9 @@ def create_worker_runtime_resources(
     key_corrector_factory: Callable[[], KeyPositionCorrector] = (
         load_torch_yarn_corrector
     ),
+    tensor_bytes_reader_factory: Callable[[], TensorBytesReader] = (
+        load_torch_tensor_bytes_reader
+    ),
     cuda_runtime_factory: CudaRuntimeFactory = _load_cuda_runtime_identity,
     bridge_factory: WorkerBridgeFactory = _worker_bridge_factory,
 ) -> WorkerRuntimeResources:
@@ -424,6 +448,12 @@ def create_worker_runtime_resources(
             tensor_ops=tensor_ops_factory(),
             paged_caches=dict(paged_caches),
             correct_key_positions=key_corrector_factory(),
+            transfer_evidence_path=config.transfer_evidence_path,
+            tensor_bytes_reader=(
+                None
+                if config.transfer_evidence_path is None
+                else tensor_bytes_reader_factory()
+            ),
         )
         bridge.open()
         runtime = TransferRuntime(layout, bridge, bridge)

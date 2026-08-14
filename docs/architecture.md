@@ -563,19 +563,26 @@ connector counter alone cannot satisfy this gate: if native prompt work,
 source credit, or timing observations do not reconcile, the artifact is not
 written.
 
-The separate `correctness.transfer` sidecar contract is the planned bridge for
-that live-debug evidence. It requires source/loaded/target digest agreement and
-an observed before/load/prefill transition for all 24 layers, with even
+The separate `correctness.transfer` sidecar contract and explicit worker probe
+provide that live-debug evidence. Schema v2 requires source/loaded/target
+digest agreement plus observed load-copy and ordinary-prefill save operations
+for all 24 layers, with even
 sliding-window and odd full-attention kinds checked independently. Its presence
 is never inferred from fluent output or connector counters alone. The validator
 also accepts the CacheBlend correctness artifact and then requires matching
 source/target prompt digests, target length, loaded-token count,
 recomputed-token count, and saved-prefill count. A valid sidecar from another
 request therefore cannot be substituted for the artifact's own transfer proof.
-The dependency-free `TransferEvidenceBuilder` is the intended worker-probe
-assembly seam: it accepts one canonical layer at a time and cannot finalize a
-partial or reordered 24-layer capture. It does not sample tensors or claim a
-GPU result by itself.
+The dependency-free `TransferEvidenceBuilder` remains the worker-probe assembly
+seam: it accepts one canonical layer at a time and cannot finalize a partial or
+reordered 24-layer capture. The version-scoped worker probe supplies real tensor
+samples only when an explicit create-only evidence path is configured; the
+builder alone never claims a GPU result.
+
+The first producer is deliberately scoped to the M3 moved-document fixture:
+its one cached 256-token document is also the complete source prompt. Extending
+source-prompt binding to arbitrary multi-document BrowseComp+ requests remains
+separate work.
 
 At the request boundary, `found == loaded + rejected`, and
 `effective_saved_prefill_fraction == 0` whenever recomputation is 100%.

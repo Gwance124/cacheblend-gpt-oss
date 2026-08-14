@@ -48,10 +48,13 @@ def main() -> int:
     report = {
         "schema_version": evidence.schema_version,
         "evidence_digest": transfer_evidence_digest(evidence),
+        "namespace_digest": evidence.namespace_digest,
+        "source_prompt_tokens": evidence.source_prompt_tokens,
         "loaded_tokens": evidence.loaded_tokens,
         "target_prompt_tokens": evidence.target_prompt_tokens,
         "recomputed_tokens": evidence.recomputed_tokens,
         "prefill_tokens_avoided": evidence.prefill_tokens_avoided,
+        "reusable_segments": len(evidence.reusable_segments),
         "sliding_layers": len(evidence.sliding_layers),
         "full_layers": len(evidence.full_layers),
         "all_layers_loaded_and_overwritten": (

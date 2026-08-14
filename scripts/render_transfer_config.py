@@ -34,6 +34,7 @@ def main() -> int:
     parser.add_argument("--adapter-revision", required=True)
     parser.add_argument("--staging-token-capacity", type=int, default=512)
     parser.add_argument("--request-timeout-seconds", type=float, default=120.0)
+    parser.add_argument("--transfer-evidence-path", type=Path)
     args = parser.parse_args()
 
     extra = {
@@ -55,6 +56,8 @@ def main() -> int:
         "request_timeout_seconds": args.request_timeout_seconds,
         "transfer_failure_policy": "full_prefill",
     }
+    if args.transfer_evidence_path is not None:
+        extra["transfer_evidence_path"] = str(args.transfer_evidence_path)
     parse_connector_extra_config(extra)
     rendered = {
         "kv_connector": "GptOssCacheBlendConnector",

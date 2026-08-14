@@ -207,17 +207,19 @@ Deliverables:
 - Capture recomputed full- and sliding-layer K/V during `save_kv_layer`, not
   solely at request completion.
 
-The CPU-only `correctness.transfer` sidecar schema now defines this evidence
-boundary: every layer must carry K/V digests for destination-before, loaded
-source, and fresh-prefill values, with exact source/loaded and target/prefill
-agreement. It remains an empty contract until a worker-side `solab-g3` probe
-supplies real tensor samples.
+The `correctness.transfer` schema and version-scoped worker probe now implement
+this evidence boundary: every layer carries K/V digests for
+destination-before, loaded source, and fresh-prefill values, with exact
+source/loaded and target/prefill agreement. Schema v2 separately records the
+successful load-copy and ordinary-attention save operations, because a real
+write may legitimately reproduce identical bytes. A `solab-g3` run is still
+required before claiming the probe passed on GPU.
 
 The dependency-free `TransferEvidenceBuilder` now supplies the worker probe's
 assembly seam. It accepts only the next canonical layer, rejects duplicates or
 out-of-order samples, requires all 24 layers before finalization, and becomes
 immutable after producing the sidecar. It performs no tensor sampling itself;
-the CUDA probe still must provide real digest values.
+the explicitly configured version-scoped worker probe provides those values.
 
 The moved-document capture script also waits for the pinned connector's
 `store_tokens_completed` counter after each source/target request. A request

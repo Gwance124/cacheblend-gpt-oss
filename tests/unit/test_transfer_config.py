@@ -105,6 +105,7 @@ def test_valid_transfer_config_is_frozen_and_builds_pinned_namespace() -> None:
     assert parsed.transfer_enabled
     assert parsed.lmcache_server_url == "tcp://127.0.0.1:5555"
     assert parsed.sidecar_path == "/var/lib/cacheblend/sidecar.sqlite3"
+    assert parsed.transfer_evidence_path is None
     assert parsed.staging_token_capacity == 1024
     assert parsed.request_timeout_seconds == 10.0
     assert parsed.transfer_failure_policy is TransferFailurePolicy.FULL_PREFILL
@@ -130,6 +131,26 @@ def test_valid_transfer_config_is_frozen_and_builds_pinned_namespace() -> None:
     assert namespace.cuda_runtime == PINNED_TARGET.cuda_runtime
     with pytest.raises(FrozenInstanceError):
         parsed.staging_token_capacity = 2048  # type: ignore[misc]
+
+
+def test_transfer_evidence_path_is_optional_absolute_and_separate() -> None:
+    raw = _valid_config()
+    raw["transfer_evidence_path"] = "/var/lib/cacheblend/transfer-evidence.json"
+    parsed = parse_connector_extra_config(raw)
+
+    assert isinstance(parsed, Transfer100PctConfig)
+    assert (
+        parsed.transfer_evidence_path
+        == "/var/lib/cacheblend/transfer-evidence.json"
+    )
+
+    for invalid in ("relative.json", "", raw["sidecar_path"]):
+        rejected = _valid_config()
+        rejected["transfer_evidence_path"] = invalid
+        _assert_error(
+            TransferConfigErrorCode.INVALID_TRANSFER_EVIDENCE_PATH,
+            lambda rejected=rejected: parse_connector_extra_config(rejected),
+        )
 
 
 def test_nested_input_is_copied_not_retained() -> None:

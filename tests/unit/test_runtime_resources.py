@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 from typing import cast
 
 import pytest
@@ -242,7 +243,8 @@ def test_scheduler_creation_failure_cleans_opened_sidecar(tmp_path: object) -> N
 
 
 def test_worker_resources_bind_one_device_and_open_bridge(tmp_path: object) -> None:
-    config = _config(tmp_path)
+    evidence_path = f"{tmp_path}/transfer-evidence.json"
+    config = replace(_config(tmp_path), transfer_evidence_path=evidence_path)
     layout = _layout()
     caches = {_layer_name(index): object() for index in range(24)}
     sidecar = FakeSidecar()
@@ -252,6 +254,7 @@ def test_worker_resources_bind_one_device_and_open_bridge(tmp_path: object) -> N
     backend = cast(object, object())
     tensor_ops = cast(object, object())
     corrector = cast(object, lambda *args: object())
+    tensor_bytes_reader = cast(object, lambda _tensor: b"bytes")
 
     def sidecar_factory(path: str, mode: SidecarMode) -> RuntimeSidecar:
         captured["sidecar_factory"] = (path, mode)
@@ -278,6 +281,7 @@ def test_worker_resources_bind_one_device_and_open_bridge(tmp_path: object) -> N
         staging_backend_factory=lambda: cast(object, backend),
         tensor_ops_factory=lambda: cast(object, tensor_ops),
         key_corrector_factory=lambda: cast(object, corrector),
+        tensor_bytes_reader_factory=lambda: cast(object, tensor_bytes_reader),
         cuda_runtime_factory=_cuda_identity,
         bridge_factory=bridge_factory,
     )
@@ -299,6 +303,8 @@ def test_worker_resources_bind_one_device_and_open_bridge(tmp_path: object) -> N
     assert captured["staging_backend"] is backend
     assert captured["tensor_ops"] is tensor_ops
     assert captured["correct_key_positions"] is corrector
+    assert captured["transfer_evidence_path"] == evidence_path
+    assert captured["tensor_bytes_reader"] is tensor_bytes_reader
     resources.close()
     resources.close()
     assert bridge.close_calls == 1

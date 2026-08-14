@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import NoReturn
 
+from cacheblend_gpt_oss.correctness.models import ReusableSegmentIdentity
 from cacheblend_gpt_oss.correctness.transfer import (
     TRANSFER_EVIDENCE_SCHEMA_VERSION,
     LayerTransferEvidence,
@@ -56,18 +57,26 @@ def _is_int(value: object) -> bool:
 class TransferEvidenceCaptureMetadata:
     """Prompt/counter identity supplied before any layer sample is captured."""
 
+    namespace_digest: str
     source_prompt_digest: str
+    source_prompt_tokens: int
     target_prompt_digest: str
     loaded_tokens: int
     target_prompt_tokens: int
     recomputed_tokens: int
+    reusable_segments: tuple[ReusableSegmentIdentity, ...]
     prefill_tokens_avoided: int = 0
 
     def __post_init__(self) -> None:
-        for digest in (self.source_prompt_digest, self.target_prompt_digest):
+        for digest in (
+            self.namespace_digest,
+            self.source_prompt_digest,
+            self.target_prompt_digest,
+        ):
             if not isinstance(digest, str) or _HEX_64.fullmatch(digest) is None:
                 _fail(TransferCaptureErrorCode.INVALID_METADATA)
         counts = (
+            self.source_prompt_tokens,
             self.loaded_tokens,
             self.target_prompt_tokens,
             self.recomputed_tokens,
@@ -76,7 +85,15 @@ class TransferEvidenceCaptureMetadata:
         if any(not _is_int(value) or value < 0 for value in counts):
             _fail(TransferCaptureErrorCode.INVALID_METADATA)
         if (
-            self.target_prompt_tokens == 0
+            self.source_prompt_tokens == 0
+            or not self.reusable_segments
+            or any(
+                not isinstance(segment, ReusableSegmentIdentity)
+                for segment in self.reusable_segments
+            )
+            or sum(segment.tokens for segment in self.reusable_segments)
+            != self.loaded_tokens
+            or self.target_prompt_tokens == 0
             or self.loaded_tokens > self.target_prompt_tokens
             or self.recomputed_tokens != self.target_prompt_tokens
             or self.prefill_tokens_avoided != 0
@@ -129,12 +146,15 @@ class TransferEvidenceBuilder:
         metadata = self._metadata
         self._result = TransferEvidence(
             schema_version=TRANSFER_EVIDENCE_SCHEMA_VERSION,
+            namespace_digest=metadata.namespace_digest,
             source_prompt_digest=metadata.source_prompt_digest,
+            source_prompt_tokens=metadata.source_prompt_tokens,
             target_prompt_digest=metadata.target_prompt_digest,
             loaded_tokens=metadata.loaded_tokens,
             target_prompt_tokens=metadata.target_prompt_tokens,
             recomputed_tokens=metadata.recomputed_tokens,
             prefill_tokens_avoided=metadata.prefill_tokens_avoided,
+            reusable_segments=metadata.reusable_segments,
             layers=tuple(self._layers),
         )
         return self._result

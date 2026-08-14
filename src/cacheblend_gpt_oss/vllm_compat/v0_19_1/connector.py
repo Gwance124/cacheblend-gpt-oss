@@ -648,6 +648,13 @@ class GptOssCacheBlendConnector(
             if layer_name in active.saved_layer_names:
                 raise RuntimeError("A KV-cache layer was saved more than once.")
             active.saved_layer_names.add(layer_name)
+            if (
+                isinstance(self._transfer_config, Transfer100PctConfig)
+                and self._transfer_config.transfer_evidence_path is not None
+            ):
+                if self._worker_resources is None:
+                    raise RuntimeError("Worker transfer resources are unavailable.")
+                self._worker_resources.bridge.capture_prefill_layer(layer_name)
 
     def wait_for_save(self) -> None:
         self._require_role(KVConnectorRole.WORKER, "wait_for_save")
@@ -669,6 +676,20 @@ class GptOssCacheBlendConnector(
         post_forward = self._worker_resources.transfer_runtime.after_forward(
             completion, active.adapted_blocks
         )
+        if (
+            isinstance(self._transfer_config, Transfer100PctConfig)
+            and self._transfer_config.transfer_evidence_path is not None
+        ):
+            if (
+                active.pre_forward.state is TransferAttemptState.SUCCEEDED
+                and post_forward.state is TransferAttemptState.SUCCEEDED
+            ):
+                self._worker_resources.bridge.finish_transfer_evidence(
+                    recomputed_tokens=active.metadata.prompt_token_count,
+                    prefill_tokens_avoided=post_forward.prefill_tokens_avoided,
+                )
+            else:
+                self._worker_resources.bridge.abort_transfer_evidence()
         self._stats.record_store(
             eligible_tokens=post_forward.eligible_store_tokens,
             stored_tokens=post_forward.stored_tokens,

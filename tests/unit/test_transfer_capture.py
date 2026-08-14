@@ -9,6 +9,7 @@ import pytest
 from cacheblend_gpt_oss.correctness import (
     TRANSFER_EVIDENCE_SCHEMA_VERSION,
     LayerTransferEvidence,
+    ReusableSegmentIdentity,
     TransferCaptureError,
     TransferCaptureErrorCode,
     TransferEvidenceBuilder,
@@ -29,8 +30,11 @@ def _layer(index: int) -> LayerTransferEvidence:
             AttentionKind.SLIDING if index % 2 == 0 else AttentionKind.FULL
         ),
         token_count=256,
+        load_write_observed=True,
+        prefill_write_observed=True,
         key_before_digest=_digest(base + 1),
-        key_source_digest=_digest(base + 2),
+        key_raw_source_digest=_digest(base + 7),
+        key_corrected_source_digest=_digest(base + 2),
         key_after_load_digest=_digest(base + 2),
         key_target_prefill_digest=_digest(base + 3),
         key_after_prefill_digest=_digest(base + 3),
@@ -44,11 +48,16 @@ def _layer(index: int) -> LayerTransferEvidence:
 
 def _metadata() -> TransferEvidenceCaptureMetadata:
     return TransferEvidenceCaptureMetadata(
+        namespace_digest=_digest(9_999),
         source_prompt_digest=_digest(10_000),
+        source_prompt_tokens=256,
         target_prompt_digest=_digest(10_001),
         loaded_tokens=256,
         target_prompt_tokens=280,
         recomputed_tokens=280,
+        reusable_segments=(
+            ReusableSegmentIdentity(_digest(10_002), 256, 0, 17),
+        ),
     )
 
 

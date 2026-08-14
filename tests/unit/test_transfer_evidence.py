@@ -15,6 +15,7 @@ from cacheblend_gpt_oss.correctness import (
     TransferEvidenceError,
     TransferEvidenceErrorCode,
     canonical_transfer_evidence_bytes,
+    correctness_runtime_namespace_digest,
     read_transfer_evidence,
     transfer_evidence_digest,
     transfer_evidence_from_dict,
@@ -31,6 +32,7 @@ from cacheblend_gpt_oss.correctness.models import (
     CorrectnessRunMode,
     CorrectnessRuntimeIdentity,
     FullVocabularyLogprobs,
+    ReusableSegmentIdentity,
 )
 from cacheblend_gpt_oss.gpt_oss.layout import AttentionKind
 
@@ -47,8 +49,11 @@ def _layer(index: int) -> LayerTransferEvidence:
             AttentionKind.SLIDING if index % 2 == 0 else AttentionKind.FULL
         ),
         token_count=256,
+        load_write_observed=True,
+        prefill_write_observed=True,
         key_before_digest=_digest(base + 1),
-        key_source_digest=_digest(base + 2),
+        key_raw_source_digest=_digest(base + 7),
+        key_corrected_source_digest=_digest(base + 2),
         key_after_load_digest=_digest(base + 2),
         key_target_prefill_digest=_digest(base + 3),
         key_after_prefill_digest=_digest(base + 3),
@@ -63,12 +68,17 @@ def _layer(index: int) -> LayerTransferEvidence:
 def _evidence() -> TransferEvidence:
     return TransferEvidence(
         schema_version=TRANSFER_EVIDENCE_SCHEMA_VERSION,
+        namespace_digest=_digest(9_999),
         source_prompt_digest=_digest(10_000),
+        source_prompt_tokens=256,
         target_prompt_digest=_digest(10_001),
         loaded_tokens=256,
         target_prompt_tokens=280,
         recomputed_tokens=280,
         prefill_tokens_avoided=0,
+        reusable_segments=(
+            ReusableSegmentIdentity(_digest(10_002), 256, 0, 17),
+        ),
         layers=tuple(_layer(index) for index in range(24)),
     )
 
@@ -117,13 +127,38 @@ def test_all_layers_are_explicitly_split_between_sliding_and_full() -> None:
     )
 
 
+def test_equal_bytes_are_valid_when_both_writes_were_observed() -> None:
+    layer = _layer(0)
+    LayerTransferEvidence(
+        layer_index=layer.layer_index,
+        attention_kind=layer.attention_kind,
+        token_count=layer.token_count,
+        load_write_observed=True,
+        prefill_write_observed=True,
+        key_before_digest=layer.key_corrected_source_digest,
+        key_raw_source_digest=layer.key_raw_source_digest,
+        key_corrected_source_digest=layer.key_corrected_source_digest,
+        key_after_load_digest=layer.key_corrected_source_digest,
+        key_target_prefill_digest=layer.key_corrected_source_digest,
+        key_after_prefill_digest=layer.key_corrected_source_digest,
+        value_before_digest=layer.value_source_digest,
+        value_source_digest=layer.value_source_digest,
+        value_after_load_digest=layer.value_source_digest,
+        value_target_prefill_digest=layer.value_source_digest,
+        value_after_prefill_digest=layer.value_source_digest,
+    )
+
+
 def test_transfer_evidence_binds_to_the_exact_correctness_artifact() -> None:
     artifact = _bound_artifact()
     evidence = _evidence()
     bound = replace(
         evidence,
+        namespace_digest=correctness_runtime_namespace_digest(artifact.runtime),
         source_prompt_digest=artifact.prompt.source_prompt_digest,
+        source_prompt_tokens=artifact.prompt.source_prompt_tokens,
         target_prompt_digest=artifact.prompt.target_prompt_digest,
+        reusable_segments=artifact.prompt.reusable_segments,
     )
 
     validate_transfer_evidence_binding(artifact, bound)
@@ -138,6 +173,9 @@ def test_transfer_evidence_binds_to_the_exact_correctness_artifact() -> None:
         lambda evidence, artifact: replace(
             evidence,
             loaded_tokens=255,
+            reusable_segments=(
+                replace(evidence.reusable_segments[0], tokens=255),
+            ),
             layers=tuple(
                 replace(layer, token_count=255) for layer in evidence.layers
             ),
@@ -154,8 +192,11 @@ def test_transfer_evidence_binding_rejects_substitution(mutation) -> None:
     artifact = _bound_artifact()
     evidence = replace(
         _evidence(),
+        namespace_digest=correctness_runtime_namespace_digest(artifact.runtime),
         source_prompt_digest=artifact.prompt.source_prompt_digest,
+        source_prompt_tokens=artifact.prompt.source_prompt_tokens,
         target_prompt_digest=artifact.prompt.target_prompt_digest,
+        reusable_segments=artifact.prompt.reusable_segments,
     )
     with pytest.raises(TransferEvidenceError) as caught:
         validate_transfer_evidence_binding(artifact, mutation(evidence, artifact))
@@ -218,8 +259,10 @@ def test_top_level_evidence_invariants_fail_closed(mutation, code) -> None:
 @pytest.mark.parametrize(
     ("field", "code"),
     [
-        ("key_before_digest", TransferEvidenceErrorCode.LOAD_NOT_OBSERVED),
-        ("key_source_digest", TransferEvidenceErrorCode.SOURCE_MISMATCH),
+        (
+            "key_corrected_source_digest",
+            TransferEvidenceErrorCode.SOURCE_MISMATCH,
+        ),
         (
             "key_target_prefill_digest",
             TransferEvidenceErrorCode.PREFILL_MISMATCH,
@@ -230,11 +273,7 @@ def test_top_level_evidence_invariants_fail_closed(mutation, code) -> None:
 def test_layer_digest_chain_failures_are_bounded(field: str, code) -> None:
     layer = _layer(0)
     value = getattr(layer, field)
-    replacement = (
-        layer.key_source_digest
-        if field == "key_before_digest"
-        else _digest(999_999)
-    )
+    replacement = _digest(999_999)
     if field == "key_after_prefill_digest":
         replacement = layer.key_after_load_digest
     if field == "key_target_prefill_digest":
@@ -245,15 +284,21 @@ def test_layer_digest_chain_failures_are_bounded(field: str, code) -> None:
     assert value != replacement
 
 
-def test_layer_overwrite_failure_requires_matching_fresh_prefill_digest() -> None:
+@pytest.mark.parametrize(
+    ("field", "code"),
+    [
+        ("load_write_observed", TransferEvidenceErrorCode.LOAD_NOT_OBSERVED),
+        (
+            "prefill_write_observed",
+            TransferEvidenceErrorCode.OVERWRITE_NOT_OBSERVED,
+        ),
+    ],
+)
+def test_layer_requires_explicit_write_observations(field: str, code) -> None:
     layer = _layer(0)
     with pytest.raises(TransferEvidenceError) as caught:
-        replace(
-            layer,
-            key_target_prefill_digest=layer.key_after_load_digest,
-            key_after_prefill_digest=layer.key_after_load_digest,
-        )
-    assert caught.value.code is TransferEvidenceErrorCode.OVERWRITE_NOT_OBSERVED
+        replace(layer, **{field: False})
+    assert caught.value.code is code
 
 
 def test_unknown_json_fields_and_invalid_attention_values_fail_closed() -> None:

@@ -35,6 +35,7 @@ from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import NoReturn, Protocol
 
 from cacheblend_gpt_oss.gpt_oss.layout import (
@@ -67,6 +68,10 @@ from cacheblend_gpt_oss.vllm_compat.v0_19_1.staging import (
     StagingTransferDirection,
     StagingTransferLease,
     StagingTransport,
+)
+from cacheblend_gpt_oss.vllm_compat.v0_19_1.transfer_probe import (
+    GptOssTransferEvidenceProbe,
+    TensorBytesReader,
 )
 from cacheblend_gpt_oss.vllm_compat.v0_19_1.transfer_runtime import (
     WorkerLoadPlan,
@@ -345,6 +350,8 @@ class GptOssWorkerBridge:
         tensor_ops: TensorOps,
         paged_caches: Mapping[str, object],
         correct_key_positions: KeyPositionCorrector,
+        transfer_evidence_path: str | None = None,
+        tensor_bytes_reader: TensorBytesReader | None = None,
         buffer_config: WorkerBridgeBufferConfig | None = None,
         staging_factory: StagingRuntimeFactory = _create_staging_runtime,
         data_plane_factory: DataPlaneFactory = _create_data_plane,
@@ -384,6 +391,20 @@ class GptOssWorkerBridge:
             self._preflight_data_plane = data_plane_factory(
                 _ReadOnlyTensorOps(tensor_ops)
             )
+            if transfer_evidence_path is None:
+                if tensor_bytes_reader is not None:
+                    _fail(WorkerBridgeErrorCode.INVALID_CONFIG)
+                self._evidence_probe: GptOssTransferEvidenceProbe | None = None
+            else:
+                if tensor_bytes_reader is None:
+                    _fail(WorkerBridgeErrorCode.INVALID_CONFIG)
+                self._evidence_probe = GptOssTransferEvidenceProbe(
+                    output_path=Path(transfer_evidence_path),
+                    tensor_ops=tensor_ops,
+                    tensor_bytes_reader=tensor_bytes_reader,
+                    paged_caches=caches,
+                    correct_key_positions=correct_key_positions,
+                )
         except Exception as exc:
             raise WorkerBridgeError(WorkerBridgeErrorCode.INVALID_CONFIG) from exc
         self._state = WorkerBridgeState.CREATED
@@ -529,7 +550,16 @@ class GptOssWorkerBridge:
         staging = self._staging.tensor
         correction_latency_seconds = 0.0
         self._position_correction_latency_seconds = 0.0
+        probe = self._evidence_probe
         try:
+            if probe is not None:
+                probe.begin_load(
+                    plan,
+                    staging=staging,
+                    retrieval_buffer_offset=(
+                        self._buffer_config.retrieval_buffer_offset
+                    ),
+                )
             for candidate in plan.candidates:
                 receipt = self._data_plane.scatter_retrieved_kv(
                     staging=staging,
@@ -550,9 +580,44 @@ class GptOssWorkerBridge:
                 correction_latency_seconds += (
                     receipt.position_correction_latency_seconds
                 )
+            if probe is not None:
+                probe.mark_load_complete()
+        except Exception:
+            if probe is not None:
+                probe.abort()
+            raise
         finally:
             self._retrieved_plan = None
         self._position_correction_latency_seconds = correction_latency_seconds
+
+    def capture_prefill_layer(self, layer_name: str) -> None:
+        """Capture one post-attention layer only when the probe is enabled."""
+
+        probe = self._evidence_probe
+        if probe is not None and probe.active:
+            probe.record_prefill_layer(layer_name)
+
+    def finish_transfer_evidence(
+        self,
+        *,
+        recomputed_tokens: int,
+        prefill_tokens_avoided: int,
+    ) -> None:
+        """Create the all-layer sidecar after ordinary full prefill."""
+
+        probe = self._evidence_probe
+        if probe is not None and probe.active:
+            probe.finish(
+                recomputed_tokens=recomputed_tokens,
+                prefill_tokens_avoided=prefill_tokens_avoided,
+            )
+
+    def abort_transfer_evidence(self) -> None:
+        """Discard an active probe after any load/store fallback."""
+
+        probe = self._evidence_probe
+        if probe is not None:
+            probe.abort()
 
     def preflight_gather(self, plan: WorkerStorePlan) -> None:
         """Dry-run every complete-chunk gather before staging mutation."""
@@ -915,6 +980,8 @@ class GptOssWorkerBridge:
         self._gather_preflight = None
         self._store_preflight = None
         self._gathered_plan = None
+        if self._evidence_probe is not None:
+            self._evidence_probe.abort()
 
 
 __all__ = [

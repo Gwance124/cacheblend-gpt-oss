@@ -619,7 +619,10 @@ def test_worker_registers_every_layer_and_rejects_transfer_claims(
 
 
 def _enable_transfer(
-    config: SimpleNamespace, kv_cache_config: SimpleNamespace
+    config: SimpleNamespace,
+    kv_cache_config: SimpleNamespace,
+    *,
+    transfer_evidence_path: str | None = None,
 ) -> None:
     digests = derive_runtime_compatibility_digests(
         config, adapt_kv_cache_config(kv_cache_config)
@@ -643,6 +646,10 @@ def _enable_transfer(
         "request_timeout_seconds": 10.0,
         "transfer_failure_policy": "full_prefill",
     }
+    if transfer_evidence_path is not None:
+        config.kv_transfer_config.kv_connector_extra_config[
+            "transfer_evidence_path"
+        ] = transfer_evidence_path
 
 
 def _verified_transfer_candidate(
@@ -798,6 +805,17 @@ class FakeTransferRuntime:
 class FakeWorkerResources:
     def __init__(self, *, close_error: bool = False) -> None:
         self.transfer_runtime = FakeTransferRuntime()
+        self.bridge = SimpleNamespace(
+            capture_calls=[],
+            finish_calls=[],
+            capture_prefill_layer=lambda layer_name: (
+                self.bridge.capture_calls.append(layer_name)
+            ),
+            finish_transfer_evidence=lambda **kwargs: (
+                self.bridge.finish_calls.append(kwargs)
+            ),
+            abort_transfer_evidence=lambda: None,
+        )
         self.close_error = close_error
         self.close_calls = 0
 
@@ -976,8 +994,17 @@ def test_transfer_mode_loads_verified_moved_candidate_before_full_recompute(
     kv_cache_config = _kv_cache_config()
     scheduler_config = _config()
     worker_config = _config()
-    _enable_transfer(scheduler_config, kv_cache_config)
-    _enable_transfer(worker_config, kv_cache_config)
+    evidence_path = "/var/lib/cacheblend/transfer-evidence.json"
+    _enable_transfer(
+        scheduler_config,
+        kv_cache_config,
+        transfer_evidence_path=evidence_path,
+    )
+    _enable_transfer(
+        worker_config,
+        kv_cache_config,
+        transfer_evidence_path=evidence_path,
+    )
     transfer_config = module.parse_connector_extra_config(
         scheduler_config.kv_transfer_config.kv_connector_extra_config
     )
@@ -1040,6 +1067,10 @@ def test_transfer_mode_loads_verified_moved_candidate_before_full_recompute(
         worker.wait_for_layer_load(layer_name)
         worker.save_kv_layer(layer_name, cache, object())
     worker.wait_for_save()
+    assert worker_resources.bridge.capture_calls == list(caches)
+    assert worker_resources.bridge.finish_calls == [
+        {"recomputed_tokens": 256, "prefill_tokens_avoided": 0}
+    ]
 
     stats = worker.get_kv_connector_stats()
     assert stats is not None
