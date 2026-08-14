@@ -15,6 +15,15 @@ from cacheblend_gpt_oss.storage.lmcache_server_v0_4_3 import (
 
 
 def test_patch_replaces_only_the_expected_engine_method() -> None:
+    class TokenHasher:
+        def __init__(
+            self, chunk_size: int = 256, hash_algorithm: str = "blake3"
+        ) -> None:
+            self.chunk_size = chunk_size
+            self.hash_algorithm_name = hash_algorithm
+            self.hash_func = lambda value: b"d" * 32
+            self.none_hash = b"random"
+
     class CBMatchResult:
         def __init__(self, **values: object) -> None:
             self.__dict__.update(values)
@@ -36,6 +45,7 @@ def test_patch_replaces_only_the_expected_engine_method() -> None:
         BlendEngineV2=BlendEngineV2,
         BlendTokenRangeMatcher=BlendTokenRangeMatcher,
         CBMatchResult=CBMatchResult,
+        TokenHasher=TokenHasher,
     )
 
     patched = patch_lmcache_blend_module(module)
@@ -46,6 +56,7 @@ def test_patch_replaces_only_the_expected_engine_method() -> None:
         cast(object, BlendTokenRangeMatcher.match_sub_sequence)
         is patch_module.patched_match_sub_sequence
     )
+    assert TokenHasher().none_hash == b"d" * 32
 
 
 def test_patch_fails_closed_for_another_engine_module() -> None:
@@ -82,6 +93,14 @@ def test_patch_fails_closed_when_matcher_is_missing() -> None:
 
 
 def test_exact_matcher_finds_256_tokens_moved_to_offset_17() -> None:
+    class TokenHasher:
+        def __init__(
+            self, chunk_size: int = 256, hash_algorithm: str = "blake3"
+        ) -> None:
+            self.chunk_size = chunk_size
+            self.hash_algorithm_name = hash_algorithm
+            self.hash_func = lambda value: b"d" * 32
+
     class CBMatchResult:
         def __init__(
             self,
@@ -124,6 +143,7 @@ def test_exact_matcher_finds_256_tokens_moved_to_offset_17() -> None:
         BlendEngineV2=BlendEngineV2,
         BlendTokenRangeMatcher=BlendTokenRangeMatcher,
         CBMatchResult=CBMatchResult,
+        TokenHasher=TokenHasher,
     )
     patch_lmcache_blend_module(module)
     matcher = BlendTokenRangeMatcher(chunk_size=256)
@@ -145,6 +165,14 @@ def test_exact_matcher_finds_256_tokens_moved_to_offset_17() -> None:
 
 
 def test_exact_matcher_rejects_chunk_hash_count_mismatch() -> None:
+    class TokenHasher:
+        def __init__(
+            self, chunk_size: int = 256, hash_algorithm: str = "blake3"
+        ) -> None:
+            self.chunk_size = chunk_size
+            self.hash_algorithm_name = hash_algorithm
+            self.hash_func = lambda value: b"d" * 32
+
     class CBMatchResult:
         def __init__(self, **values: object) -> None:
             self.__dict__.update(values)
@@ -166,6 +194,7 @@ def test_exact_matcher_rejects_chunk_hash_count_mismatch() -> None:
         BlendEngineV2=BlendEngineV2,
         BlendTokenRangeMatcher=BlendTokenRangeMatcher,
         CBMatchResult=CBMatchResult,
+        TokenHasher=TokenHasher,
     )
     patch_lmcache_blend_module(module)
     matcher = BlendTokenRangeMatcher(chunk_size=256)

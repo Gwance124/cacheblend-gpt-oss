@@ -27,12 +27,21 @@ storage, prefetch, and retrieval; the connector still independently verifies
 the namespace, cache key, SHA-256 fingerprint, and complete token sequence
 before loading any KV.
 
+Pinned LMCache also initializes each ``TokenHasher`` from vLLM's
+process-global ``NONE_HASH``.  With no ``PYTHONHASHSEED``, pinned vLLM assigns
+that value from ``os.urandom(32)``, so the standalone server and vLLM worker
+derive different object keys for identical chunks.  The wrapper and client
+bindings install LMCache's deterministic local fallback seed on each hasher
+instance without changing vLLM's global prefix-cache state.
+
 Source attribution:
 
 * LMCache 0.4.3 ``BlendEngineV2._cb_store_gpu_copy``:
   https://github.com/LMCache/LMCache/blob/7f326118a2f1afc7801988dd02e3055bdf21ef6b/lmcache/v1/multiprocess/blend_server_v2.py#L450-L532
 * LMCache 0.4.3 ``DistributedStorageManager.finish_write``:
   https://github.com/LMCache/LMCache/blob/7f326118a2f1afc7801988dd02e3055bdf21ef6b/lmcache/v1/distributed/storage_manager.py#L164-L187
+* vLLM 0.19.1 ``init_none_hash`` random-seed behavior:
+  https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/v1/core/kv_cache_utils.py#L71-L97
 
 This module is a server-process entry point.  It intentionally imports Torch
 and LMCache only inside the patch/``main`` paths so CPU unit tests can import it
@@ -46,7 +55,21 @@ from importlib import import_module
 from threading import RLock
 from typing import Any, cast
 
+from cacheblend_gpt_oss.storage.lmcache_v0_4_3 import (
+    pin_lmcache_blake3_none_hash,
+)
+
 _EXACT_INDEX_LIMIT = 1 << 20
+
+
+def patched_token_hasher_init(self: Any, *args: Any, **kwargs: Any) -> None:
+    """Initialize one server hasher with the cross-process stable seed."""
+
+    original = getattr(type(self), "_cacheblend_original_init", None)
+    if not callable(original):
+        raise RuntimeError("LMCache TokenHasher original initializer is unavailable")
+    original(self, *args, **kwargs)
+    pin_lmcache_blake3_none_hash(self)
 
 
 def patched_matcher_init(
@@ -302,6 +325,14 @@ def patch_lmcache_blend_module(module: Any) -> Callable[..., Any]:
     original_init = getattr(matcher_class, "__init__", None)
     if not callable(original_init):
         raise RuntimeError("LMCache matcher initializer is unavailable")
+    token_hasher_class = getattr(module, "TokenHasher", None)
+    if token_hasher_class is None:
+        raise RuntimeError("LMCache 0.4.3 TokenHasher is unavailable")
+    token_hasher_init = getattr(token_hasher_class, "__init__", None)
+    if not callable(token_hasher_init):
+        raise RuntimeError("LMCache TokenHasher initializer is unavailable")
+    token_hasher_class._cacheblend_original_init = token_hasher_init
+    token_hasher_class.__init__ = patched_token_hasher_init
     matcher_class._cacheblend_original_init = original_init
     matcher_class._cacheblend_match_type = match_type
     matcher_class._cacheblend_logger = getattr(module, "logger", None)
@@ -319,7 +350,8 @@ def main() -> None:
     module = import_module("lmcache.v1.multiprocess.blend_server_v2")
     patch_lmcache_blend_module(module)
     print(
-        "CacheBlend: LMCache 0.4.3 store-order and exact-matcher backports active",
+        "CacheBlend: LMCache 0.4.3 deterministic-hash, store-order, and "
+        "exact-matcher backports active",
         flush=True,
     )
     args = module.parse_args()

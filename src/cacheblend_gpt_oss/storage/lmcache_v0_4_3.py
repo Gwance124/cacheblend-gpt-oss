@@ -21,6 +21,9 @@ This module follows the exact public LMCache commit
 * ``TokenHasher`` construction and complete-chunk rolling-hash behavior:
   https://github.com/LMCache/LMCache/blob/7f326118a2f1afc7801988dd02e3055bdf21ef6b/lmcache/v1/multiprocess/token_hasher.py#L54-L70
   https://github.com/LMCache/LMCache/blob/7f326118a2f1afc7801988dd02e3055bdf21ef6b/lmcache/v1/multiprocess/token_hasher.py#L183-L231
+* pinned ``TokenHasher._init_none_hash`` delegates to vLLM's process-global
+  seed, then falls back to ``hash_func((0, (0,), None))``:
+  https://github.com/LMCache/LMCache/blob/7f326118a2f1afc7801988dd02e3055bdf21ef6b/lmcache/v1/multiprocess/token_hasher.py#L154-L181
 * object keys use each supplied chunk hash unchanged:
   https://github.com/LMCache/LMCache/blob/7f326118a2f1afc7801988dd02e3055bdf21ef6b/lmcache/v1/distributed/api.py#L117-L170
 * one contiguous ``[2,L,T,D]`` staging buffer:
@@ -80,6 +83,39 @@ from cacheblend_gpt_oss.storage.lmcache_types import (
 from cacheblend_gpt_oss.storage.sidecar import MAX_TOKEN_POSITION
 
 _MAX_LMCACHE_BLAKE3_TOKEN_ID = (1 << 32) - 1
+
+
+def pin_lmcache_blake3_none_hash(token_hasher: Any) -> bytes:
+    """Install the deterministic LMCache fallback seed on one hasher.
+
+    Pinned vLLM initializes ``NONE_HASH`` from ``os.urandom(32)`` when
+    ``PYTHONHASHSEED`` is absent.  LMCache constructs ``TokenHasher``
+    independently in the server, scheduler, and worker processes, so accepting
+    that process-global value makes identical chunks receive different object
+    keys.  LMCache already defines a deterministic local fallback; use that
+    exact value on the instance without mutating vLLM's global prefix-cache
+    state.
+    """
+
+    if (
+        getattr(token_hasher, "chunk_size", None) != LMCACHE_CHUNK_SIZE
+        or getattr(token_hasher, "hash_algorithm_name", None)
+        != LMCACHE_HASH_ALGORITHM
+    ):
+        raise LmcacheProtocolError("LMCache TokenHasher configuration drifted")
+    hash_func = getattr(token_hasher, "hash_func", None)
+    if not callable(hash_func):
+        raise LmcacheProtocolError("LMCache TokenHasher hash function drifted")
+    try:
+        none_hash = hash_func((0, (0,), None))
+    except Exception as exc:
+        raise LmcacheProtocolError(
+            "LMCache deterministic initial hash could not be derived"
+        ) from exc
+    if not isinstance(none_hash, bytes) or len(none_hash) != LMCACHE_HASH_BYTES:
+        raise LmcacheProtocolError("LMCache deterministic initial hash is malformed")
+    token_hasher.none_hash = none_hash
+    return none_hash
 
 
 class LmcacheRequest(str, Enum):
@@ -904,6 +940,7 @@ def load_lmcache_v0_4_3_bindings() -> LmcacheBindings:
             chunk_size=LMCACHE_CHUNK_SIZE,
             hash_algorithm=LMCACHE_HASH_ALGORITHM,
         )
+        pin_lmcache_blake3_none_hash(token_hasher)
     except (ImportError, AttributeError, TypeError, ValueError) as exc:
         raise LmcacheDependencyError(
             "LMCache 0.4.3 Blend V2 modules could not be imported; "

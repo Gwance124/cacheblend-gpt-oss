@@ -371,6 +371,16 @@ matcher registration/window/hit counts so a remaining miss can be attributed
 without logging request IDs, token IDs, hashes, or prompt content. The exact
 pinned sources are linked in `storage/lmcache_server_v0_4_3.py`.
 
+The pinned `TokenHasher` also delegates its initial rolling-hash seed to
+vLLM's process-global `NONE_HASH`. With no `PYTHONHASHSEED`, pinned vLLM assigns
+that global from `os.urandom(32)`. The standalone LMCache server and the
+scheduler/worker processes consequently derive different LMCache object keys
+for identical chunks. A live gate exposed this after the exact matcher and L1
+prefetch both returned one hit while sidecar binding reported zero found
+tokens. The version-scoped bindings now install LMCache's own deterministic
+fallback seed, `hash_func((0, (0,), None))`, on each LMCache hasher instance.
+They do not mutate vLLM's global prefix-cache hash state.
+
 ### Code that is absent
 
 The exact LMCache tag, PyPI sdist/wheel, and tests contain no occurrence of:

@@ -468,6 +468,12 @@ def test_lazy_loader_constructs_the_exact_pinned_token_hasher(
             hashers.append(self)
             self.chunk_size = chunk_size
             self.hash_algorithm_name = hash_algorithm
+            self.none_hash = b"random-process-seed"
+
+        @staticmethod
+        def hash_func(value: object) -> bytes:
+            assert value == (0, (0,), None)
+            return b"d" * 32
 
         def compute_chunk_hashes(self, token_ids: list[int]) -> list[bytes]:
             assert token_ids == list(range(LMCACHE_CHUNK_SIZE))
@@ -499,6 +505,7 @@ def test_lazy_loader_constructs_the_exact_pinned_token_hasher(
     bindings = runtime_module.load_lmcache_v0_4_3_bindings()
 
     assert constructed == [(LMCACHE_CHUNK_SIZE, LMCACHE_HASH_ALGORITHM)]
+    assert hashers[0].none_hash == b"d" * 32
     assert tuple(bindings.compute_chunk_hashes(tuple(range(LMCACHE_CHUNK_SIZE)))) == (
         b"p" * 32,
     )
