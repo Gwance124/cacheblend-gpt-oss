@@ -42,6 +42,9 @@ Source attribution:
   https://github.com/LMCache/LMCache/blob/7f326118a2f1afc7801988dd02e3055bdf21ef6b/lmcache/v1/distributed/storage_manager.py#L164-L187
 * vLLM 0.19.1 ``init_none_hash`` random-seed behavior:
   https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/v1/core/kv_cache_utils.py#L71-L97
+* LMCache 0.4.3 ``MPCacheEngine`` imports and constructs ``TokenHasher``:
+  https://github.com/LMCache/LMCache/blob/7f326118a2f1afc7801988dd02e3055bdf21ef6b/lmcache/v1/multiprocess/server.py#L62
+  https://github.com/LMCache/LMCache/blob/7f326118a2f1afc7801988dd02e3055bdf21ef6b/lmcache/v1/multiprocess/server.py#L178-L181
 
 This module is a server-process entry point.  It intentionally imports Torch
 and LMCache only inside the patch/``main`` paths so CPU unit tests can import it
@@ -304,7 +307,10 @@ def patched_store_gpu_copy(
     return event, reserved_dict
 
 
-def patch_lmcache_blend_module(module: Any) -> Callable[..., Any]:
+def patch_lmcache_blend_module(
+    module: Any,
+    token_hasher_module: Any,
+) -> Callable[..., Any]:
     """Patch and return the original ``BlendEngineV2`` class.
 
     The identity and method check make accidental use with another LMCache
@@ -325,9 +331,14 @@ def patch_lmcache_blend_module(module: Any) -> Callable[..., Any]:
     original_init = getattr(matcher_class, "__init__", None)
     if not callable(original_init):
         raise RuntimeError("LMCache matcher initializer is unavailable")
-    token_hasher_class = getattr(module, "TokenHasher", None)
+    token_hasher_class = getattr(token_hasher_module, "TokenHasher", None)
     if token_hasher_class is None:
         raise RuntimeError("LMCache 0.4.3 TokenHasher is unavailable")
+    if (
+        getattr(token_hasher_class, "__module__", None)
+        != token_hasher_module.__name__
+    ):
+        raise RuntimeError("unexpected LMCache TokenHasher implementation module")
     token_hasher_init = getattr(token_hasher_class, "__init__", None)
     if not callable(token_hasher_init):
         raise RuntimeError("LMCache TokenHasher initializer is unavailable")
@@ -348,7 +359,13 @@ def main() -> None:
     """Run the pinned server with store ordering and exact matching patched."""
 
     module = import_module("lmcache.v1.multiprocess.blend_server_v2")
-    patch_lmcache_blend_module(module)
+    token_hasher_module = import_module("lmcache.v1.multiprocess.token_hasher")
+    server_module = import_module("lmcache.v1.multiprocess.server")
+    if getattr(server_module, "TokenHasher", None) is not getattr(
+        token_hasher_module, "TokenHasher", None
+    ):
+        raise RuntimeError("LMCache server TokenHasher import identity drifted")
+    patch_lmcache_blend_module(module, token_hasher_module)
     print(
         "CacheBlend: LMCache 0.4.3 deterministic-hash, store-order, and "
         "exact-matcher backports active",

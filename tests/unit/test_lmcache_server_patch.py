@@ -16,6 +16,8 @@ from cacheblend_gpt_oss.storage.lmcache_server_v0_4_3 import (
 
 def test_patch_replaces_only_the_expected_engine_method() -> None:
     class TokenHasher:
+        __module__ = "lmcache.v1.multiprocess.token_hasher"
+
         def __init__(
             self, chunk_size: int = 256, hash_algorithm: str = "blake3"
         ) -> None:
@@ -45,10 +47,13 @@ def test_patch_replaces_only_the_expected_engine_method() -> None:
         BlendEngineV2=BlendEngineV2,
         BlendTokenRangeMatcher=BlendTokenRangeMatcher,
         CBMatchResult=CBMatchResult,
+    )
+    token_hasher_module = SimpleNamespace(
+        __name__="lmcache.v1.multiprocess.token_hasher",
         TokenHasher=TokenHasher,
     )
 
-    patched = patch_lmcache_blend_module(module)
+    patched = patch_lmcache_blend_module(module, token_hasher_module)
 
     assert patched is BlendEngineV2
     assert cast(object, BlendEngineV2._cb_store_gpu_copy) is patched_store_gpu_copy
@@ -69,14 +74,14 @@ def test_patch_fails_closed_for_another_engine_module() -> None:
     )
 
     with pytest.raises(RuntimeError, match="unexpected BlendEngineV2"):
-        patch_lmcache_blend_module(module)
+        patch_lmcache_blend_module(module, SimpleNamespace(__name__="unused"))
 
 
 def test_patch_fails_closed_when_engine_is_missing() -> None:
     module = SimpleNamespace(__name__="lmcache.v1.multiprocess.blend_server_v2")
 
     with pytest.raises(RuntimeError, match="unavailable"):
-        patch_lmcache_blend_module(module)
+        patch_lmcache_blend_module(module, SimpleNamespace(__name__="unused"))
 
 
 def test_patch_fails_closed_when_matcher_is_missing() -> None:
@@ -89,11 +94,13 @@ def test_patch_fails_closed_when_matcher_is_missing() -> None:
     )
 
     with pytest.raises(RuntimeError, match="BlendTokenRangeMatcher"):
-        patch_lmcache_blend_module(module)
+        patch_lmcache_blend_module(module, SimpleNamespace(__name__="unused"))
 
 
 def test_exact_matcher_finds_256_tokens_moved_to_offset_17() -> None:
     class TokenHasher:
+        __module__ = "lmcache.v1.multiprocess.token_hasher"
+
         def __init__(
             self, chunk_size: int = 256, hash_algorithm: str = "blake3"
         ) -> None:
@@ -143,9 +150,12 @@ def test_exact_matcher_finds_256_tokens_moved_to_offset_17() -> None:
         BlendEngineV2=BlendEngineV2,
         BlendTokenRangeMatcher=BlendTokenRangeMatcher,
         CBMatchResult=CBMatchResult,
+    )
+    token_hasher_module = SimpleNamespace(
+        __name__="lmcache.v1.multiprocess.token_hasher",
         TokenHasher=TokenHasher,
     )
-    patch_lmcache_blend_module(module)
+    patch_lmcache_blend_module(module, token_hasher_module)
     matcher = BlendTokenRangeMatcher(chunk_size=256)
     document = list(range(1024, 1280))
     storage_hash = b"h" * 32
@@ -166,6 +176,8 @@ def test_exact_matcher_finds_256_tokens_moved_to_offset_17() -> None:
 
 def test_exact_matcher_rejects_chunk_hash_count_mismatch() -> None:
     class TokenHasher:
+        __module__ = "lmcache.v1.multiprocess.token_hasher"
+
         def __init__(
             self, chunk_size: int = 256, hash_algorithm: str = "blake3"
         ) -> None:
@@ -194,9 +206,12 @@ def test_exact_matcher_rejects_chunk_hash_count_mismatch() -> None:
         BlendEngineV2=BlendEngineV2,
         BlendTokenRangeMatcher=BlendTokenRangeMatcher,
         CBMatchResult=CBMatchResult,
+    )
+    token_hasher_module = SimpleNamespace(
+        __name__="lmcache.v1.multiprocess.token_hasher",
         TokenHasher=TokenHasher,
     )
-    patch_lmcache_blend_module(module)
+    patch_lmcache_blend_module(module, token_hasher_module)
     matcher = BlendTokenRangeMatcher(chunk_size=256)
 
     with pytest.raises(RuntimeError, match="chunk/hash count mismatch"):
