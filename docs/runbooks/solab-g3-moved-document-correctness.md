@@ -316,6 +316,28 @@ substituting `--kv-transfer-config "$CACHEBLEND_DIAG_KV_CONFIG"`, and repeat
 the store/move/load/recompute/compare sequence from step 5 against this
 server instead.
 
+For the prospective connector-attached probability envelope, capture each
+scatter-disabled control as a full-prefill artifact. The dedicated flag keeps
+the connector metrics in the capture contract while correctly leaving
+`connector` empty in the artifact; this prevents a diagnostic run from being
+mistaken for a real 100%-transfer candidate:
+
+```bash
+for CONTROL in 1 2 3 4 5; do
+  .venv/bin/python scripts/capture_moved_document.py \
+    --mode full_prefill \
+    --warm-source-before-target \
+    --connector-attached-control \
+    --model-revision "$CACHEBLEND_MODEL_REVISION" \
+    --tokenizer-revision "$CACHEBLEND_TOKENIZER_REVISION" \
+    --plugin-commit "$CACHEBLEND_PLUGIN_COMMIT" \
+    --model-config-digest "$CACHEBLEND_MODEL_CONFIG_DIGEST" \
+    --kv-cache-config-digest "$CACHEBLEND_KV_CONFIG_DIGEST" \
+    --output "$CACHEBLEND_RUN_DIR/scatter-disabled-control-${CONTROL}.json" \
+    | tee "$CACHEBLEND_RUN_DIR/scatter-disabled-control-${CONTROL}.txt"
+done
+```
+
 How to read the result:
 
 - The connector artifact for this run must report `kv_tokens_loaded == 0`
