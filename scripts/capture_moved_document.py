@@ -46,6 +46,7 @@ from cacheblend_gpt_oss.correctness import (  # noqa: E402
     VllmPromptSourceDelta,
     VllmTimingSnapshot,
     build_correctness_fixture,
+    connector_counter_delta,
     connector_evidence_from_snapshots,
     connector_store_counter_delta,
     has_connector_metric_surface,
@@ -100,6 +101,14 @@ def _parser() -> argparse.ArgumentParser:
         help=(
             "in full_prefill mode, issue the fixture source request and wait "
             "for native metrics before capturing the target"
+        ),
+    )
+    parser.add_argument(
+        "--connector-attached-control",
+        action="store_true",
+        help=(
+            "in full_prefill mode, require a scatter-disabled connector and "
+            "save a full-prefill control artifact"
         ),
     )
     return parser
@@ -366,6 +375,14 @@ def main() -> int:
         raise ValueError(
             "--warm-source-before-target is valid only in full_prefill mode"
         )
+    if args.connector_attached_control and mode is not CorrectnessRunMode.FULL_PREFILL:
+        raise ValueError(
+            "--connector-attached-control is valid only in full_prefill mode"
+        )
+    if args.connector_attached_control and not args.warm_source_before_target:
+        raise ValueError(
+            "--connector-attached-control requires --warm-source-before-target"
+        )
     if args.output.exists():
         raise FileExistsError("correctness output already exists")
     runtime = _runtime_identity(args)
@@ -377,6 +394,7 @@ def main() -> int:
     target_prompt_source_delta: dict[str, int] | None = None
     target_prefill_work_delta: VllmPrefillWorkSnapshot | None = None
     target_timing_delta: VllmTimingSnapshot | None = None
+    connector_control_evidence: dict[str, dict[str, int]] | None = None
     if mode is CorrectnessRunMode.CACHEBLEND_100PCT:
         initial_metrics = client.get_text("/metrics")
         _require_connector_metric_surface(initial_metrics, expected=True)
@@ -532,7 +550,10 @@ def main() -> int:
         connector = connector_evidence_from_snapshots(after_source, after_target)
     else:
         initial_metrics = client.get_text("/metrics")
-        _require_connector_metric_surface(initial_metrics, expected=False)
+        _require_connector_metric_surface(
+            initial_metrics,
+            expected=args.connector_attached_control,
+        )
         if not has_vllm_timing_metric_surface(initial_metrics):
             raise ValueError("pinned vLLM timing metrics are not present")
         if not has_vllm_prefill_work_metric_surface(initial_metrics):
@@ -544,6 +565,11 @@ def main() -> int:
         )
         initial_prefill_work = parse_vllm_prefill_work_snapshot(initial_metrics)
         initial_timing = parse_vllm_timing_snapshot(initial_metrics)
+        initial_connector = (
+            parse_connector_counter_snapshot(initial_metrics)
+            if args.connector_attached_control
+            else None
+        )
         if args.warm_source_before_target:
             client.post_json(
                 "/v1/completions",
@@ -644,6 +670,43 @@ def main() -> int:
             parse_vllm_timing_snapshot(after_metrics),
         )
         require_vllm_timing_delta(target_timing_delta, expected_requests=1)
+        if args.connector_attached_control:
+            if initial_connector is None:
+                raise ValueError("connector control did not capture initial counters")
+            source_connector = connector_counter_delta(
+                initial_connector,
+                parse_connector_counter_snapshot(after_source_metrics),
+            )
+            target_connector = connector_counter_delta(
+                parse_connector_counter_snapshot(after_source_metrics),
+                parse_connector_counter_snapshot(after_metrics),
+            )
+            if (
+                source_connector["requests"] != 1
+                or source_connector["tokens_recomputed"]
+                != len(fixture.source_prompt_token_ids)
+                or source_connector["prefill_tokens_avoided"] != 0
+                or source_connector["kv_tokens_loaded"] != 0
+                or target_connector["requests"] != 1
+                or target_connector["reusable_document_tokens_requested"]
+                != len(fixture.target_prompt_token_ids)
+                or target_connector["kv_tokens_found"]
+                != len(fixture.source_prompt_token_ids)
+                or target_connector["kv_tokens_loaded"] != 0
+                or target_connector["kv_tokens_rejected"]
+                != len(fixture.source_prompt_token_ids)
+                or target_connector["tokens_recomputed"]
+                != len(fixture.target_prompt_token_ids)
+                or target_connector["prefill_tokens_avoided"] != 0
+            ):
+                raise ValueError(
+                    "connector-attached scatter-disabled control counters "
+                    "do not reconcile"
+                )
+            connector_control_evidence = {
+                "source": source_connector,
+                "target": target_connector,
+            }
     if (
         target_prompt_tokens_processed is None
         or target_prompt_source_delta is None
@@ -687,6 +750,7 @@ def main() -> int:
                         ),
                     }
                 ),
+                "connector_control_evidence": connector_control_evidence,
                 "native_prompt_tokens_processed": target_prompt_tokens_processed,
                 "native_prompt_source_delta": target_prompt_source_delta,
                 "native_request_evidence": native_request_evidence.as_dict(),

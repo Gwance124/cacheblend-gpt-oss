@@ -132,10 +132,12 @@ def test_capture_parser_exposes_explicit_source_warmup_protocol() -> None:
             "--output",
             "artifact.json",
             "--warm-source-before-target",
+            "--connector-attached-control",
         ]
     )
 
     assert args.warm_source_before_target is True
+    assert args.connector_attached_control is True
 
 
 def test_gate_hash_script_exposes_a_callable_main() -> None:
