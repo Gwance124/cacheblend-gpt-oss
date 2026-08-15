@@ -261,6 +261,15 @@ the single-prompt schema to real dev-100 trajectories is a small adapter.
    extra turns, dominates. Fix in flight: **delta-store** (store only complete chunks not already
    in the sidecar, by exact-token identity). This would otherwise swamp any selective compute
    savings and make CacheBlend lose on append-only regardless of recompute ratio.
+   **Status:** delta-store implemented + committed (`_build_store_plan` skips leading chunks the
+   load-side lookup already exact-token-verified as present; fail-closed, so it can never drop KV
+   or wrong-match — worst case a no-op). **Efficacy unverified on CPU:** LMCache hashes the passed
+   tokens rooted at relative-0 (`lmcache_v0_4_3.py:537`), so whether delta-stored tail chunks are
+   re-found by later full-prefix lookups depends on the server-side CB matcher's rooting, which
+   only g3 can settle. **Required g3 validation:** run ~3 append-only turns and confirm per-turn
+   store volume (`cacheblend_store_tokens_completed` delta) stays small/flat instead of growing
+   with turn index. If it still grows, delta chunks aren't being re-found → redesign to preserve
+   the full-prefix hash chain for the stored tail.
 8. **Load-side re-fetch (deeper item, not yet scoped).** With prefix caching off, prefix KV is
    not resident across turns, so the load path likely re-retrieves the growing prefix each turn —
    also O(N²). This is entangled with the prefix-caching-off constraint; the principled fix is
