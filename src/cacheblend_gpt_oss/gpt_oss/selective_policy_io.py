@@ -319,7 +319,15 @@ def selection_sweep_from_dict(data: object) -> SelectionSweep:
             _ranges(layer_ranges_value, prompt)
             for layer_ranges_value in raw_layer_ranges
         )
-        if any(layer_ranges_value != recompute for layer_ranges_value in layer_ranges):
+        # Layers 0..check_layer inclusive must be full recompute (the
+        # check-layer importance prefix); only later layers apply the
+        # selective ``recompute`` set. See selective_policy.select().
+        full_prompt_range = (TokenRange(0, prompt),) if prompt else ()
+        expected_layer_ranges = tuple(
+            full_prompt_range if layer_index <= check_layer else recompute
+            for layer_index in range(GPT_OSS_NUM_LAYERS)
+        )
+        if layer_ranges != expected_layer_ranges:
             _fail(SelectionSweepIoErrorCode.POINT_MISMATCH)
         selected = _selected_rows(
             point["selected_cached_rows"], prompt, candidates, suffix

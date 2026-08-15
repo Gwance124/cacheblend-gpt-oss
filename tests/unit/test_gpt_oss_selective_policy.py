@@ -51,12 +51,42 @@ def test_policy_recomputes_non_cached_rows_suffix_and_top_scored_cached_rows() -
         TokenRange(6, 8),
         TokenRange(9, 12),
     )
-    assert result.row_plan.recompute_tokens == 9 * 24
-    assert result.row_plan.cached_tokens == 3 * 24
+    # Layers 0..check_layer (2 layers) are full recompute (12 rows each);
+    # layers check_layer+1..23 (22 layers) are selective (9 rows each).
+    assert result.row_plan.recompute_tokens == 2 * 12 + 22 * 9
+    assert result.row_plan.cached_tokens == 22 * 3
     assert result.recompute_tokens_per_layer == 9
     assert result.cached_tokens_per_layer == 3
     assert result.recompute_fraction == pytest.approx(9 / 12)
     assert result.check_layer == 1
+    assert result.layer_token_rows_recomputed == 2 * 12 + 22 * 9
+    assert result.layer_token_rows_avoided == 24 * 12 - (2 * 12 + 22 * 9)
+
+
+def test_layers_through_check_layer_are_full_recompute_later_layers_selective() -> None:
+    scores = _scores(12)
+    scores[3] = 10.0
+    scores[9] = 9.0
+    scores[2] = 8.0
+    scores[8] = 7.0
+    result = CacheBlendSelectionPolicy().select(
+        prompt_tokens=12,
+        cache_ranges=(TokenRange(2, 6), TokenRange(8, 12)),
+        importance_scores=scores,
+        check_layer=1,
+        recompute_ratio=0.5,
+        suffix_tokens=2,
+    )
+
+    for layer_index in (0, 1):
+        layer = result.row_plan.layer(layer_index)
+        assert layer.is_full_recompute
+        assert layer.recompute_ranges == (TokenRange(0, 12),)
+
+    for layer_index in range(2, 24):
+        layer = result.row_plan.layer(layer_index)
+        assert layer.recompute_ranges == result.recompute_ranges
+        assert not layer.is_full_recompute
 
 
 def test_policy_ratio_zero_keeps_only_verified_cached_rows_outside_suffix() -> None:
@@ -74,6 +104,11 @@ def test_policy_ratio_zero_keeps_only_verified_cached_rows_outside_suffix() -> N
         TokenRange(8, 10),
     )
     assert result.cached_tokens_per_layer == 6
+    assert result.row_plan.layer(0).is_full_recompute
+    assert result.row_plan.layer(1).recompute_ranges == result.recompute_ranges
+    # Layer 0 is full recompute (10 rows); layers 1..23 (23 layers) recompute 4 rows.
+    assert result.layer_token_rows_recomputed == 10 + 23 * 4
+    assert result.layer_token_rows_avoided == 24 * 10 - (10 + 23 * 4)
 
 
 def test_policy_ratio_one_recomputes_every_prompt_row() -> None:
@@ -88,6 +123,10 @@ def test_policy_ratio_one_recomputes_every_prompt_row() -> None:
     assert result.selected_cached_rows == tuple(range(8))
     assert result.recompute_ranges == (TokenRange(0, 10),)
     assert result.row_plan.is_full_recompute
+    # check_layer == 23 (the last layer): every layer is within the full
+    # recompute prefix, so no layer-token savings are possible.
+    assert result.layer_token_rows_recomputed == 24 * 10
+    assert result.layer_token_rows_avoided == 0
 
 
 def test_ties_choose_lower_token_position_deterministically() -> None:

@@ -127,7 +127,16 @@ def _contains(ranges: Sequence[TokenRange], position: int) -> bool:
 
 @dataclass(frozen=True, slots=True)
 class SelectionPolicyResult:
-    """Immutable ratio result consumed by a future worker-local row context."""
+    """Immutable ratio result consumed by a future worker-local row context.
+
+    ``recompute_ranges`` is the selective row set applied to every layer
+    *after* ``check_layer``.  Layers ``0..check_layer`` inclusive always
+    recompute the full prompt in ``row_plan``, because CacheBlend's importance
+    scores are measured at the check layer and require a correct prefix
+    through it.  ``layer_token_rows_recomputed``/``layer_token_rows_avoided``
+    report work summed across all 24 layers (layer-token accounting), not
+    per-layer prompt-token accounting.
+    """
 
     check_layer: int
     recompute_ratio: float
@@ -143,23 +152,40 @@ class SelectionPolicyResult:
 
     @property
     def cached_ranges(self) -> tuple[TokenRange, ...]:
-        """Verified candidate rows left untouched by this policy result."""
+        """Verified candidate rows left untouched by the selective layers."""
 
-        return self.row_plan.layer(0).cached_ranges
+        return _complement(self.prompt_tokens, self.recompute_ranges)
 
     @property
     def recompute_tokens_per_layer(self) -> int:
-        return self.row_plan.layer(0).recompute_tokens
+        """Rows recomputed by each selective layer (after ``check_layer``)."""
+
+        return sum(len(item) for item in self.recompute_ranges)
 
     @property
     def cached_tokens_per_layer(self) -> int:
-        return self.row_plan.layer(0).cached_tokens
+        """Rows left cached by each selective layer (after ``check_layer``)."""
+
+        return self.prompt_tokens - self.recompute_tokens_per_layer
 
     @property
     def recompute_fraction(self) -> float:
         if self.prompt_tokens == 0:
             return 0.0
         return self.recompute_tokens_per_layer / self.prompt_tokens
+
+    @property
+    def layer_token_rows_recomputed(self) -> int:
+        """Total recomputed rows summed across all 24 layers."""
+
+        return self.row_plan.recompute_tokens
+
+    @property
+    def layer_token_rows_avoided(self) -> int:
+        """Rows avoided vs. 100% recomputation at every layer, summed."""
+
+        full = GPT_OSS_NUM_LAYERS * self.prompt_tokens
+        return full - self.layer_token_rows_recomputed
 
 
 @dataclass(frozen=True, slots=True)
@@ -384,9 +410,17 @@ class CacheBlendSelectionPolicy:
             TokenRange(position, position + 1) for position in selected
         )
         recompute = _merge_ranges((*non_cached, *forced_suffix, *selected_ranges))
+        # Layers 0..check_layer inclusive recompute the full prompt: the
+        # check-layer importance scores are measured at that layer and need a
+        # correct prefix through it.  Only layers after check_layer apply the
+        # selective (non-cached + suffix + top-score) recompute set.
+        full_prompt_range = (TokenRange(0, prompt),) if prompt else ()
         plan = ForwardRowPlan.from_recompute_ranges(
             prompt,
-            tuple(recompute for _ in range(GPT_OSS_NUM_LAYERS)),
+            tuple(
+                full_prompt_range if layer_index <= check_layer else recompute
+                for layer_index in range(GPT_OSS_NUM_LAYERS)
+            ),
         )
         return SelectionPolicyResult(
             check_layer=check_layer,

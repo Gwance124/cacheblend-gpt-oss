@@ -135,10 +135,20 @@ def test_unknown_point_field_and_range_tampering_fail_closed() -> None:
 
 def test_inconsistent_context_and_invalid_json_are_bounded(tmp_path) -> None:
     payload = selection_sweep_to_dict(_sweep())
+    # Bump one point's check_layer *and* extend its full-recompute layer
+    # prefix to match, so the per-point layer/check_layer consistency check
+    # passes and the sweep-level cross-point context check is what fires.
     payload["points"][1]["check_layer"] = 2  # type: ignore[index]
+    payload["points"][1]["layer_recompute_ranges"][2] = [[0, 12]]  # type: ignore[index]
     with pytest.raises(SelectionSweepIoError) as caught:
         selection_sweep_from_dict(payload)
     assert caught.value.code is SelectionSweepIoErrorCode.INCONSISTENT_SWEEP
+
+    payload = selection_sweep_to_dict(_sweep())
+    payload["points"][1]["check_layer"] = 2  # type: ignore[index]
+    with pytest.raises(SelectionSweepIoError) as caught:
+        selection_sweep_from_dict(payload)
+    assert caught.value.code is SelectionSweepIoErrorCode.POINT_MISMATCH
 
     path = tmp_path / "invalid.json"
     path.write_text("{", encoding="utf-8")
