@@ -666,13 +666,16 @@ class GptOssWorkerBridge:
         self._store_preflight = None
         self._validate_store_plan(plan)
         staging = self._staging.tensor
+        base_chunk_index = plan.chunks[0].chunk_index
         for chunk in plan.chunks:
             receipt = self._preflight_data_plane.gather_precomputed_kv(
                 paged_caches=self._paged_caches,
                 staging=staging,
                 layer_spans=chunk.gather_plan.layer_spans,
                 document_target_range=chunk.token_range,
-                store_buffer_offset=self._chunk_store_offset(chunk.chunk_index),
+                store_buffer_offset=self._chunk_store_offset(
+                    chunk.chunk_index - base_chunk_index
+                ),
             )
             self._validate_data_receipt(
                 receipt,
@@ -698,6 +701,7 @@ class GptOssWorkerBridge:
         self._require_plan(self._gather_preflight, plan)
         self._require_plan(self._store_preflight, plan)
         staging = self._staging.tensor
+        base_chunk_index = plan.chunks[0].chunk_index
         try:
             for chunk in plan.chunks:
                 receipt = self._data_plane.gather_precomputed_kv(
@@ -706,7 +710,7 @@ class GptOssWorkerBridge:
                     layer_spans=chunk.gather_plan.layer_spans,
                     document_target_range=chunk.token_range,
                     store_buffer_offset=self._chunk_store_offset(
-                        chunk.chunk_index
+                        chunk.chunk_index - base_chunk_index
                     ),
                 )
                 self._validate_data_receipt(
@@ -788,25 +792,38 @@ class GptOssWorkerBridge:
         validate_request_id(plan.metadata.request_id)
 
     def _validate_store_plan(self, plan: WorkerStorePlan) -> None:
+        # A delta store plan may skip a leading run of already-stored chunks,
+        # so its first chunk need not sit at prompt position zero.  It must
+        # still be exactly one contiguous run that never extends past the
+        # prompt's complete-chunk prefix.
         if (
             not isinstance(plan, WorkerStorePlan)
             or not plan.metadata.store_eligible
             or not plan.chunks
             or plan.expected_tokens != len(plan.chunks) * LMCACHE_CHUNK_SIZE
-            or plan.expected_tokens != plan.metadata.complete_store_token_count
+            or plan.source_range.end > plan.metadata.complete_store_token_count
+            or plan.source_range.start % LMCACHE_CHUNK_SIZE != 0
+            or plan.source_range != TokenRange(
+                plan.source_range.start,
+                plan.source_range.start + plan.expected_tokens,
+            )
             or plan.token_ids
-            != plan.metadata.prompt_token_ids[: plan.expected_tokens]
-            or plan.source_range != TokenRange(0, plan.expected_tokens)
+            != plan.metadata.prompt_token_ids[
+                plan.source_range.start : plan.source_range.end
+            ]
         ):
             _fail(WorkerBridgeErrorCode.INVALID_PLAN)
+        base_chunk_index = plan.chunks[0].chunk_index
         for index, chunk in enumerate(plan.chunks):
             expected_range = TokenRange(
-                index * LMCACHE_CHUNK_SIZE,
-                (index + 1) * LMCACHE_CHUNK_SIZE,
+                chunk.chunk_index * LMCACHE_CHUNK_SIZE,
+                (chunk.chunk_index + 1) * LMCACHE_CHUNK_SIZE,
             )
             if (
-                chunk.chunk_index != index
+                chunk.chunk_index != base_chunk_index + index
                 or chunk.token_range != expected_range
+                or expected_range.start != plan.source_range.start
+                + index * LMCACHE_CHUNK_SIZE
                 or chunk.token_ids
                 != plan.metadata.prompt_token_ids[
                     expected_range.start : expected_range.end

@@ -92,6 +92,44 @@ def _is_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+def _store_skip_prefix_chunk_count(metadata: SchedulerTransferMetadata) -> int:
+    """Count leading complete chunks a store can skip without a second lookup.
+
+    A chunk is already stored only when the load-side lookup already proved
+    it: a ``VerifiedLmcacheCandidate`` whose ``target_range`` is exactly one
+    chunk-aligned, chunk-sized span of the current prompt.  That candidate
+    already passed exact-token, fingerprint, and namespace verification
+    (:meth:`SchedulerTransferMetadata.__post_init__`), so re-storing it would
+    write byte-identical content.  Counting stops at the first chunk that is
+    not proven present, so the remaining store plan is always one contiguous
+    run -- matching the single linear ``document_source_range`` the storage
+    transport accepts.  Any ambiguity (no candidate, a misaligned candidate, a
+    candidate elsewhere in the prompt) fails closed by stopping the skip and
+    storing that chunk and everything after it.
+    """
+
+    aligned_present = {
+        verified.candidate.target_range
+        for verified in metadata.verified_candidates
+        if verified.candidate.target_range.start % LMCACHE_CHUNK_SIZE == 0
+    }
+    skip_chunks = 0
+    for start in range(0, metadata.complete_store_token_count, LMCACHE_CHUNK_SIZE):
+        if TokenRange(start, start + LMCACHE_CHUNK_SIZE) not in aligned_present:
+            break
+        skip_chunks += 1
+    return skip_chunks
+
+
+def _store_eligible_tokens(metadata: SchedulerTransferMetadata) -> int:
+    """Return the per-request store delta: complete chunks not yet stored."""
+
+    if not metadata.store_eligible:
+        return 0
+    skip_chunks = _store_skip_prefix_chunk_count(metadata)
+    return metadata.complete_store_token_count - skip_chunks * LMCACHE_CHUNK_SIZE
+
+
 @dataclass(frozen=True, slots=True)
 class SchedulerTransferMetadata:
     """Exact immutable scheduler-to-worker metadata for one prefill step."""
@@ -252,7 +290,14 @@ class StoreChunkWork:
 
 @dataclass(frozen=True, slots=True)
 class WorkerStorePlan:
-    """Fully preplanned gather/store work for complete prompt chunks."""
+    """Fully preplanned gather/store work for complete prompt chunks.
+
+    ``chunks`` need not begin at prompt position zero: a delta store plan
+    (see ``TransferRuntime._build_store_plan``) may skip a leading run of
+    already-stored chunks and cover only the newly appended tail.  ``chunks``
+    is always empty or exactly one contiguous run, so ``token_ids`` and
+    ``source_range`` remain single linear slices.
+    """
 
     metadata: SchedulerTransferMetadata
     adapted_blocks: AdaptedKvCacheBlocks
@@ -260,11 +305,18 @@ class WorkerStorePlan:
 
     @property
     def token_ids(self) -> tuple[int, ...]:
-        return self.metadata.prompt_token_ids[: self.expected_tokens]
+        if not self.chunks:
+            return ()
+        start = self.chunks[0].token_range.start
+        return self.metadata.prompt_token_ids[start : start + self.expected_tokens]
 
     @property
     def source_range(self) -> TokenRange:
-        return TokenRange(0, self.expected_tokens)
+        if not self.chunks:
+            count = self.metadata.complete_store_token_count
+            return TokenRange(count, count)
+        start = self.chunks[0].token_range.start
+        return TokenRange(start, start + self.expected_tokens)
 
     @property
     def expected_tokens(self) -> int:
@@ -514,9 +566,7 @@ class PostForwardOutcome:
         if any(not _is_int(value) or value < 0 for value in values):
             _fail(TransferRuntimeErrorCode.INVALID_OUTCOME)
         metadata = self.completion.pre_forward.metadata
-        expected_eligible = (
-            metadata.complete_store_token_count if metadata.store_eligible else 0
-        )
+        expected_eligible = _store_eligible_tokens(metadata)
         expected_chunks = expected_eligible // LMCACHE_CHUNK_SIZE
         if self.eligible_store_tokens != expected_eligible:
             _fail(TransferRuntimeErrorCode.INVALID_OUTCOME)
@@ -688,9 +738,7 @@ class TransferRuntime:
         if not isinstance(completion, FullPrefillCompletion):
             _fail(TransferRuntimeErrorCode.INVALID_FORWARD_COMPLETION)
         metadata = completion.pre_forward.metadata
-        eligible_tokens = (
-            metadata.complete_store_token_count if metadata.store_eligible else 0
-        )
+        eligible_tokens = _store_eligible_tokens(metadata)
         if not metadata.store_eligible:
             return self._store_outcome(
                 completion,
@@ -706,6 +754,22 @@ class TransferRuntime:
                 TransferAttemptState.FULL_PREFILL_FALLBACK,
                 TransferFallbackCode.STORE_PLAN_REJECTED,
                 eligible_tokens,
+            )
+        if not plan.chunks:
+            # Every complete chunk in this prompt was already proven present
+            # by the load-side lookup.  Nothing needs to be gathered,
+            # transferred, or published; report a trivial success so
+            # eligible == completed == 0 without ever calling the worker
+            # storage or data-plane boundaries.
+            return PostForwardOutcome(
+                completion=completion,
+                state=TransferAttemptState.SUCCEEDED,
+                failure_code=None,
+                eligible_store_tokens=eligible_tokens,
+                stored_tokens=0,
+                stored_chunks=0,
+                sidecar_records_available=0,
+                sidecar_records_inserted=0,
             )
         try:
             self._data_plane.preflight_gather(plan)
@@ -803,9 +867,25 @@ class TransferRuntime:
         metadata: SchedulerTransferMetadata,
         adapted_blocks: AdaptedKvCacheBlocks,
     ) -> WorkerStorePlan:
+        """Build a delta store plan: skip the already-stored leading chunks.
+
+        ``_store_skip_prefix_chunk_count`` proves, from the load-side
+        verified candidates already bound onto ``metadata``, which leading
+        complete chunks are exact-token identical to what is already
+        persisted.  Only the remaining contiguous tail -- typically the
+        newly appended turn on an append-only trajectory -- is gathered and
+        staged for storage here.  An empty result (every complete chunk
+        already stored) is a legitimate plan, not a failure.
+        """
+
         self._validate_allocation(metadata, adapted_blocks)
+        skip_tokens = (
+            _store_skip_prefix_chunk_count(metadata) * LMCACHE_CHUNK_SIZE
+        )
         chunks: list[StoreChunkWork] = []
-        for start in range(0, metadata.complete_store_token_count, LMCACHE_CHUNK_SIZE):
+        for start in range(
+            skip_tokens, metadata.complete_store_token_count, LMCACHE_CHUNK_SIZE
+        ):
             token_range = TokenRange(start, start + LMCACHE_CHUNK_SIZE)
             chunks.append(
                 StoreChunkWork(
@@ -821,8 +901,6 @@ class TransferRuntime:
                     ),
                 )
             )
-        if not chunks:
-            _fail(TransferRuntimeErrorCode.INVALID_METADATA)
         return WorkerStorePlan(metadata, adapted_blocks, tuple(chunks))
 
     @staticmethod

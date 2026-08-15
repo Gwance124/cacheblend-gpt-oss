@@ -868,6 +868,175 @@ def test_load_failure_does_not_prevent_storing_the_recomputed_prompt() -> None:
     assert stored.prefill_tokens_avoided == 0
 
 
+def test_first_request_with_no_verified_candidates_stores_the_whole_prefix() -> (
+    None
+):
+    """No prior turn means nothing is already stored: store every chunk."""
+
+    metadata, blocks = _metadata(
+        candidate_specs=(), transfer_eligible=False, store_eligible=True
+    )
+    runtime, storage, data_plane, calls, mutations = _runtime()
+    captured: list[WorkerStorePlan] = []
+
+    def capture(plan: WorkerStorePlan) -> None:
+        captured.append(plan)
+
+    storage.preflight_store = capture  # type: ignore[method-assign]
+    before = runtime.before_forward(metadata, blocks)
+    completion = runtime.mark_full_prefill_complete(
+        before, recomputed_token_count=600
+    )
+
+    stored = runtime.after_forward(completion, blocks)
+
+    assert stored.state is TransferAttemptState.SUCCEEDED
+    assert stored.eligible_store_tokens == 512
+    assert stored.stored_tokens == 512
+    assert stored.stored_chunks == 2
+    assert len(captured[0].chunks) == 2
+    assert captured[0].chunks[0].token_range == TokenRange(0, 256)
+    assert captured[0].chunks[1].token_range == TokenRange(256, 512)
+    assert captured[0].token_ids == metadata.prompt_token_ids[:512]
+    assert captured[0].source_range == TokenRange(0, 512)
+    assert "data.preflight_gather" in calls
+    assert "gather" in mutations
+
+
+def test_follow_up_request_stores_only_the_newly_appended_tail_chunk() -> None:
+    """A verified candidate proving chunk 0 is present skips re-storing it."""
+
+    metadata, blocks = _metadata(
+        candidate_specs=((0, 4096, 7),),
+        transfer_eligible=True,
+        store_eligible=True,
+    )
+    runtime, storage, data_plane, calls, mutations = _runtime()
+    captured: list[WorkerStorePlan] = []
+
+    def capture(plan: WorkerStorePlan) -> None:
+        captured.append(plan)
+
+    storage.preflight_store = capture  # type: ignore[method-assign]
+    before = runtime.before_forward(metadata, blocks)
+    completion = runtime.mark_full_prefill_complete(
+        before, recomputed_token_count=600
+    )
+
+    stored = runtime.after_forward(completion, blocks)
+
+    assert stored.state is TransferAttemptState.SUCCEEDED
+    # Only the second (256, 512) chunk is new; the first was already stored.
+    assert stored.eligible_store_tokens == 256
+    assert stored.stored_tokens == 256
+    assert stored.stored_chunks == 1
+    assert len(captured[0].chunks) == 1
+    assert captured[0].chunks[0].chunk_index == 1
+    assert captured[0].chunks[0].token_range == TokenRange(256, 512)
+    assert captured[0].token_ids == metadata.prompt_token_ids[256:512]
+    assert captured[0].source_range == TokenRange(256, 512)
+
+
+def test_all_complete_chunks_already_stored_skips_worker_calls_entirely() -> None:
+    """Every complete chunk already verified present: nothing to gather/store."""
+
+    metadata, blocks = _metadata(
+        candidate_specs=((0, 4096, 7), (256, 8192, 9)),
+        transfer_eligible=True,
+        store_eligible=True,
+    )
+    runtime, _storage, _data_plane, calls, mutations = _runtime()
+
+    before = runtime.before_forward(metadata, blocks)
+    completion = runtime.mark_full_prefill_complete(
+        before, recomputed_token_count=600
+    )
+    calls.clear()
+    mutations.clear()
+
+    stored = runtime.after_forward(completion, blocks)
+
+    assert stored.state is TransferAttemptState.SUCCEEDED
+    assert stored.eligible_store_tokens == 0
+    assert stored.stored_tokens == 0
+    assert stored.stored_chunks == 0
+    assert stored.sidecar_records_available == 0
+    assert stored.sidecar_records_inserted == 0
+    # No gather, store, or publish call was ever made.
+    assert calls == []
+    assert mutations == []
+
+
+def test_skip_stops_at_first_gap_even_when_a_later_chunk_is_also_verified() -> (
+    None
+):
+    """A verified candidate does not prove earlier, unverified chunks."""
+
+    metadata, blocks = _metadata(
+        candidate_specs=((0, 4096, 7), (512, 8192, 9)),
+        transfer_eligible=True,
+        store_eligible=True,
+        prompt_length=856,
+    )
+    runtime, storage, _data_plane, _calls, _mutations = _runtime()
+    captured: list[WorkerStorePlan] = []
+
+    def capture(plan: WorkerStorePlan) -> None:
+        captured.append(plan)
+
+    storage.preflight_store = capture  # type: ignore[method-assign]
+    before = runtime.before_forward(metadata, blocks)
+    completion = runtime.mark_full_prefill_complete(
+        before, recomputed_token_count=856
+    )
+
+    stored = runtime.after_forward(completion, blocks)
+
+    # complete_store_token_count = 768 (3 chunks). Chunk 0 is verified, chunk
+    # 2 (512-768) is verified, but chunk 1 (256-512) is not: fail-closed
+    # storing stops skipping at chunk 1 and stores everything from there on.
+    assert stored.state is TransferAttemptState.SUCCEEDED
+    assert stored.eligible_store_tokens == 512
+    assert stored.stored_chunks == 2
+    assert [chunk.token_range for chunk in captured[0].chunks] == [
+        TokenRange(256, 512),
+        TokenRange(512, 768),
+    ]
+
+
+def test_misaligned_verified_candidate_is_never_used_to_skip_a_store_chunk() -> (
+    None
+):
+    """A candidate not aligned to a store-chunk boundary proves nothing here."""
+
+    metadata, blocks = _metadata(
+        candidate_specs=((128, 4096, 7),),
+        transfer_eligible=True,
+        store_eligible=True,
+    )
+    runtime, storage, _data_plane, _calls, _mutations = _runtime()
+    captured: list[WorkerStorePlan] = []
+
+    def capture(plan: WorkerStorePlan) -> None:
+        captured.append(plan)
+
+    storage.preflight_store = capture  # type: ignore[method-assign]
+    before = runtime.before_forward(metadata, blocks)
+    completion = runtime.mark_full_prefill_complete(
+        before, recomputed_token_count=600
+    )
+
+    stored = runtime.after_forward(completion, blocks)
+
+    assert stored.state is TransferAttemptState.SUCCEEDED
+    assert stored.eligible_store_tokens == 512
+    assert stored.stored_chunks == 2
+    assert [chunk.token_range for chunk in captured[0].chunks] == [
+        TokenRange(0, 256),
+        TokenRange(256, 512),
+    ]
+
+
 def test_partial_prompt_tail_is_never_gathered_stored_or_published() -> None:
     metadata, blocks = _metadata(
         candidate_specs=(),

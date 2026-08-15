@@ -858,15 +858,35 @@ class FakeTransferRuntime:
         self, completion: FullPrefillCompletion, adapted_blocks: object
     ) -> PostForwardOutcome:
         self.after_calls.append((completion, adapted_blocks))
+        # Mirror the real delta-store rule
+        # (see transfer_runtime._store_eligible_tokens): a chunk-aligned
+        # verified candidate proves that chunk is already stored, so only
+        # the leading run of proven chunks is skipped.
+        metadata = completion.pre_forward.metadata
+        complete_tokens = (
+            metadata.prompt_token_count // 256
+        ) * 256
+        aligned_present = {
+            verified.candidate.target_range
+            for verified in metadata.verified_candidates
+            if verified.candidate.target_range.start % 256 == 0
+        }
+        skip_tokens = 0
+        for start in range(0, complete_tokens, 256):
+            if TokenRange(start, start + 256) not in aligned_present:
+                break
+            skip_tokens += 256
+        eligible = complete_tokens - skip_tokens
+        chunks = eligible // 256
         return PostForwardOutcome(
             completion=completion,
             state=TransferAttemptState.SUCCEEDED,
             failure_code=None,
-            eligible_store_tokens=256,
-            stored_tokens=256,
-            stored_chunks=1,
-            sidecar_records_available=1,
-            sidecar_records_inserted=1,
+            eligible_store_tokens=eligible,
+            stored_tokens=eligible,
+            stored_chunks=chunks,
+            sidecar_records_available=chunks,
+            sidecar_records_inserted=chunks,
         )
 
 

@@ -232,6 +232,70 @@ def _plans(
     return load, WorkerStorePlan(metadata, blocks, chunks)
 
 
+def _delta_store_plan(
+    config: LmcacheBlendTransportConfig,
+    *,
+    skip_chunks: int,
+    total_chunks: int,
+) -> WorkerStorePlan:
+    """Build a tail-only store plan, as a delta store would after skipping.
+
+    ``chunks`` starts at ``skip_chunks`` (an absolute chunk index into the
+    full prompt), exactly as :meth:`TransferRuntime._build_store_plan` builds
+    one after the load-side lookup already proved the leading chunks are
+    stored.  This lets the bridge-level tests exercise a plan whose first
+    chunk does not sit at prompt position zero without going through the
+    transfer runtime.
+    """
+
+    prompt = tuple(range(total_chunks * 256))
+    layout = _layout()
+    block_count = (len(prompt) + 15) // 16
+    block_ids = (
+        tuple(range(block_count)),
+        tuple(range(block_count, block_count * 2)),
+    )
+    control_layout = ControlCacheGroupLayout(
+        tuple(group.layer_names for group in layout.groups)
+    )
+    grouped = GroupedBlockAllocation.capture(control_layout, block_ids)
+    blocks = AdaptedKvCacheBlocks(
+        grouped_allocation=grouped,
+        group_block_tables=tuple(
+            GroupBlockTable(group.group_id, 16, block_ids[group.group_id])
+            for group in layout.groups
+        ),
+    )
+    request_plan = RequestPlan(
+        "opaque-request", len(prompt), (), MatchPlan((), (), 0)
+    )
+    handoff = RequestHandoffMetadata(
+        METADATA_SCHEMA_VERSION,
+        request_plan,
+        RequestAllocation("opaque-request", 0, grouped),
+    )
+    metadata = SchedulerTransferMetadata(
+        config.namespace, prompt, (), handoff, 0, len(prompt), False, True
+    )
+    chunks = tuple(
+        StoreChunkWork(
+            chunk_index,
+            token_range,
+            prompt[token_range.start : token_range.end],
+            plan_token_scatter(
+                layout,
+                blocks.group_block_tables,
+                TokenTransfer(token_range, token_range),
+            ),
+        )
+        for chunk_index in range(skip_chunks, total_chunks)
+        for token_range in (
+            TokenRange(chunk_index * 256, (chunk_index + 1) * 256),
+        )
+    )
+    return WorkerStorePlan(metadata, blocks, chunks)
+
+
 @dataclass
 class _FakeStagingRuntime:
     config: StagingConfig
@@ -357,8 +421,17 @@ class _FakeTransport:
                 namespace,
                 SHA256_FINGERPRINTER.fingerprint(namespace, chunk),
                 chunk,
-                TokenRange(start, start + 256),
-                LMCACHE_CACHE_KEY_PREFIX + (bytes([10 + start // 256]) * 32).hex(),
+                TokenRange(
+                    document_source_range.start + start,
+                    document_source_range.start + start + 256,
+                ),
+                LMCACHE_CACHE_KEY_PREFIX
+                + (
+                    bytes(
+                        [10 + (document_source_range.start + start) // 256]
+                    )
+                    * 32
+                ).hex(),
             )
             for start in range(0, len(tokens), 256)
             for chunk in (tokens[start : start + 256],)
@@ -788,6 +861,48 @@ def test_store_receipt_records_are_independently_reverified_before_return() -> N
     )
     assert fixture.sidecar.batches == []
     assert not any(entry.startswith("sidecar.add_many") for entry in fixture.trace)
+
+
+def test_delta_store_plan_uses_relative_staging_offsets_within_a_small_buffer() -> (
+    None
+):
+    """A tail-only plan must stage into a buffer sized for the delta only.
+
+    Before the delta-store fix, ``_chunk_store_offset`` used each chunk's
+    absolute index into the whole prompt, so a plan covering only chunks 5-6
+    of a long document would try to stage at byte offsets far beyond a
+    buffer sized for just those two chunks. The offsets must be relative to
+    the plan's own first chunk instead.
+    """
+
+    fixture = _fixture(
+        buffer_config=WorkerBridgeBufferConfig(0, 0), staging_capacity=512
+    )
+    store = _delta_store_plan(
+        fixture.transport.config, skip_chunks=5, total_chunks=7
+    )
+    fixture.bridge.open()
+    fixture.trace.clear()
+
+    fixture.bridge.preflight_gather(store)
+    fixture.bridge.preflight_store(store)
+    fixture.bridge.gather_recomputed(store)
+    receipt = fixture.bridge.store_precomputed(store)
+
+    assert store.expected_tokens == 512
+    assert store.source_range == TokenRange(1280, 1792)
+    assert "preflight.gather:0" in fixture.trace
+    assert "preflight.gather:256" in fixture.trace
+    assert "active.gather:0" in fixture.trace
+    assert "active.gather:256" in fixture.trace
+    assert not any(
+        entry.startswith("preflight.gather:1280")
+        or entry.startswith("active.gather:1280")
+        for entry in fixture.trace
+    )
+    assert "lease:store:0:512" in fixture.trace
+    assert receipt.stored_tokens == 512
+    assert receipt.stored_chunks == 2
 
 
 def test_direct_atomic_publish_rechecks_fingerprint_source_and_cache_key() -> None:
