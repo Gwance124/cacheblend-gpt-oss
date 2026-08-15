@@ -88,8 +88,8 @@ main() {
     git fetch origin
     git checkout "$BRANCH"
     git pull --ff-only origin "$BRANCH"
-    if [[ "$(git rev-parse --short HEAD)" != "$GATE_COMMIT"* ]]; then
-        echo "Expected gate commit $GATE_COMMIT, observed $(git rev-parse HEAD)."
+    if ! git merge-base --is-ancestor "$GATE_COMMIT" HEAD; then
+        echo "Expected a checkout containing gate commit $GATE_COMMIT, observed $(git rev-parse HEAD)."
         echo "Push the gate commit and run this script again."
         return 0
     fi
