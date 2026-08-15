@@ -252,3 +252,20 @@ the single-prompt schema to real dev-100 trajectories is a small adapter.
    (E2 arm 3) exists to isolate it. The current ~1095s vs ~600s gap shows this matters.
 6. **Effort asymmetry.** Phase A (and the envelope decision) is the gate; Phase C0 is a required
    CPU fix; Phase C1–C6 is substantial vLLM-internal + CUDA-kernel work.
+7. **O(N²) re-store — prerequisite for any append-only speed result (found 2026-08-14).**
+   `transfer_runtime.py:_build_store_plan` (`:801-826`) re-gathers/re-transfers/re-hashes **every
+   complete chunk of the whole prompt on every request** (`complete_store_token_count`), so on
+   append-only the per-turn store work grows with accumulated context → cumulative O(turns²),
+   synchronous, single-threaded (`--max-workers 1`). Evidence: query-703 100%-recompute run took
+   **8252s vs ~600s baseline (~13.75×)** on ~1.4× the turns — the store tax, not compute or the
+   extra turns, dominates. Fix in flight: **delta-store** (store only complete chunks not already
+   in the sidecar, by exact-token identity). This would otherwise swamp any selective compute
+   savings and make CacheBlend lose on append-only regardless of recompute ratio.
+8. **Load-side re-fetch (deeper item, not yet scoped).** With prefix caching off, prefix KV is
+   not resident across turns, so the load path likely re-retrieves the growing prefix each turn —
+   also O(N²). This is entangled with the prefix-caching-off constraint; the principled fix is
+   the prefix-cache-for-prefix + CacheBlend-for-moved-docs architecture, a larger design change.
+9. **Trajectory divergence invalidates naive arm comparison.** The failing M3 numerics changed
+   the agent's decisions (43 search calls vs the baseline's 32 on query 703), so the CacheBlend
+   arm did *more work* than the baseline. Arms must run matched trajectories to be comparable —
+   another reason M3 comes before any speed claim.
