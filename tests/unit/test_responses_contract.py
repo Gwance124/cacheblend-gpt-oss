@@ -160,6 +160,24 @@ def test_completed_root_accepts_null_harmony_reasoning_status() -> None:
     assert response.reasoning_items == 1
 
 
+def test_completed_root_accepts_null_tool_status() -> None:
+    raw = _tool_response()
+    output = raw["output"]
+    assert isinstance(output, list)
+    function_call = output[1]
+    assert isinstance(function_call, dict)
+    function_call["status"] = None
+    raw["usage"] = _usage()
+
+    response = parse_completed_response(
+        raw,
+        require_usage=True,
+        require_completed_items=True,
+    )
+
+    assert len(response.function_calls) == 1
+
+
 @pytest.mark.parametrize(
     "mutation",
     [
