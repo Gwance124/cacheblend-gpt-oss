@@ -282,7 +282,13 @@ def require_reasoned_message(response: ResponseObservation) -> tuple[str, ...]:
         or response.output_types[-1] != "message"
         or any(item_type != "reasoning" for item_type in response.output_types[:-1])
     ):
-        raise ValueError("Responses reasoned message turn is structurally incomplete")
+        raise ValueError(
+            "Responses reasoned message turn is structurally incomplete: "
+            f"output_types={response.output_types!r}, "
+            f"reasoning_items={response.reasoning_items}, "
+            f"function_calls={len(response.function_calls)}, "
+            f"message_text_parts={len(response.message_texts)}"
+        )
     return response.message_texts
 
 
