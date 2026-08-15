@@ -142,6 +142,24 @@ def test_completed_item_status_is_required_for_live_contract() -> None:
         )
 
 
+def test_completed_root_accepts_null_harmony_reasoning_status() -> None:
+    raw = _message_response()
+    output = raw["output"]
+    assert isinstance(output, list)
+    reasoning = output[0]
+    assert isinstance(reasoning, dict)
+    reasoning["status"] = None
+    raw["usage"] = _usage()
+
+    response = parse_completed_response(
+        raw,
+        require_usage=True,
+        require_completed_items=True,
+    )
+
+    assert response.reasoning_items == 1
+
+
 @pytest.mark.parametrize(
     "mutation",
     [

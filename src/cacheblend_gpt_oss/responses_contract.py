@@ -198,7 +198,18 @@ def parse_completed_response(
         )
         if item_type not in _HARMONY_OUTPUT_TYPES:
             raise ValueError("Responses output item type is unsupported")
-        if require_completed_items and item.get("status") != "completed":
+        # vLLM 0.19.1 can emit a completed root response whose Harmony
+        # reasoning item has a null status.  Reasoning is informational and
+        # does not represent an unfinished tool/message item.  Keep the live
+        # contract strict for every actionable output item and for explicit
+        # non-completed reasoning statuses.
+        item_status = item.get("status")
+        reasoning_status_is_acceptable = (
+            item_type == "reasoning" and item_status is None
+        )
+        if require_completed_items and not (
+            item_status == "completed" or reasoning_status_is_acceptable
+        ):
             raise ValueError("Responses output item did not complete")
         output_items.append(item)
         output_types.append(item_type)
