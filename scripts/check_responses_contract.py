@@ -285,7 +285,11 @@ def main() -> int:
     ]
     first_payload = _request_payload(initial_input)
     first_payload["tools"] = [_TOOL]
-    first_payload["tool_choice"] = {"type": "function", "name": _TOOL_NAME}
+    # The pinned vLLM 0.19.1 Harmony Responses path accepts only the string
+    # "auto" for tool_choice.  We still require and validate the observed
+    # function call below, so this remains a deterministic fixture without
+    # sending an unsupported named-tool request to the server.
+    first_payload["tool_choice"] = "auto"
     first = parse_completed_response(
         client.post_json("/v1/responses", first_payload),
         require_usage=True,

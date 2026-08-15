@@ -1,7 +1,7 @@
 # solab-g3 GPT-OSS Responses contract gate
 
 This manual gate verifies that the CacheBlend-enabled endpoint preserves the
-GPT-OSS `/v1/responses` contract across Harmony reasoning, a forced function
+GPT-OSS `/v1/responses` contract across Harmony reasoning, an observed function
 call, append-only `function_call_output`, the tool continuation, and one later
 user turn. It does not replace the moved-document numerical gate and does not
 use natural-language fluency as KV correctness evidence.
@@ -103,16 +103,21 @@ curl --fail-with-body http://127.0.0.1:8000/metrics \
   | tee "$CACHEBLEND_RUN_DIR/responses-contract-validation.txt"
 ```
 
+The script performs exactly three non-streaming calls. Because the pinned
+vLLM 0.19.1 Harmony Responses path accepts only `tool_choice: "auto"`, the
+first request asks for the available tool and the harness requires the
+specific `get_weather` call in the observed response.
+
 The script performs exactly three non-streaming calls:
 
-1. a low-effort Harmony turn forced to call `get_weather` for Paris;
+1. a low-effort Harmony turn requesting `get_weather` for Paris;
 2. a continuation containing the original user item, every emitted reasoning
    and function-call item, and a matching fixed local tool result; and
 3. another append-only turn containing the complete continuation output plus a
    new user item.
 
 It fails unless every response completes, every turn emits a Harmony reasoning
-item, the first emits exactly the named function call with valid JSON
+item, the first emits exactly the requested function call with valid JSON
 arguments, both later turns emit nonempty message text, the fixed city survives
 both continuations, every non-streaming response includes reconciled `usage`
 input/output/total and nested detail counters, every output item has completed
