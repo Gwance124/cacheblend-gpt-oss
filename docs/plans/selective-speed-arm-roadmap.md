@@ -233,11 +233,16 @@ the single-prompt schema to real dev-100 trajectories is a small adapter.
 
 ## Key risks / decision points
 
-1. **M3 may be reduction-order drift, not a leak** (settled early by the A1 scatter-disabled
-   control). **Decided:** adopt the connector-attached, scatter-disabled run as the
-   prospectively-frozen baseline (correct one-variable control); switch to active drift-reduction
-   only if that control's drift consumes a large fraction of the tolerance. Enabler: the
-   KV-scatter-disabled diagnostic mode (first implementation task).
+1. **M3 is reduction-order DRIFT, not a leak — RESOLVED on g3.** The scatter-disabled control
+   retained essentially all the discrepancy (max 0.082 vs 0.089 normal; mean 0.0103 vs 0.0104;
+   all sampled/top tokens agree), so reused KV is NOT contaminating output — no KV-overwrite bug,
+   no code fix. Drift lives in negligible-probability tail tokens (mean within the old envelope;
+   only full-vocab max elevated), so it does not destroy the v2 probability-gate's discriminating
+   power → **disciplined Option 1 adopted, drift-reduction not needed.** Path forward: capture ~5
+   connector-attached scatter-disabled controls, freeze a connector-inclusive v2 envelope
+   prospectively, capture one real candidate, evaluate. This validates the *reuse mechanism*
+   against an envelope that accepts connector-presence drift — a legitimate but slightly weaker
+   claim than bit-clean equivalence; label accordingly.
 2. **Out-of-tree metrics ceiling.** Native vLLM cannot show non-prefix savings; the honest
    signal is internal layer-token accounting. A vLLM patch is an M6-gated option only. Do not
    present internal skips as native tokens avoided.
