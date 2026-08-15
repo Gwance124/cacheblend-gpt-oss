@@ -116,10 +116,11 @@ The script performs exactly three non-streaming calls:
 3. another append-only turn containing the complete continuation output plus a
    new user item.
 
-It fails unless every response completes, every turn emits a Harmony reasoning
-item, the first emits exactly the requested function call with valid JSON
-arguments, both later turns emit nonempty message text, the fixed city survives
-both continuations, every non-streaming response includes reconciled `usage`
+It fails unless every response completes, the first turn emits a Harmony
+reasoning item and exactly the requested function call with valid JSON
+arguments, both later turns emit nonempty message text (the pinned GPT-OSS
+implementation may emit those continuations as message-only items), the fixed
+city survives both continuations, every non-streaming response includes reconciled `usage`
 input/output/total and nested detail counters, every output item has completed
 status, the sum of usage input tokens matches native vLLM prompt-token
 accounting, prefix-cache usage is zero, and exactly three connector requests

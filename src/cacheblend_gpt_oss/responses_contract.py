@@ -273,14 +273,23 @@ def require_forced_tool_call(
 
 
 def require_reasoned_message(response: ResponseObservation) -> tuple[str, ...]:
-    """Require a Harmony reasoning item and at least one nonempty text part."""
+    """Require a valid Harmony message continuation.
+
+    The pinned GPT-OSS Responses implementation may emit a message-only
+    continuation after ``function_call_output``.  When reasoning is emitted,
+    it must precede the final message; either form must contain nonempty text
+    and no unexpected function call.
+    """
 
     if (
-        response.reasoning_items < 1
-        or response.function_calls
+        response.function_calls
         or not response.message_texts
         or response.output_types[-1] != "message"
         or any(item_type != "reasoning" for item_type in response.output_types[:-1])
+        or (
+            response.reasoning_items < 1
+            and response.output_types != ("message",)
+        )
     ):
         raise ValueError(
             "Responses reasoned message turn is structurally incomplete: "

@@ -226,6 +226,18 @@ def test_append_only_multi_turn_preserves_prior_items() -> None:
     }
 
 
+def test_message_only_continuation_is_accepted() -> None:
+    raw = _message_response()
+    output = raw["output"]
+    assert isinstance(output, list)
+    del output[0]
+
+    parsed = parse_completed_response(raw)
+
+    assert parsed.output_types == ("message",)
+    assert require_reasoned_message(parsed) == ("The weather in Paris is 21 C.",)
+
+
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [
