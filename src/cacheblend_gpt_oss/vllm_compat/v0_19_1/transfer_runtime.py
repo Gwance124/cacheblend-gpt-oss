@@ -335,6 +335,7 @@ class TransferFallbackCode(str, Enum):
     RETRIEVE_FAILED = "retrieve_failed"
     RETRIEVE_RECEIPT_INVALID = "retrieve_receipt_invalid"
     SCATTER_FAILED = "scatter_failed"
+    SCATTER_SUPPRESSED_DIAGNOSTIC = "scatter_suppressed_diagnostic"
     STORE_PLAN_REJECTED = "store_plan_rejected"
     STORE_PREFLIGHT_FAILED = "store_preflight_failed"
     GATHER_FAILED = "gather_failed"
@@ -357,6 +358,7 @@ class PreForwardOutcome:
     external_scheduler_tokens: int = FULL_RECOMPUTE_EXTERNAL_TOKENS
     prefill_tokens_avoided: int = 0
     position_correction_latency_seconds: float = 0.0
+    scatter_suppressed_tokens: int = 0
 
     def __post_init__(self) -> None:
         if not isinstance(self.metadata, SchedulerTransferMetadata) or not isinstance(
@@ -379,8 +381,10 @@ class PreForwardOutcome:
                     self.tokens_to_recompute,
                     self.external_scheduler_tokens,
                     self.prefill_tokens_avoided,
+                    self.scatter_suppressed_tokens,
                 )
             )
+            or self.scatter_suppressed_tokens < 0
             or len(loaded) != len(set(loaded))
             or len(rejected) != len(set(rejected))
             or set(loaded).intersection(rejected)
@@ -401,6 +405,10 @@ class PreForwardOutcome:
             len(self.metadata.verified_candidates[index].candidate.target_range)
             for index in loaded
         )
+        expected_rejected_tokens = sum(
+            len(self.metadata.verified_candidates[index].candidate.target_range)
+            for index in rejected
+        )
         if self.state is TransferAttemptState.SUCCEEDED:
             if (
                 not self.metadata.transfer_eligible
@@ -408,6 +416,7 @@ class PreForwardOutcome:
                 or loaded != expected_indexes
                 or rejected
                 or self.loaded_kv_tokens != expected_loaded_tokens
+                or self.scatter_suppressed_tokens != 0
             ):
                 _fail(TransferRuntimeErrorCode.INVALID_OUTCOME)
         elif (
@@ -424,6 +433,22 @@ class PreForwardOutcome:
             or (
                 self.state is TransferAttemptState.FULL_PREFILL_FALLBACK
                 and not isinstance(self.failure_code, TransferFallbackCode)
+            )
+            or (
+                # Fail-closed distinctness: only the scatter-disabled
+                # diagnostic path may report suppressed tokens, and it must
+                # report every candidate token that would otherwise have been
+                # scattered.  No other outcome may claim this counter, so a
+                # scatter-disabled run can never be mistaken for a real
+                # SUCCEEDED transfer or an ordinary failure.
+                self.failure_code
+                is TransferFallbackCode.SCATTER_SUPPRESSED_DIAGNOSTIC
+                and self.scatter_suppressed_tokens != expected_rejected_tokens
+            )
+            or (
+                self.failure_code
+                is not TransferFallbackCode.SCATTER_SUPPRESSED_DIAGNOSTIC
+                and self.scatter_suppressed_tokens != 0
             )
         ):
             _fail(TransferRuntimeErrorCode.INVALID_OUTCOME)
@@ -540,12 +565,17 @@ class TransferRuntime:
         layout: GptOssHybridCacheLayout,
         storage: WorkerStorage,
         data_plane: WorkerDataPlane,
+        *,
+        disable_kv_scatter: bool = False,
     ) -> None:
-        if not isinstance(layout, GptOssHybridCacheLayout):
+        if not isinstance(layout, GptOssHybridCacheLayout) or not isinstance(
+            disable_kv_scatter, bool
+        ):
             _fail(TransferRuntimeErrorCode.INVALID_METADATA)
         self._layout = layout
         self._storage = storage
         self._data_plane = data_plane
+        self._disable_kv_scatter = disable_kv_scatter
 
     def before_forward(
         self,
@@ -607,6 +637,25 @@ class TransferRuntime:
         except Exception:
             return self._load_fallback(
                 metadata, all_indexes, TransferFallbackCode.SCATTER_FAILED
+            )
+        if self._disable_kv_scatter:
+            # Diagnostic mode: the worker bridge ran lookup, retrieval, and
+            # YaRN correction, but its scatter copy into the paged KV cache
+            # was suppressed by construction.  Report this exactly like a
+            # full-prefill fallback so kv_tokens_loaded stays zero and this
+            # run can never be mistaken for a real transfer.
+            return PreForwardOutcome(
+                metadata=metadata,
+                state=TransferAttemptState.FULL_PREFILL_FALLBACK,
+                failure_code=TransferFallbackCode.SCATTER_SUPPRESSED_DIAGNOSTIC,
+                loaded_candidate_indexes=(),
+                rejected_candidate_indexes=all_indexes,
+                loaded_kv_tokens=0,
+                tokens_to_recompute=metadata.prompt_token_count,
+                scatter_suppressed_tokens=plan.expected_tokens,
+                position_correction_latency_seconds=(
+                    self._read_position_correction_latency()
+                ),
             )
         return PreForwardOutcome(
             metadata=metadata,

@@ -262,6 +262,94 @@ export VLLM_USE_V2_MODEL_RUNNER=0
   2>&1 | tee "$CACHEBLEND_RUN_DIR/cacheblend-server.log"
 ```
 
+## 4a. Optional M3 diagnostic: scatter-disabled control
+
+Run this control **before** step 5's real transfer comparison, as the first
+M3 numerical-equivalence diagnostic. It isolates connector-presence drift
+(staging allocation, an attached LMCache client, YaRN correction arithmetic,
+extra CUDA allocator traffic) from genuine loaded-KV contamination of the
+paged cache.
+
+`disable_kv_scatter` is an explicit, opt-in diagnostic switch on
+`transfer_100pct`
+(`src/cacheblend_gpt_oss/vllm_compat/v0_19_1/transfer_config.py`). With it
+set, the connector still runs lookup, retrieval into the staging tensor, and
+GPT-OSS YaRN key correction exactly as in a real transfer
+(`GptOssDataPlane.scatter_retrieved_kv` in
+`src/cacheblend_gpt_oss/vllm_compat/v0_19_1/data_plane.py`), but the final
+copy of corrected K/V into vLLM's real paged KV cache is skipped
+(`GptOssWorkerBridge.scatter_retrieved` in
+`src/cacheblend_gpt_oss/vllm_compat/v0_19_1/worker_bridge.py`). Every prompt
+token is still recomputed by ordinary prefill, exactly as in the normal
+100%-recompute milestone.
+
+Render a second connector config identical to step 4's, with a separate
+sidecar/evidence path and `--disable-kv-scatter` added:
+
+```bash
+CACHEBLEND_DIAG_SIDECAR="$CACHEBLEND_RUN_DIR/sidecar-scatter-disabled.sqlite3"
+CACHEBLEND_DIAG_EVIDENCE="$CACHEBLEND_RUN_DIR/transfer-evidence-scatter-disabled.json"
+export CACHEBLEND_DIAG_SIDECAR CACHEBLEND_DIAG_EVIDENCE
+test ! -e "$CACHEBLEND_DIAG_SIDECAR"
+test ! -e "$CACHEBLEND_DIAG_EVIDENCE"
+.venv/bin/python -c "import os; from cacheblend_gpt_oss.storage.sidecar import SidecarMode, open_sidecar_index; index = open_sidecar_index(os.environ['CACHEBLEND_DIAG_SIDECAR'], SidecarMode.WORKER_READ_WRITE); index.close()"
+
+CACHEBLEND_DIAG_KV_CONFIG=$(
+  .venv/bin/python scripts/render_transfer_config.py \
+    --lmcache-server-url tcp://127.0.0.1:5556 \
+    --sidecar-path "$CACHEBLEND_DIAG_SIDECAR" \
+    --model-revision "$CACHEBLEND_MODEL_REVISION" \
+    --tokenizer-revision "$CACHEBLEND_TOKENIZER_REVISION" \
+    --model-config-digest "$CACHEBLEND_MODEL_CONFIG_DIGEST" \
+    --kv-cache-config-digest "$CACHEBLEND_KV_CONFIG_DIGEST" \
+    --adapter-revision "$CACHEBLEND_PLUGIN_COMMIT" \
+    --transfer-evidence-path "$CACHEBLEND_DIAG_EVIDENCE" \
+    --staging-token-capacity 1024 \
+    --request-timeout-seconds 120 \
+    --disable-kv-scatter
+)
+export CACHEBLEND_DIAG_KV_CONFIG
+```
+
+Start a second vLLM instance with the exact same baseline flags as step 4,
+substituting `--kv-transfer-config "$CACHEBLEND_DIAG_KV_CONFIG"`, and repeat
+the store/move/load/recompute/compare sequence from step 5 against this
+server instead.
+
+How to read the result:
+
+- The connector artifact for this run must report `kv_tokens_loaded == 0`
+  and a fallback with
+  `failure_code == "scatter_suppressed_diagnostic"`
+  (`TransferFallbackCode.SCATTER_SUPPRESSED_DIAGNOSTIC` in
+  `src/cacheblend_gpt_oss/vllm_compat/v0_19_1/transfer_runtime.py`). This is
+  by construction, not something to troubleshoot: a scatter-disabled run can
+  never satisfy the same-transfer-evidence gate as a real transfer, and the
+  existing `kv_tokens_loaded <= 0` fail-closed check in
+  `scripts/validate_browsecomp_append_only.py` /
+  `benchmark/browsecomp.py` already rejects it as "not a real 100%-transfer"
+  for that reason.
+- The suppressed-but-would-have-loaded token count is reported separately
+  and honestly, never as a fabricated zero: connector Prometheus stats carry
+  it in the bounded `vllm:cacheblend_kv_tokens_scatter_suppressed_total`
+  counter, and the worker bridge exposes the same count locally through
+  `GptOssWorkerBridge.kv_tokens_scatter_suppressed`.
+- **If the moved-document numerical discrepancy from step 5 persists in this
+  scatter-disabled run**, the drift is caused by connector presence itself
+  (staging tensor allocation, the attached LMCache client, YaRN correction
+  arithmetic, or CUDA allocator/caching-context changes from those
+  allocations) and not by loaded KV reaching attention. Investigate the
+  connector/allocator path before re-examining `scatter_retrieved_kv`.
+- **If the discrepancy vanishes in this scatter-disabled run**, the
+  connector's presence alone is numerically inert, and the discrepancy in
+  step 5 is caused specifically by loaded KV contaminating the paged cache
+  (i.e. the scatter/correction data path itself, not incidental connector
+  overhead). Focus the next diagnostic there.
+
+No GPU results for this control have been captured or claimed by this
+document; only the mechanism and how to interpret an eventual run are
+described here.
+
 ## 5. Store, move, load, fully recompute, and compare
 
 The capture command first sends the 256-token source document and waits for its

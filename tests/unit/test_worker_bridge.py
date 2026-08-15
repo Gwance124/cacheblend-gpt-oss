@@ -490,10 +490,12 @@ class _FakeDataPlane:
         retrieval_buffer_offset: int,
         query_token_count: int,
         correct_key_positions: KeyPositionCorrector,
+        disable_scatter: bool = False,
     ) -> DataPlaneReceipt:
         source, target, logical = self._ranges(layer_spans)
         self.trace.append(
             f"{self.label}.scatter:{retrieval_buffer_offset}:{query_token_count}"
+            f"{':suppressed' if disable_scatter else ''}"
         )
         self.ops.staging_rows(
             staging,
@@ -508,9 +510,23 @@ class _FakeDataPlane:
             target_positions=target,
             layer_index=0,
         )
+        rows = logical * 24
+        if disable_scatter:
+            return DataPlaneReceipt(
+                TransferDirection.LOAD_FROM_STAGING,
+                logical,
+                rows,
+                len(layer_spans),
+                rows,
+                0,
+                0,
+                position_correction_latency_seconds=(
+                    self.position_correction_latency_seconds
+                ),
+                scatter_suppressed=True,
+            )
         self.ops.copy("paged", "staging")
         self.ops.synchronize("paged")
-        rows = logical * 24
         return DataPlaneReceipt(
             TransferDirection.LOAD_FROM_STAGING,
             logical,
@@ -582,6 +598,7 @@ def _fixture(
     buffer_config: WorkerBridgeBufferConfig | None = None,
     staging_capacity: int = 1024,
     fail_open: bool = False,
+    disable_kv_scatter: bool = False,
 ) -> _Fixture:
     trace: list[str] = []
     config = _transport_config()
@@ -601,6 +618,7 @@ def _fixture(
         buffer_config=buffer_config,
         staging_factory=runtime_factory,
         data_plane_factory=data_factory,
+        disable_kv_scatter=disable_kv_scatter,
     )
     return _Fixture(
         bridge, transport, sidecar, runtime_factory, corrector, trace
@@ -654,6 +672,44 @@ def test_load_preflight_is_read_only_and_preserves_offset_and_yarn_positions() -
     assert "active.scatter:32:600" in fixture.trace
     assert fixture.trace.count("tensor.copy") == 1
     assert fixture.bridge.position_correction_latency_seconds == pytest.approx(0.25)
+
+
+def test_disable_kv_scatter_suppresses_the_real_copy_but_keeps_correction() -> None:
+    fixture = _fixture(
+        buffer_config=WorkerBridgeBufferConfig(32, 32), disable_kv_scatter=True
+    )
+    load, _store = _plans(fixture.transport.config)
+    fixture.bridge.open()
+    fixture.trace.clear()
+
+    fixture.bridge.preflight_retrieve(load)
+    fixture.bridge.preflight_scatter(load)
+    fixture.bridge.retrieve_verified(load)
+    fixture.bridge.scatter_retrieved(load)
+
+    assert "yarn.correct" in fixture.trace
+    assert "active.scatter:32:600:suppressed" in fixture.trace
+    # The real (non-preflight) scatter never issued its destination copy.
+    assert fixture.trace.count("tensor.copy") == 0
+    assert fixture.bridge.kv_tokens_scatter_suppressed == 256
+    assert fixture.bridge.position_correction_latency_seconds == pytest.approx(0.25)
+
+
+def test_disable_kv_scatter_default_false_leaves_normal_path_unchanged() -> None:
+    fixture = _fixture(buffer_config=WorkerBridgeBufferConfig(32, 32))
+    load, _store = _plans(fixture.transport.config)
+    fixture.bridge.open()
+    fixture.trace.clear()
+
+    fixture.bridge.preflight_retrieve(load)
+    fixture.bridge.preflight_scatter(load)
+    fixture.bridge.retrieve_verified(load)
+    fixture.bridge.scatter_retrieved(load)
+
+    assert "active.scatter:32:600" in fixture.trace
+    assert "active.scatter:32:600:suppressed" not in fixture.trace
+    assert fixture.trace.count("tensor.copy") == 1
+    assert fixture.bridge.kv_tokens_scatter_suppressed == 0
 
 
 def test_same_staging_region_is_reused_sequentially_for_load_then_store() -> None:

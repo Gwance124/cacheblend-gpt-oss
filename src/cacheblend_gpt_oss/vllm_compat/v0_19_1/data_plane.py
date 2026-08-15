@@ -183,10 +183,23 @@ class DataPlaneReceipt:
     copied_value_rows: int
     sinks_touched: bool = False
     position_correction_latency_seconds: float = 0.0
+    scatter_suppressed: bool = False
 
     def __post_init__(self) -> None:
         if self.sinks_touched:
             _fail(DataPlaneErrorCode.INVALID_SPAN, "attention sinks cannot be touched")
+        if not isinstance(self.scatter_suppressed, bool):
+            _fail(
+                DataPlaneErrorCode.INVALID_SPAN,
+                "scatter_suppressed must be a plain bool",
+            )
+        if self.scatter_suppressed and (
+            self.copied_key_rows != 0 or self.copied_value_rows != 0
+        ):
+            _fail(
+                DataPlaneErrorCode.INVALID_SPAN,
+                "a suppressed scatter must not report any copied rows",
+            )
         if (
             isinstance(self.position_correction_latency_seconds, bool)
             or not isinstance(self.position_correction_latency_seconds, int | float)
@@ -238,6 +251,7 @@ class GptOssDataPlane:
         retrieval_buffer_offset: int,
         query_token_count: int,
         correct_key_positions: KeyPositionCorrector,
+        disable_scatter: bool = False,
     ) -> DataPlaneReceipt:
         """Load LMCache candidate rows into paged caches.
 
@@ -245,6 +259,15 @@ class GptOssDataPlane:
         ``retrieval_buffer_offset + span.target_range.start``.  In particular,
         ``span.source_range`` is never used as a staging address; it supplies
         only the old absolute positions passed to ``correct_key_positions``.
+
+        ``disable_scatter`` is an explicit opt-in diagnostic switch (see
+        :class:`~.transfer_config.Transfer100PctConfig.disable_kv_scatter`).
+        Every staging view, tensor-shape/device/dtype check, and the YaRN
+        ``correct_key_positions`` callback still run exactly as in the normal
+        path.  Only the final destination mutation in :meth:`_apply` is
+        skipped, so the paged KV cache is left untouched.  The returned
+        receipt honestly reports zero copied rows and
+        ``scatter_suppressed=True``; it never fabricates a completed transfer.
         """
 
         validated = self._preflight_common(staging, paged_caches, layer_spans)
@@ -281,16 +304,26 @@ class GptOssDataPlane:
             prepared.extend(span_prepared)
             correction_latency_seconds += span_correction_latency
 
-        self._apply(prepared, next(iter(paged_caches.values())))
+        if disable_scatter:
+            # Diagnostic mode: every view, shape/dtype/device check, and the
+            # YaRN correction above already ran in full.  Skip only the
+            # destination mutation so the paged KV cache is never touched.
+            copied_key_rows = 0
+            copied_value_rows = 0
+        else:
+            self._apply(prepared, next(iter(paged_caches.values())))
+            copied_key_rows = validated.layer_token_rows
+            copied_value_rows = validated.layer_token_rows
         return DataPlaneReceipt(
             direction=TransferDirection.LOAD_FROM_STAGING,
             logical_tokens=validated.logical_tokens,
             layer_token_rows=validated.layer_token_rows,
             span_count=len(validated.spans),
             corrected_key_rows=validated.layer_token_rows,
-            copied_key_rows=validated.layer_token_rows,
-            copied_value_rows=validated.layer_token_rows,
+            copied_key_rows=copied_key_rows,
+            copied_value_rows=copied_value_rows,
             position_correction_latency_seconds=correction_latency_seconds,
+            scatter_suppressed=disable_scatter,
         )
 
     def gather_precomputed_kv(

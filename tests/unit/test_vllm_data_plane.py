@@ -345,6 +345,78 @@ def test_scatter_reads_target_plus_offset_corrects_only_k_and_copies_v() -> None
     assert first_call[1][0] == TARGET.start
 
 
+def test_disabled_scatter_still_corrects_but_never_copies_into_paged_cache() -> None:
+    ops = FakeTensorOps()
+    data_plane = GptOssDataPlane(ops)
+    stage = staging()
+    caches = paged_caches()
+    seed_retrieved_staging(stage)
+    corrector = RecordingCorrector(ops)
+
+    receipt = data_plane.scatter_retrieved_kv(
+        staging=stage,
+        paged_caches=caches,
+        layer_spans=spans(),
+        retrieval_buffer_offset=RETRIEVAL_OFFSET,
+        query_token_count=TARGET.end,
+        correct_key_positions=corrector,
+        disable_scatter=True,
+    )
+
+    # Correction and every staging/paged view still ran in full.
+    assert len(corrector.calls) == 48
+    assert receipt.corrected_key_rows == len(TARGET) * 24
+    assert receipt.position_correction_latency_seconds >= 0.0
+
+    # But the destination mutation never happened.
+    assert ops.copy_count == 0
+    assert len(ops.synchronizations) == 0
+    assert receipt.scatter_suppressed is True
+    assert receipt.copied_key_rows == 0
+    assert receipt.copied_value_rows == 0
+    for span in spans():
+        assert paged_row(caches, span, 0, 0) is None
+        assert paged_row(caches, span, 1, 0) is None
+
+
+def test_default_scatter_path_is_unchanged_and_reports_not_suppressed() -> None:
+    ops = FakeTensorOps()
+    data_plane = GptOssDataPlane(ops)
+    stage = staging()
+    caches = paged_caches()
+    seed_retrieved_staging(stage)
+    corrector = RecordingCorrector(ops)
+
+    receipt = data_plane.scatter_retrieved_kv(
+        staging=stage,
+        paged_caches=caches,
+        layer_spans=spans(),
+        retrieval_buffer_offset=RETRIEVAL_OFFSET,
+        query_token_count=TARGET.end,
+        correct_key_positions=corrector,
+    )
+
+    assert receipt.scatter_suppressed is False
+    assert receipt.copied_key_rows == len(TARGET) * 24
+    assert receipt.copied_value_rows == len(TARGET) * 24
+    assert ops.copy_count == 96
+
+
+def test_receipt_rejects_suppressed_flag_with_nonzero_copied_rows() -> None:
+    with pytest.raises(DataPlaneError) as caught:
+        module.DataPlaneReceipt(
+            direction=TransferDirection.LOAD_FROM_STAGING,
+            logical_tokens=1,
+            layer_token_rows=24,
+            span_count=1,
+            corrected_key_rows=24,
+            copied_key_rows=24,
+            copied_value_rows=24,
+            scatter_suppressed=True,
+        )
+    assert caught.value.code is DataPlaneErrorCode.INVALID_SPAN
+
+
 def test_gather_compacts_target_rows_without_position_correction() -> None:
     ops = FakeTensorOps()
     data_plane = GptOssDataPlane(ops)

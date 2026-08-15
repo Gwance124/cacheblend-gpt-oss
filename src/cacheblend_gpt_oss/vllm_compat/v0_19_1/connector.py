@@ -613,6 +613,7 @@ class GptOssCacheBlendConnector(
                 position_correction_latency_seconds=(
                     outcome.position_correction_latency_seconds
                 ),
+                scatter_suppressed_tokens=outcome.scatter_suppressed_tokens,
             )
             receipt = self._control_plane.validate_worker(
                 handoff.plan.request_id,

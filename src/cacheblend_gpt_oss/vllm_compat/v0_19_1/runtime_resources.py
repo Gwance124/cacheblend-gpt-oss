@@ -229,6 +229,7 @@ class WorkerBridgeFactory(Protocol):
         correct_key_positions: KeyPositionCorrector,
         transfer_evidence_path: str | None,
         tensor_bytes_reader: TensorBytesReader | None,
+        disable_kv_scatter: bool,
     ) -> OpenWorkerBridge: ...
 
 
@@ -259,6 +260,7 @@ def _worker_bridge_factory(
     correct_key_positions: KeyPositionCorrector,
     transfer_evidence_path: str | None,
     tensor_bytes_reader: TensorBytesReader | None,
+    disable_kv_scatter: bool,
 ) -> OpenWorkerBridge:
     return GptOssWorkerBridge(
         staging_config=staging_config,
@@ -270,6 +272,7 @@ def _worker_bridge_factory(
         correct_key_positions=correct_key_positions,
         transfer_evidence_path=transfer_evidence_path,
         tensor_bytes_reader=tensor_bytes_reader,
+        disable_kv_scatter=disable_kv_scatter,
     )
 
 
@@ -454,9 +457,12 @@ def create_worker_runtime_resources(
                 if config.transfer_evidence_path is None
                 else tensor_bytes_reader_factory()
             ),
+            disable_kv_scatter=config.disable_kv_scatter,
         )
         bridge.open()
-        runtime = TransferRuntime(layout, bridge, bridge)
+        runtime = TransferRuntime(
+            layout, bridge, bridge, disable_kv_scatter=config.disable_kv_scatter
+        )
         return WorkerRuntimeResources(bridge, runtime, sidecar)
     except Exception as exc:
         if bridge is not None:

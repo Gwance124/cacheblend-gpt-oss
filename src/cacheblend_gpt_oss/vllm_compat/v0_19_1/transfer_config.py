@@ -11,6 +11,16 @@ mode. ``compatibility_probe`` is also transfer-disabled and intentionally stops
 startup after the connector derives the finalized model/KV digests. Transfer is
 enabled only by the complete exact ``transfer_100pct`` schema; configuration
 drift fails before any cache lookup or transport starts.
+
+``disable_kv_scatter`` is an optional, explicit opt-in diagnostic switch on
+``transfer_100pct``.  It defaults to ``False`` and leaves the normal path
+byte-for-byte unchanged.  When set ``True`` the connector still performs
+lookup, retrieval into staging, and YaRN key correction, but the worker never
+copies corrected K/V into vLLM's real paged KV cache; see
+:mod:`~.data_plane` and :mod:`~.worker_bridge`.  A run with this flag set can
+never be mistaken for a real transfer: ``kv_tokens_loaded`` stays zero and
+the suppressed run is reported through
+``TransferFallbackCode.SCATTER_SUPPRESSED_DIAGNOSTIC``.
 """
 
 from __future__ import annotations
@@ -55,7 +65,9 @@ _TRANSFER_KEYS = frozenset(
         "transfer_failure_policy",
     }
 )
-_TRANSFER_OPTIONAL_KEYS = frozenset({"transfer_evidence_path"})
+_TRANSFER_OPTIONAL_KEYS = frozenset(
+    {"transfer_evidence_path", "disable_kv_scatter"}
+)
 _ATTESTATION_KEYS = frozenset(
     {
         "lmcache_version",
@@ -100,6 +112,7 @@ class TransferConfigErrorCode(str, Enum):
     INVALID_STAGING_TOKEN_CAPACITY = "invalid_staging_token_capacity"
     INVALID_REQUEST_TIMEOUT = "invalid_request_timeout"
     INVALID_TRANSFER_FAILURE_POLICY = "invalid_transfer_failure_policy"
+    INVALID_DISABLE_KV_SCATTER = "invalid_disable_kv_scatter"
 
 
 class TransferConfigError(ValueError):
@@ -207,6 +220,12 @@ def _require_transfer_evidence_path(value: object) -> str:
     return value
 
 
+def _require_disable_kv_scatter(value: object) -> bool:
+    if not isinstance(value, bool):
+        _fail(TransferConfigErrorCode.INVALID_DISABLE_KV_SCATTER)
+    return value
+
+
 def _require_staging_capacity(value: object) -> int:
     if (
         isinstance(value, bool)
@@ -294,6 +313,7 @@ class Transfer100PctConfig:
     request_timeout_seconds: float
     transfer_failure_policy: TransferFailurePolicy
     transfer_evidence_path: str | None = None
+    disable_kv_scatter: bool = False
     mode: ConnectorTransferMode = field(
         default=ConnectorTransferMode.TRANSFER_100PCT,
         init=False,
@@ -312,6 +332,7 @@ class Transfer100PctConfig:
         model_digest = _require_config_digest(self.model_config_digest)
         kv_digest = _require_config_digest(self.kv_cache_config_digest)
         adapter_revision = _require_identity_field(self.adapter_revision)
+        _require_disable_kv_scatter(self.disable_kv_scatter)
         _require_staging_capacity(self.staging_token_capacity)
         timeout = _require_request_timeout(self.request_timeout_seconds)
         if self.transfer_failure_policy is not TransferFailurePolicy.FULL_PREFILL:
@@ -427,6 +448,7 @@ def parse_connector_extra_config(
         request_timeout_seconds=extra_config["request_timeout_seconds"],
         transfer_failure_policy=TransferFailurePolicy.FULL_PREFILL,
         transfer_evidence_path=extra_config.get("transfer_evidence_path"),
+        disable_kv_scatter=extra_config.get("disable_kv_scatter", False),
     )
 
 

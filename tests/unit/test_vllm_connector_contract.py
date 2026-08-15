@@ -983,6 +983,7 @@ def test_transfer_mode_wires_full_recompute_scheduler_and_worker_hooks(
         "kv_tokens_verified": 0,
         "kv_tokens_rejected": 0,
         "kv_tokens_loaded": 0,
+        "kv_tokens_scatter_suppressed": 0,
         "tokens_recomputed": 256,
         "prefill_tokens_avoided": 0,
         "store_tokens_eligible": 256,

@@ -311,13 +311,16 @@ def _runtime(
     *,
     storage_fail: str | None = None,
     data_fail: str | None = None,
+    disable_kv_scatter: bool = False,
 ) -> tuple[TransferRuntime, _FakeStorage, _FakeDataPlane, list[str], list[str]]:
     calls: list[str] = []
     mutations: list[str] = []
     storage = _FakeStorage(calls, mutations, fail_at=storage_fail)
     data_plane = _FakeDataPlane(calls, mutations, fail_at=data_fail)
     return (
-        TransferRuntime(_layout(), storage, data_plane),
+        TransferRuntime(
+            _layout(), storage, data_plane, disable_kv_scatter=disable_kv_scatter
+        ),
         storage,
         data_plane,
         calls,
@@ -381,6 +384,96 @@ def test_moved_candidate_loads_then_full_prompt_recomputes_and_stores_chunks() -
         "storage.publish_sidecar_records_atomically",
     ]
     assert mutations[-3:] == ["gather", "store", "publish:2"]
+
+
+def test_disabled_scatter_runs_worker_scatter_but_reports_fallback_zero_loaded() -> (
+    None
+):
+    metadata, blocks = _metadata()
+    runtime, _storage, data_plane, calls, mutations = _runtime(
+        disable_kv_scatter=True
+    )
+    data_plane.position_correction_latency_seconds = 0.25
+
+    outcome = runtime.before_forward(metadata, blocks)
+
+    # Retrieval and the worker's scatter call still ran; only the
+    # transfer-evidence accounting reports it as suppressed.
+    assert calls == [
+        "storage.preflight_retrieve",
+        "data.preflight_scatter",
+        "storage.retrieve_verified",
+        "data.scatter_retrieved",
+    ]
+    assert mutations == ["retrieve", "scatter"]
+    assert outcome.state is TransferAttemptState.FULL_PREFILL_FALLBACK
+    assert (
+        outcome.failure_code
+        is TransferFallbackCode.SCATTER_SUPPRESSED_DIAGNOSTIC
+    )
+    assert outcome.loaded_candidate_indexes == ()
+    assert outcome.rejected_candidate_indexes == (0,)
+    assert outcome.loaded_kv_tokens == 0
+    assert outcome.scatter_suppressed_tokens == 256
+    assert outcome.tokens_to_recompute == 600
+    assert outcome.position_correction_latency_seconds == pytest.approx(0.25)
+    receipt = outcome.to_worker_validation_receipt()
+    assert receipt.loaded_match_indexes == ()
+    assert receipt.rejected_match_indexes == (0,)
+
+
+def test_scatter_suppressed_tokens_must_be_zero_outside_the_diagnostic_fallback() -> (
+    None
+):
+    metadata, _blocks = _metadata()
+    succeeded = PreForwardOutcome(
+        metadata=metadata,
+        state=TransferAttemptState.SUCCEEDED,
+        failure_code=None,
+        loaded_candidate_indexes=(0,),
+        rejected_candidate_indexes=(),
+        loaded_kv_tokens=256,
+        tokens_to_recompute=600,
+    )
+    assert succeeded.scatter_suppressed_tokens == 0
+    with pytest.raises(TransferRuntimeError) as caught:
+        PreForwardOutcome(
+            metadata=metadata,
+            state=TransferAttemptState.SUCCEEDED,
+            failure_code=None,
+            loaded_candidate_indexes=(0,),
+            rejected_candidate_indexes=(),
+            loaded_kv_tokens=256,
+            tokens_to_recompute=600,
+            scatter_suppressed_tokens=256,
+        )
+    assert caught.value.code is TransferRuntimeErrorCode.INVALID_OUTCOME
+
+    with pytest.raises(TransferRuntimeError) as caught:
+        PreForwardOutcome(
+            metadata=metadata,
+            state=TransferAttemptState.FULL_PREFILL_FALLBACK,
+            failure_code=TransferFallbackCode.SCATTER_FAILED,
+            loaded_candidate_indexes=(),
+            rejected_candidate_indexes=(0,),
+            loaded_kv_tokens=0,
+            tokens_to_recompute=600,
+            scatter_suppressed_tokens=256,
+        )
+    assert caught.value.code is TransferRuntimeErrorCode.INVALID_OUTCOME
+
+    with pytest.raises(TransferRuntimeError) as caught:
+        PreForwardOutcome(
+            metadata=metadata,
+            state=TransferAttemptState.FULL_PREFILL_FALLBACK,
+            failure_code=TransferFallbackCode.SCATTER_SUPPRESSED_DIAGNOSTIC,
+            loaded_candidate_indexes=(),
+            rejected_candidate_indexes=(0,),
+            loaded_kv_tokens=0,
+            tokens_to_recompute=600,
+            scatter_suppressed_tokens=0,
+        )
+    assert caught.value.code is TransferRuntimeErrorCode.INVALID_OUTCOME
 
 
 def test_reordered_candidates_preserve_verified_identity_and_scatter_positions() -> (

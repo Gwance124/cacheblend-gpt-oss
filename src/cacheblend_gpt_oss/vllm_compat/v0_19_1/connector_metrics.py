@@ -37,6 +37,7 @@ _COUNTER_KEYS = (
     "kv_tokens_verified",
     "kv_tokens_rejected",
     "kv_tokens_loaded",
+    "kv_tokens_scatter_suppressed",
     "tokens_recomputed",
     "prefill_tokens_avoided",
     "store_tokens_eligible",
@@ -205,12 +206,14 @@ class GptOssCacheBlendStats(KVConnectorStats):  # type: ignore[misc]
         latency_seconds: float,
         position_correction_latency_seconds: float = 0.0,
         selective_recomputation_latency_seconds: float = 0.0,
+        scatter_suppressed_tokens: int = 0,
     ) -> None:
         counters = (
             verified_tokens,
             loaded_tokens,
             rejected_tokens,
             recomputed_tokens,
+            scatter_suppressed_tokens,
         )
         if any(
             isinstance(value, bool) or not isinstance(value, int) or value < 0
@@ -221,7 +224,12 @@ class GptOssCacheBlendStats(KVConnectorStats):  # type: ignore[misc]
             raise ValueError("CacheBlend load fallback requires a boolean")
         if verified_tokens != loaded_tokens + rejected_tokens:
             raise ValueError("verified KV tokens must be loaded or rejected")
+        if scatter_suppressed_tokens and loaded_tokens:
+            raise ValueError(
+                "a suppressed-scatter observation must not also report loaded KV"
+            )
         self._append("kv_tokens_loaded", loaded_tokens)
+        self._append("kv_tokens_scatter_suppressed", scatter_suppressed_tokens)
         self._append("kv_tokens_rejected", rejected_tokens)
         self._append("tokens_recomputed", recomputed_tokens)
         self._append("prefill_tokens_avoided", 0)

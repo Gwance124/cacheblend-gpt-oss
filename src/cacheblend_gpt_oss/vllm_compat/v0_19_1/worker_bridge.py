@@ -27,6 +27,14 @@ whole-request no-mutation preflight, this bridge invokes that same public data
 plane through :class:`_ReadOnlyTensorOps`: all real tensor/view/correction and
 device checks run, while its copy operation is suppressed.  Only after every
 candidate or chunk passes does the bridge allow LMCache or paged-cache mutation.
+
+``disable_kv_scatter`` is a separate, explicit opt-in diagnostic switch on the
+constructor.  Unlike the preflight dry-run above, it is applied only to the
+real (non-preflight) :meth:`scatter_retrieved` mutation path: retrieval,
+staging, and YaRN key correction still run, but the corrected K/V is never
+copied into the real paged KV cache.  Suppressed tokens are tracked in the
+distinct :attr:`GptOssWorkerBridge.kv_tokens_scatter_suppressed` counter and
+are never folded into ordinary loaded-KV accounting.
 """
 
 from __future__ import annotations
@@ -227,8 +235,14 @@ class DataPlaneOperations(Protocol):
         retrieval_buffer_offset: int,
         query_token_count: int,
         correct_key_positions: KeyPositionCorrector,
+        disable_scatter: bool = False,
     ) -> DataPlaneReceipt:
-        """Scatter one verified candidate into all hybrid groups."""
+        """Scatter one verified candidate into all hybrid groups.
+
+        ``disable_scatter`` is the explicit diagnostic switch: correction and
+        every view/shape check still run, but the destination copy is
+        skipped and the returned receipt reports zero copied rows.
+        """
 
     def gather_precomputed_kv(
         self,
@@ -355,6 +369,7 @@ class GptOssWorkerBridge:
         buffer_config: WorkerBridgeBufferConfig | None = None,
         staging_factory: StagingRuntimeFactory = _create_staging_runtime,
         data_plane_factory: DataPlaneFactory = _create_data_plane,
+        disable_kv_scatter: bool = False,
     ) -> None:
         selected_buffer_config = (
             WorkerBridgeBufferConfig() if buffer_config is None else buffer_config
@@ -377,12 +392,15 @@ class GptOssWorkerBridge:
             _fail(WorkerBridgeErrorCode.INVALID_CONFIG)
         if not callable(correct_key_positions):
             _fail(WorkerBridgeErrorCode.INVALID_CONFIG)
+        if not isinstance(disable_kv_scatter, bool):
+            _fail(WorkerBridgeErrorCode.INVALID_CONFIG)
 
         self._transport = transport
         self._sidecar = sidecar
         self._buffer_config = selected_buffer_config
         self._paged_caches: Mapping[str, object] = caches
         self._correct_key_positions = correct_key_positions
+        self._disable_kv_scatter = disable_kv_scatter
         try:
             self._staging = staging_factory(
                 staging_config, staging_backend, transport
@@ -412,6 +430,7 @@ class GptOssWorkerBridge:
         self._load_data_preflight: WorkerLoadPlan | None = None
         self._retrieved_plan: WorkerLoadPlan | None = None
         self._position_correction_latency_seconds = 0.0
+        self._kv_tokens_scatter_suppressed = 0
         self._gather_preflight: WorkerStorePlan | None = None
         self._store_preflight: WorkerStorePlan | None = None
         self._gathered_plan: WorkerStorePlan | None = None
@@ -431,6 +450,17 @@ class GptOssWorkerBridge:
         """Duration of the most recently completed active load correction."""
 
         return self._position_correction_latency_seconds
+
+    @property
+    def kv_tokens_scatter_suppressed(self) -> int:
+        """Tokens whose scatter copy was suppressed by the diagnostic switch.
+
+        This is zero unless the bridge was constructed with
+        ``disable_kv_scatter=True``.  It is a distinct, bounded diagnostic
+        counter and is never folded into ordinary loaded-KV accounting.
+        """
+
+        return self._kv_tokens_scatter_suppressed
 
     def open(self) -> object:
         """Open transport first, then allocate/register its exact staging tensor."""
@@ -549,7 +579,9 @@ class GptOssWorkerBridge:
         self._require_plan(self._retrieved_plan, plan)
         staging = self._staging.tensor
         correction_latency_seconds = 0.0
+        suppressed_tokens = 0
         self._position_correction_latency_seconds = 0.0
+        self._kv_tokens_scatter_suppressed = 0
         probe = self._evidence_probe
         try:
             if probe is not None:
@@ -570,16 +602,20 @@ class GptOssWorkerBridge:
                     ),
                     query_token_count=plan.metadata.prompt_token_count,
                     correct_key_positions=self._correct_key_positions,
+                    disable_scatter=self._disable_kv_scatter,
                 )
                 self._validate_data_receipt(
                     receipt,
                     TransferDirection.LOAD_FROM_STAGING,
                     LMCACHE_CHUNK_SIZE,
                     len(candidate.scatter_plan.layer_spans),
+                    expect_suppressed=self._disable_kv_scatter,
                 )
                 correction_latency_seconds += (
                     receipt.position_correction_latency_seconds
                 )
+                if self._disable_kv_scatter:
+                    suppressed_tokens += receipt.logical_tokens
             if probe is not None:
                 probe.mark_load_complete()
         except Exception:
@@ -589,6 +625,7 @@ class GptOssWorkerBridge:
         finally:
             self._retrieved_plan = None
         self._position_correction_latency_seconds = correction_latency_seconds
+        self._kv_tokens_scatter_suppressed = suppressed_tokens
 
     def capture_prefill_layer(self, layer_name: str) -> None:
         """Capture one post-attention layer only when the probe is enabled."""
@@ -916,16 +953,20 @@ class GptOssWorkerBridge:
         direction: TransferDirection,
         logical_tokens: int,
         span_count: int,
+        *,
+        expect_suppressed: bool = False,
     ) -> None:
         expected_rows = logical_tokens * GPT_OSS_NUM_LAYERS
+        expected_copied_rows = 0 if expect_suppressed else expected_rows
         if (
             not isinstance(receipt, DataPlaneReceipt)
             or receipt.direction is not direction
             or receipt.logical_tokens != logical_tokens
             or receipt.layer_token_rows != expected_rows
             or receipt.span_count != span_count
-            or receipt.copied_key_rows != expected_rows
-            or receipt.copied_value_rows != expected_rows
+            or receipt.copied_key_rows != expected_copied_rows
+            or receipt.copied_value_rows != expected_copied_rows
+            or receipt.scatter_suppressed is not expect_suppressed
             or receipt.sinks_touched
             or (
                 direction is TransferDirection.LOAD_FROM_STAGING

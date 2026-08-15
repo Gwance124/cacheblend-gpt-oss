@@ -35,6 +35,15 @@ def main() -> int:
     parser.add_argument("--staging-token-capacity", type=int, default=512)
     parser.add_argument("--request-timeout-seconds", type=float, default=120.0)
     parser.add_argument("--transfer-evidence-path", type=Path)
+    parser.add_argument(
+        "--disable-kv-scatter",
+        action="store_true",
+        help=(
+            "Diagnostic only: run lookup/retrieve/YaRN-correction but skip "
+            "the scatter copy into vLLM's paged KV cache. Never claims a "
+            "real transfer; kv_tokens_loaded stays zero for this run."
+        ),
+    )
     args = parser.parse_args()
 
     extra = {
@@ -58,6 +67,8 @@ def main() -> int:
     }
     if args.transfer_evidence_path is not None:
         extra["transfer_evidence_path"] = str(args.transfer_evidence_path)
+    if args.disable_kv_scatter:
+        extra["disable_kv_scatter"] = True
     parse_connector_extra_config(extra)
     rendered = {
         "kv_connector": "GptOssCacheBlendConnector",

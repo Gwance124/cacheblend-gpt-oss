@@ -153,6 +153,27 @@ def test_transfer_evidence_path_is_optional_absolute_and_separate() -> None:
         )
 
 
+def test_disable_kv_scatter_is_optional_bool_and_defaults_false() -> None:
+    raw = _valid_config()
+    parsed = parse_connector_extra_config(raw)
+    assert isinstance(parsed, Transfer100PctConfig)
+    assert parsed.disable_kv_scatter is False
+
+    raw = _valid_config()
+    raw["disable_kv_scatter"] = True
+    parsed = parse_connector_extra_config(raw)
+    assert isinstance(parsed, Transfer100PctConfig)
+    assert parsed.disable_kv_scatter is True
+
+    for invalid in (1, "true", None, 0):
+        rejected = _valid_config()
+        rejected["disable_kv_scatter"] = invalid
+        _assert_error(
+            TransferConfigErrorCode.INVALID_DISABLE_KV_SCATTER,
+            lambda rejected=rejected: parse_connector_extra_config(rejected),
+        )
+
+
 def test_nested_input_is_copied_not_retained() -> None:
     raw = _valid_config()
     parsed = parse_connector_extra_config(raw)
