@@ -100,6 +100,20 @@ def test_valid_report_is_decoded_and_digest_is_stable() -> None:
     )
 
 
+def test_message_only_continuations_are_valid() -> None:
+    report = deepcopy(_report())
+    turns = report["turns"]
+    assert isinstance(turns, list)
+    for index in (1, 2):
+        turns[index]["output_types"] = ["message"]  # type: ignore[index]
+        turns[index]["reasoning_items"] = 0  # type: ignore[index]
+
+    evidence = responses_contract_evidence_from_dict(report)
+
+    assert evidence.turns[1].output_types == ("message",)
+    assert evidence.turns[1].reasoning_items == 0
+
+
 @pytest.mark.parametrize(
     ("field", "value", "code"),
     [

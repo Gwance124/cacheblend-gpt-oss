@@ -220,13 +220,13 @@ def _parse_turns(value: object) -> tuple[ResponsesTurnEvidence, ...]:
         reasoning_items = _bounded_count(
             mapping["reasoning_items"], ResponsesEvidenceErrorCode.INVALID_TURNS
         )
-        if (
-            reasoning_items < 1
-            or reasoning_items != output_types.count("reasoning")
-            or output_types[0] != "reasoning"
-        ):
-            _fail(ResponsesEvidenceErrorCode.INVALID_TURNS)
         if index == 0:
+            if (
+                reasoning_items < 1
+                or reasoning_items != output_types.count("reasoning")
+                or output_types[0] != "reasoning"
+            ):
+                _fail(ResponsesEvidenceErrorCode.INVALID_TURNS)
             function_calls = _bounded_count(
                 mapping["function_calls"], ResponsesEvidenceErrorCode.INVALID_TURNS
             )
@@ -246,11 +246,18 @@ def _parse_turns(value: object) -> tuple[ResponsesTurnEvidence, ...]:
             message_text_parts = _bounded_count(
                 mapping["message_text_parts"], ResponsesEvidenceErrorCode.INVALID_TURNS
             )
+            reasoning_prefix = (
+                reasoning_items >= 1
+                and reasoning_items == output_types.count("reasoning")
+                and output_types[0] == "reasoning"
+                and all(item == "reasoning" for item in output_types[:-1])
+            )
+            message_only = reasoning_items == 0 and output_types == ["message"]
             if (
                 message_text_parts < 1
                 or "function_call" in output_types
                 or output_types[-1] != "message"
-                or any(item != "reasoning" for item in output_types[:-1])
+                or not (reasoning_prefix or message_only)
             ):
                 _fail(ResponsesEvidenceErrorCode.INVALID_TURNS)
             turns.append(
