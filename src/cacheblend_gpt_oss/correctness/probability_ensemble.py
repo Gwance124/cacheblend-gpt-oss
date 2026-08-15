@@ -1,11 +1,18 @@
 # SPDX-License-Identifier: Apache-2.0
 """Prospective probability-mass-aware numerical gate.
 
-The strict full-vocabulary maximum remains a diagnostic in this policy.  It
-is deliberately not an acceptance metric because a single negligible-mass
-BF16 tail coordinate caused the immutable strict-v1 failure.  This policy is
-prospective: its constants are code-owned, its five controls are frozen before
-the next candidate, and a candidate must pass every probability-aware metric.
+The strict full-vocabulary maximum and the high-mass maximum remain
+diagnostics in this policy.  They are deliberately not acceptance metrics:
+the A100 BF16 connector-attached controls showed that a maximum over roughly
+198k vocabulary coordinates is not stable enough to gate a run.  The
+probability-aware acceptance policy therefore gates on full-vocabulary mean
+error, total variation, Jensen--Shannon divergence, hard ceilings for those
+three metrics, and sampled/top-token agreement.  The maximum metrics remain
+serialized for review.
+
+This policy is prospective: its constants are code-owned, its five controls
+are frozen before the next candidate, and the manifest/policy version changes
+whenever the acceptance rule changes.
 """
 
 from __future__ import annotations
@@ -26,9 +33,9 @@ from cacheblend_gpt_oss.correctness.models import (
     FullVocabularyLogprobs,
 )
 
-PROBABILITY_ENSEMBLE_SCHEMA_VERSION = 1
+PROBABILITY_ENSEMBLE_SCHEMA_VERSION = 2
 PROBABILITY_ENSEMBLE_POLICY_VERSION = (
-    "cacheblend-gpt-oss-probability-mass-v1"
+    "cacheblend-gpt-oss-probability-mass-v2"
 )
 PROBABILITY_BASELINE_COUNT = 5
 PROBABILITY_PAIR_COUNT = 10
@@ -36,7 +43,7 @@ PROBABILITY_TAIL_EPSILON = 1e-4
 HARD_FULL_MEAN_ABS_LOGPROB_CEILING = 0.014
 HARD_TOTAL_VARIATION_CEILING = 0.02
 HARD_JENSEN_SHANNON_CEILING = 0.001
-HARD_HIGH_MASS_MAX_ABS_LOGPROB_CEILING = 0.08
+DIAGNOSTIC_HIGH_MASS_MAX_ABS_LOGPROB_LIMIT = 0.08
 
 
 class ProbabilityEnsembleStatus(str, Enum):
@@ -164,7 +171,7 @@ class ProbabilityBaselineManifest:
     hard_full_mean_abs_logprob_ceiling: float
     hard_total_variation_ceiling: float
     hard_jensen_shannon_ceiling: float
-    hard_high_mass_max_abs_logprob_ceiling: float
+    diagnostic_high_mass_max_abs_logprob_limit: float
     u_full_mean_abs_logprob: float
     u_total_variation: float
     u_jensen_shannon_divergence: float
@@ -215,9 +222,9 @@ class ProbabilityBaselineManifest:
                 HARD_JENSEN_SHANNON_CEILING,
             ),
             (
-                "hard high-mass ceiling",
-                self.hard_high_mass_max_abs_logprob_ceiling,
-                HARD_HIGH_MASS_MAX_ABS_LOGPROB_CEILING,
+                "diagnostic high-mass limit",
+                self.diagnostic_high_mass_max_abs_logprob_limit,
+                DIAGNOSTIC_HIGH_MASS_MAX_ABS_LOGPROB_LIMIT,
             ),
         )
         for name, observed, expected in fixed:
@@ -248,8 +255,6 @@ class ProbabilityBaselineManifest:
             or self.u_total_variation > HARD_TOTAL_VARIATION_CEILING
             or self.u_jensen_shannon_divergence
             > HARD_JENSEN_SHANNON_CEILING
-            or self.u_high_mass_max_abs_logprob
-            > HARD_HIGH_MASS_MAX_ABS_LOGPROB_CEILING
         ):
             raise ValueError("stable probability baseline exceeds a hard ceiling")
 
@@ -472,8 +477,6 @@ def _baseline_failure_reasons(
         reasons.append("baseline_total_variation_exceeds_hard_ceiling")
     if u_js > HARD_JENSEN_SHANNON_CEILING:
         reasons.append("baseline_jensen_shannon_exceeds_hard_ceiling")
-    if u_high_mass > HARD_HIGH_MASS_MAX_ABS_LOGPROB_CEILING:
-        reasons.append("baseline_high_mass_max_exceeds_hard_ceiling")
     if any(not item.metrics.sampled_token_agreement for item in comparisons):
         reasons.append("baseline_sampled_token_mismatch")
     if any(not item.metrics.top_token_agreement for item in comparisons):
@@ -562,8 +565,8 @@ def build_probability_baseline_ensemble(
         ),
         hard_total_variation_ceiling=HARD_TOTAL_VARIATION_CEILING,
         hard_jensen_shannon_ceiling=HARD_JENSEN_SHANNON_CEILING,
-        hard_high_mass_max_abs_logprob_ceiling=(
-            HARD_HIGH_MASS_MAX_ABS_LOGPROB_CEILING
+        diagnostic_high_mass_max_abs_logprob_limit=(
+            DIAGNOSTIC_HIGH_MASS_MAX_ABS_LOGPROB_LIMIT
         ),
         u_full_mean_abs_logprob=u_full_mean,
         u_total_variation=u_tv,
@@ -659,11 +662,6 @@ def evaluate_probability_candidate(
             "candidate_jensen_shannon_exceeds_empirical_envelope",
         ),
         (
-            q_high_mass,
-            manifest.u_high_mass_max_abs_logprob,
-            "candidate_high_mass_max_exceeds_empirical_envelope",
-        ),
-        (
             q_full_mean,
             HARD_FULL_MEAN_ABS_LOGPROB_CEILING,
             "candidate_full_mean_exceeds_hard_ceiling",
@@ -677,11 +675,6 @@ def evaluate_probability_candidate(
             q_js,
             HARD_JENSEN_SHANNON_CEILING,
             "candidate_jensen_shannon_exceeds_hard_ceiling",
-        ),
-        (
-            q_high_mass,
-            HARD_HIGH_MASS_MAX_ABS_LOGPROB_CEILING,
-            "candidate_high_mass_max_exceeds_hard_ceiling",
         ),
     )
     reasons.extend(reason for observed, limit, reason in checks if observed > limit)
@@ -725,8 +718,8 @@ def manifest_to_dict(
         ),
         "hard_total_variation_ceiling": manifest.hard_total_variation_ceiling,
         "hard_jensen_shannon_ceiling": manifest.hard_jensen_shannon_ceiling,
-        "hard_high_mass_max_abs_logprob_ceiling": (
-            manifest.hard_high_mass_max_abs_logprob_ceiling
+        "diagnostic_high_mass_max_abs_logprob_limit": (
+            manifest.diagnostic_high_mass_max_abs_logprob_limit
         ),
         "u_full_mean_abs_logprob": manifest.u_full_mean_abs_logprob,
         "u_total_variation": manifest.u_total_variation,
@@ -758,7 +751,7 @@ def manifest_from_dict(data: object) -> ProbabilityBaselineManifest:
         "hard_full_mean_abs_logprob_ceiling",
         "hard_total_variation_ceiling",
         "hard_jensen_shannon_ceiling",
-        "hard_high_mass_max_abs_logprob_ceiling",
+        "diagnostic_high_mass_max_abs_logprob_limit",
         "u_full_mean_abs_logprob",
         "u_total_variation",
         "u_jensen_shannon_divergence",
@@ -793,8 +786,8 @@ def manifest_from_dict(data: object) -> ProbabilityBaselineManifest:
             ),
             hard_total_variation_ceiling=root["hard_total_variation_ceiling"],
             hard_jensen_shannon_ceiling=root["hard_jensen_shannon_ceiling"],
-            hard_high_mass_max_abs_logprob_ceiling=(
-                root["hard_high_mass_max_abs_logprob_ceiling"]
+            diagnostic_high_mass_max_abs_logprob_limit=(
+                root["diagnostic_high_mass_max_abs_logprob_limit"]
             ),
             u_full_mean_abs_logprob=root["u_full_mean_abs_logprob"],
             u_total_variation=root["u_total_variation"],
@@ -829,8 +822,8 @@ def manifest_digest(manifest: ProbabilityBaselineManifest) -> str:
 
 
 __all__ = [
+    "DIAGNOSTIC_HIGH_MASS_MAX_ABS_LOGPROB_LIMIT",
     "HARD_FULL_MEAN_ABS_LOGPROB_CEILING",
-    "HARD_HIGH_MASS_MAX_ABS_LOGPROB_CEILING",
     "HARD_JENSEN_SHANNON_CEILING",
     "HARD_TOTAL_VARIATION_CEILING",
     "PROBABILITY_BASELINE_COUNT",

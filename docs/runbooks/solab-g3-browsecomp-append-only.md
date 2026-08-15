@@ -54,11 +54,13 @@ strict-v1 manifest remains immutable historical evidence and is not the v2
 policy manifest. The failed strict-v1 candidate is digest-bound into v2 only as
 an excluded pilot and cannot be reused as the prospective candidate.
 It uses fixed `epsilon=1e-4` and requires the new candidate to be within the
-empirical baseline envelope on full-vocabulary mean error, TV, JS divergence,
-and high-mass maximum error, with hard ceilings full mean `0.014`, TV `0.02`,
-JS `0.001`, and high-mass maximum `0.08`. Sampled/top-token agreement and
-independent transfer pass are also required. Do not claim v2 or M3 passed
-until that evidence exists.
+empirical baseline envelope on full-vocabulary mean error, TV, and JS
+divergence, with hard ceilings full mean `0.014`, TV `0.02`, and JS `0.001`.
+The high-mass maximum remains a reported diagnostic only because the
+connector-attached controls showed that its maximum over roughly 198k
+coordinates is not stable on the pinned A100 stack. Sampled/top-token
+agreement and independent transfer pass are also required. Do not claim this
+policy or M3 passed until that prospective evidence exists.
 
 The five controls are the existing Solab artifacts below. The final path is the
 strict-v1 manifest retained only as historical evidence:

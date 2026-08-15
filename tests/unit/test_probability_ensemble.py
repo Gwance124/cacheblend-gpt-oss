@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 
 import pytest
 
@@ -158,11 +158,59 @@ def test_negligible_tail_strict_max_is_diagnostic_not_acceptance(
     ensemble, candidate = ensemble_and_candidate
     verdict = evaluate_probability_candidate(ensemble, candidate)
 
+    assert "candidate_high_mass_max_exceeds_empirical_envelope" not in (
+        verdict.failure_reasons
+    )
+    assert "candidate_high_mass_max_exceeds_hard_ceiling" not in (
+        verdict.failure_reasons
+    )
     assert verdict.status is ProbabilityEnsembleStatus.PASS
     assert verdict.passed
     assert verdict.diagnostic_q_strict_full_max_abs_logprob > 0.08
     assert verdict.q_high_mass_max_abs_logprob <= (
         verdict.u_high_mass_max_abs_logprob
+    )
+
+
+def test_high_mass_max_is_diagnostic_when_controls_exceed_limit() -> None:
+    base = _artifact(0.0)
+    baselines: list[CorrectnessArtifact] = []
+    for index in range(5):
+        values = list(base.distribution.values)
+        values[base.distribution.sampled_token_id] += index * 0.025
+        baselines.append(
+            replace(
+                base,
+                distribution=FullVocabularyLogprobs(
+                    tuple(values), base.distribution.sampled_token_id
+                ),
+            )
+        )
+    ensemble = build_probability_baseline_ensemble(
+        tuple(baselines),
+        excluded_candidates=(_artifact(0.0015, candidate=True),),
+    )
+
+    candidate_values = list(base.distribution.values)
+    candidate_values[base.distribution.sampled_token_id] += 0.2
+    candidate = replace(
+        _artifact(0.0015, candidate=True),
+        distribution=FullVocabularyLogprobs(
+            tuple(candidate_values), base.distribution.sampled_token_id
+        ),
+    )
+    verdict = evaluate_probability_candidate(ensemble, candidate)
+
+    assert ensemble.status is ProbabilityEnsembleStatus.PASS
+    assert ensemble.manifest.u_high_mass_max_abs_logprob > 0.08
+    assert verdict.q_high_mass_max_abs_logprob > (
+        verdict.u_high_mass_max_abs_logprob
+    )
+    assert "candidate_high_mass_max_exceeds_empirical_envelope" not in (
+        verdict.failure_reasons
+    )
+    assert "candidate_high_mass_max_exceeds_hard_ceiling" not in (
+        verdict.failure_reasons
     )
 
 

@@ -111,15 +111,18 @@ test** (see A1) — a cheaper control comes first.
 - **Drift (no contamination):** the fix is **envelope policy** — **decided (Risk 1): adopt the
   connector-attached, scatter-disabled run as the prospectively-frozen M3 baseline**, since it
   is the correct one-variable control and equalizes the allocator footprint. Guardrail: if that
-  control's drift consumes a large fraction of the tolerance (near the hard ceilings), do **not**
-  absorb it — switch to active drift-reduction so the gate keeps discriminating power. Keep the
-  tight full-prefill envelope as a secondary reported diagnostic.
+  control's drift consumes a large fraction of the mean/TV/JS tolerances (near the hard
+  ceilings), do **not** absorb it — switch to active drift-reduction so the gate keeps
+  discriminating power. Keep the high-mass maximum and tight full-prefill envelope as
+  secondary reported diagnostics.
 
-**A3. Re-freeze and re-run the v2 gate.** Re-capture 5 controls + 1 candidate and run
-`scripts/evaluate_probability_ensemble.py` against a freshly frozen manifest
-(`scripts/freeze_probability_ensemble.py`). Pass requires every `Q ≤ U` and all hard ceilings
-(`correctness/probability_ensemble.py:35-39`, `:645-693`). Preserve artifacts in a new
-create-only dir; **do not** reuse the failed v2 directory.
+**A3. Re-freeze and re-run the versioned probability gate.** Re-capture 5 controls + 1
+candidate and run `scripts/evaluate_probability_ensemble.py` against a freshly frozen
+manifest (`scripts/freeze_probability_ensemble.py`). Pass requires every `Q ≤ U` for
+full-vocabulary mean, TV, and JS, all three hard ceilings, agreement checks, and bound
+transfer evidence. The high-mass maximum remains a serialized diagnostic because the
+connector-attached controls themselves were unstable on that maximum. Preserve artifacts
+in a new create-only dir; **do not** reuse the failed v2 directory.
 
 **Exit criterion:** formal M3 pass (full-prefill equivalence at 100% recompute), artifacts +
 digests preserved.

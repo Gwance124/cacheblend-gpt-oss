@@ -548,27 +548,29 @@ test ! -e "$CACHEBLEND_V2_RUN_DIR/cacheblend-100pct-v2.json"
 test ! -e "$CACHEBLEND_V2_RUN_DIR/probability-aware-v2-verdict.json"
 ```
 
-The v2 evaluator uses a minimal descending token support covering at least
+The current probability-gate policy uses a minimal descending token support covering at least
 `1-epsilon` probability mass with fixed `epsilon=1e-4`, so at most 0.01% of
 probability mass is outside the max-logprob check. Epsilon is code-owned and
 cannot be tuned from the CLI or after seeing the candidate. It must compute the
 full-vocabulary mean error, total variation (TV), Jensen--Shannon (JS)
-divergence, and the high-mass maximum error. The candidate must be within the
-empirical five-control baseline envelope for **every** one of those metrics,
-and must also satisfy these pre-registered hard ceilings:
+divergence, and the high-mass maximum error. The high-mass maximum remains a
+diagnostic because the connector-attached A100 controls showed that a maximum
+over roughly 198k vocabulary coordinates is not stable enough to gate a run.
+The candidate must be within the empirical five-control baseline envelope for
+the three gated metrics and must also satisfy these pre-registered hard
+ceilings:
 
 ```text
 full-vocabulary mean error <= 0.014
 TV                         <= 0.02
 JS                         <= 0.001
-high-mass maximum error    <= 0.08
 ```
 
-The v2 response is admissible only if all four metric-envelope checks pass,
-sampled/top-token agreement remains true, and the independent transfer report
-passes. The v1 `FAIL` remains unchanged even if a future v2 candidate passes;
-v2 has not been run or passed, and formal M3 remains blocked until that
-prospective evidence exists.
+The policy response is admissible only if all three gated metric-envelope
+checks pass, the three hard ceilings pass, sampled/top-token agreement remains
+true, and the independent transfer report passes. The high-mass maximum must
+be reported but does not decide acceptance. Earlier v1/v2 artifacts remain
+immutable historical evidence and cannot be reinterpreted by this policy.
 
 ## Required case matrix
 

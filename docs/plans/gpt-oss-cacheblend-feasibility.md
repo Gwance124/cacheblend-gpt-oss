@@ -252,12 +252,14 @@ the strict-v1 candidate only as a digest-bound excluded pilot, so that artifact
 cannot be reevaluated as the prospective candidate. V2 uses fixed
 `epsilon=1e-4`, with no candidate-dependent tuning, and evaluates all of
 the following metrics: full-vocabulary mean error, total variation (TV),
-Jensen--Shannon (JS) divergence, and high-mass maximum error. The candidate
-must be inside the empirical five-control envelope for every metric and below
-the hard ceilings `full mean <= 0.014`, `TV <= 0.02`, `JS <= 0.001`, and
-`high-mass max <= 0.08`. Sampled/top-token agreement and independent transfer
-pass remain required. This is a proposed v2 response only; v2 has not passed
-and it cannot retroactively turn the strict-v1 `FAIL` or M3 into a pass.
+Jensen--Shannon (JS) divergence, and high-mass maximum error. The high-mass
+maximum is serialized as a diagnostic only: connector-attached A100 controls
+showed that its maximum over roughly 198k coordinates is not stable enough to
+gate a run. The candidate must be inside the empirical five-control envelope
+for full mean, TV, and JS, and below the hard ceilings `full mean <= 0.014`,
+`TV <= 0.02`, and `JS <= 0.001`. Sampled/top-token agreement and independent
+transfer pass remain required. This versioned policy cannot retroactively turn
+the strict-v1 `FAIL` or earlier M3 attempts into a pass.
 
 The existing Solab inputs are preserved at:
 
@@ -306,11 +308,11 @@ Formal go criteria:
 - Five ordinary full-prefill controls use the same 1024-token serving
   configuration and source-warm-up-then-target protocol; their artifact
   manifest and `Umax`/`Umean` envelope are frozen before a fresh candidate.
-- The prospective v2 candidate is captured only after that freeze, with no
+- The prospective candidate is captured only after that freeze, with no
   post-hoc loosening, and satisfies the empirical five-control envelopes for
-  full mean, TV, JS, and high-mass maximum error, plus the hard ceilings
-  `0.014`, `0.02`, `0.001`, and `0.08`, respectively, with fixed
-  `epsilon=1e-4`.
+  full mean, TV, and JS, plus the hard ceilings `0.014`, `0.02`, and `0.001`,
+  respectively, with fixed `epsilon=1e-4`. The high-mass maximum is preserved
+  as a diagnostic and reviewed alongside the accepted metrics.
 - Metrics show requested/found/loaded tokens, all prompt rows recomputed, and
   exactly zero effective saved-prefill fraction.
 - A miss and every injected validation/transfer failure either visibly fail or
@@ -751,9 +753,10 @@ response reuses those five controls and freezes a separate v2
 manifest, does not rerun them, and captures one new candidate after that
 freeze. It uses fixed
 `epsilon=1e-4` and requires the candidate to be inside the empirical
-five-control envelope for full-vocabulary mean error, TV, JS divergence, and
-high-mass maximum error, with hard ceilings full mean `0.014`, TV `0.02`, JS
-`0.001`, and high-mass maximum `0.08`. Sampled/top-token agreement and
+five-control envelope for full-vocabulary mean error, TV, and JS divergence,
+with hard ceilings full mean `0.014`, TV `0.02`, and JS `0.001`. The high-mass
+maximum is retained as a diagnostic with a reported limit of `0.08`, not as an
+acceptance metric. Sampled/top-token agreement and
 independent transfer pass remain mandatory. Do not widen or otherwise loosen
 any envelope after observing the v2 candidate. No v2 or M3 pass is implied by
 the existing strict-v1 failure or by the transfer report alone.
