@@ -113,7 +113,7 @@ if test "$(git branch --show-current)" = "$CACHEBLEND_REQUIRED_BRANCH"; then
         --tensor-parallel-size 1 \
         --dtype bfloat16 \
         --max-model-len 131072 \
-        --gpu-memory-utilization 0.80 \
+        --gpu-memory-utilization 0.50 \
         --max-num-seqs 1 \
         --max-num-batched-tokens "$CACHEBLEND_MAX_BATCHED_TOKENS" \
         --long-prefill-token-threshold 0 \
