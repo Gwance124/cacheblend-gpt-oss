@@ -34,6 +34,9 @@ main() {
   export CACHEBLEND_STAGING_TOKENS=131072
   export CACHEBLEND_MAX_BATCHED_TOKENS=131072
   export CACHEBLEND_L1_SIZE_GB=8
+  export CACHEBLEND_SELECTIVE_CHECK_LAYER="${CACHEBLEND_SELECTIVE_CHECK_LAYER:-1}"
+  export CACHEBLEND_SELECTIVE_RECOMPUTE_RATIO="${CACHEBLEND_SELECTIVE_RECOMPUTE_RATIO:-0.15}"
+  export CACHEBLEND_SELECTIVE_SUFFIX_TOKENS="${CACHEBLEND_SELECTIVE_SUFFIX_TOKENS:-32}"
   export CACHEBLEND_RUN_BASE_DIR=/mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/solab-g3-m7-selective-$(date +%Y%m%d-%H%M%S)
   export CACHEBLEND_RUN_DIR="$CACHEBLEND_RUN_BASE_DIR"
   while test -e "$CACHEBLEND_RUN_DIR"; do
@@ -47,9 +50,9 @@ main() {
   echo "RUN_DIR=$CACHEBLEND_RUN_DIR"
   echo "SERVING_HEAD=$CACHEBLEND_PLUGIN_COMMIT"
   echo "SELECTIVE_MODE=transfer_selective"
-  echo "SELECTIVE_CHECK_LAYER=1"
-  echo "SELECTIVE_RECOMPUTE_RATIO=0.15"
-  echo "SELECTIVE_SUFFIX_TOKENS=32"
+  echo "SELECTIVE_CHECK_LAYER=$CACHEBLEND_SELECTIVE_CHECK_LAYER"
+  echo "SELECTIVE_RECOMPUTE_RATIO=$CACHEBLEND_SELECTIVE_RECOMPUTE_RATIO"
+  echo "SELECTIVE_SUFFIX_TOKENS=$CACHEBLEND_SELECTIVE_SUFFIX_TOKENS"
   echo "SELECTIVE_EVIDENCE=row_work_metrics"
 
   .venv/bin/python -m pip install --no-deps --no-build-isolation -e . \
@@ -110,9 +113,9 @@ main() {
     --adapter-revision "$CACHEBLEND_PLUGIN_COMMIT" \
     --staging-token-capacity "$CACHEBLEND_STAGING_TOKENS" \
     --request-timeout-seconds 300 \
-    --check-layer 1 \
-    --recompute-ratio 0.15 \
-    --suffix-tokens 32 \
+    --check-layer "$CACHEBLEND_SELECTIVE_CHECK_LAYER" \
+    --recompute-ratio "$CACHEBLEND_SELECTIVE_RECOMPUTE_RATIO" \
+    --suffix-tokens "$CACHEBLEND_SELECTIVE_SUFFIX_TOKENS" \
     > "$CACHEBLEND_TRANSFER_CONFIG"
   echo "TRANSFER_CONFIG=$CACHEBLEND_TRANSFER_CONFIG"
   export CACHEBLEND_KV_CONFIG_JSON="$(<"$CACHEBLEND_TRANSFER_CONFIG")"
@@ -157,7 +160,7 @@ main() {
   done
   echo "VLLM_READY=$CACHEBLEND_VLLM_READY"
   if test "$CACHEBLEND_VLLM_READY" = yes; then
-    .venv/bin/python -c "import json,os; json.dump({'serving_head':os.environ['CACHEBLEND_PLUGIN_COMMIT'],'mode':'transfer_selective','check_layer':1,'recompute_ratio':0.15,'suffix_tokens':32},open(os.path.join(os.environ['CACHEBLEND_RUN_DIR'],'selective-runtime.json'),'w'),indent=2); print('SELECTIVE_SERVER_READY')"
+    .venv/bin/python -c "import json,os; json.dump({'serving_head':os.environ['CACHEBLEND_PLUGIN_COMMIT'],'mode':'transfer_selective','check_layer':int(os.environ['CACHEBLEND_SELECTIVE_CHECK_LAYER']),'recompute_ratio':float(os.environ['CACHEBLEND_SELECTIVE_RECOMPUTE_RATIO']),'suffix_tokens':int(os.environ['CACHEBLEND_SELECTIVE_SUFFIX_TOKENS'])},open(os.path.join(os.environ['CACHEBLEND_RUN_DIR'],'selective-runtime.json'),'w'),indent=2); print('SELECTIVE_SERVER_READY')"
   else
     tail -n 220 "$CACHEBLEND_RUN_DIR/vllm-server.log"
   fi
