@@ -677,7 +677,8 @@ class GptOssCacheBlendConnector(
             self._pending_worker_receipts.append(receipt)
             if self._selective_enabled:
                 self._install_forward_plan(
-                    outcome.row_plan
+                    outcome.selective_state
+                    or outcome.row_plan
                     or ForwardRowPlan.full_recompute(transfer.prompt_token_count)
                 )
             self._active_worker_transfer = _ActiveWorkerTransfer(

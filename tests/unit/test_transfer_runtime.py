@@ -432,6 +432,9 @@ def test_selective_transfer_emits_partial_full_shaped_row_plan() -> None:
 
     assert outcome.state is TransferAttemptState.SUCCEEDED
     assert outcome.row_plan is not None
+    assert outcome.selective_state is not None
+    assert outcome.selective_state.plan is outcome.row_plan
+    assert not outcome.selective_state.scored
     assert outcome.row_plan.layer(0).is_full_recompute
     assert outcome.row_plan.layer(1).is_full_recompute
     assert outcome.row_plan.layer(2).recompute_tokens == 344
