@@ -117,13 +117,8 @@ main() {
   if test -f /mnt/nvme2/mlee/cacheblend-gpt-oss/scripts/validate_browsecomp_append_only.py; then
     cd /mnt/nvme2/mlee/cacheblend-gpt-oss || return 0
 
-    if test -x /mnt/nvme2/mlee/cacheblend-gpt-oss/.venv/bin/python; then
-      export CACHEBLEND_VALIDATOR_PYTHON=/mnt/nvme2/mlee/cacheblend-gpt-oss/.venv/bin/python
-    else
-      export CACHEBLEND_VALIDATOR_PYTHON=python3
-    fi
-
-    "$CACHEBLEND_VALIDATOR_PYTHON" scripts/validate_browsecomp_append_only.py \
+    PYTHONPATH=/mnt/nvme2/mlee/cacheblend-gpt-oss/src \
+      "$CACHEBLEND_P7_PYTHON" scripts/validate_browsecomp_append_only.py \
       --run-record "$CACHEBLEND_P7_RUN_DIR/run/run_703.json" \
       --metrics-before "$CACHEBLEND_P7_RUN_DIR/metrics-before.prom" \
       --metrics-after "$CACHEBLEND_P7_RUN_DIR/metrics-after.prom" \
