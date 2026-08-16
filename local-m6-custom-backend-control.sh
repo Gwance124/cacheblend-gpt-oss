@@ -25,13 +25,19 @@ echo "SERVING_HEAD=$(git rev-parse HEAD)"
   > "$CACHEBLEND_RUN_DIR/plugin-install.log" 2>&1
 echo "PLUGIN_INSTALL_STATUS=$?"
 
-if command -v fuser >/dev/null 2>&1; then
-  fuser -k -TERM 8000/tcp >/dev/null 2>&1 || true
-fi
+LISTENER_PID="$(ss -ltnp 2>/dev/null | awk -v p=":8000$" '$4 ~ p { x=$NF; sub(/^.*pid=/,"",x); sub(/,.*/,"",x); print x; exit }')"
+case "$LISTENER_PID" in
+  ''|*[!0-9]*) ;;
+  *) echo "STOPPING_PORT_8000_PID=$LISTENER_PID"; kill -TERM "$LISTENER_PID" 2>/dev/null || true ;;
+esac
 sleep 3
 
 .venv/bin/python -c "import importlib.metadata as m,torch; print({'torch':torch.__version__,'torch_cuda':torch.version.cuda,'vllm':m.version('vllm'),'lmcache':m.version('lmcache'),'gpu':torch.cuda.get_device_name(0)})" \
   > "$CACHEBLEND_RUN_DIR/runtime.txt" 2>&1
+echo "RUNTIME_IDENTITY=$CACHEBLEND_RUN_DIR/runtime.txt"
+
+: > "$CACHEBLEND_RUN_DIR/vllm-server.log"
+echo "VLLM_LOG=$CACHEBLEND_RUN_DIR/vllm-server.log"
 
 nohup env CACHEBLEND_ENABLE_CUSTOM_BACKEND=1 \
   TIKTOKEN_ENCODINGS_BASE="$TIKTOKEN_ENCODINGS_BASE" \
