@@ -919,6 +919,12 @@ class GptOssWorkerBridge:
             or any(not isinstance(record, CacheRecord) for record in records)
         ):
             return False
+        # Delta stores retain absolute prompt positions.  The compact batch
+        # may therefore begin at a nonzero offset, but every source chunk
+        # must still be aligned so contiguous records cannot drift by tokens.
+        first_record = records[0]
+        if first_record.source_range.start % LMCACHE_CHUNK_SIZE != 0:
+            return False
         previous_end: int | None = None
         namespace: CacheNamespace | None = None
         for record in records:
@@ -927,9 +933,10 @@ class GptOssWorkerBridge:
             if (
                 record.namespace != namespace
                 or len(record.token_ids) != LMCACHE_CHUNK_SIZE
-                or (previous_end is None and record.source_range.start != 0)
-                or (previous_end is not None
-                and record.source_range.start != previous_end)
+                or (
+                    previous_end is not None
+                    and record.source_range.start != previous_end
+                )
                 or not GptOssWorkerBridge._valid_record(
                     record,
                     record.namespace,

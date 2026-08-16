@@ -905,6 +905,33 @@ def test_delta_store_plan_uses_relative_staging_offsets_within_a_small_buffer() 
     assert receipt.stored_chunks == 2
 
 
+def test_tail_store_records_can_be_published_at_their_absolute_offset() -> None:
+    """A delta-store batch may start after prompt position zero.
+
+    The LMCache precomputed transport receives a compact tail, while the
+    sidecar records retain the absolute source positions needed for later
+    YaRN correction.  Publication must therefore accept an aligned nonzero
+    first range and still require the records to be contiguous thereafter.
+    """
+
+    fixture = _fixture(buffer_config=WorkerBridgeBufferConfig(0, 0))
+    store = _delta_store_plan(
+        fixture.transport.config, skip_chunks=5, total_chunks=7
+    )
+    fixture.bridge.open()
+    fixture.bridge.preflight_gather(store)
+    fixture.bridge.preflight_store(store)
+    fixture.bridge.gather_recomputed(store)
+    receipt = fixture.bridge.store_precomputed(store)
+
+    inserted = fixture.bridge.publish_sidecar_records_atomically(
+        receipt.sidecar_records
+    )
+
+    assert inserted == 2
+    assert fixture.sidecar.batches == [receipt.sidecar_records]
+
+
 def test_direct_atomic_publish_rechecks_fingerprint_source_and_cache_key() -> None:
     fixture = _fixture()
     fixture.bridge.open()
@@ -933,7 +960,7 @@ def test_direct_atomic_publish_rechecks_fingerprint_source_and_cache_key() -> No
     assert fixture.bridge.publish_sidecar_records_atomically((valid,)) == 1
 
 
-def test_direct_atomic_publish_rejects_nonzero_compact_source_start() -> None:
+def test_direct_atomic_publish_rejects_unaligned_source_start() -> None:
     fixture = _fixture()
     fixture.bridge.open()
     namespace = fixture.transport.config.namespace
@@ -942,7 +969,7 @@ def test_direct_atomic_publish_rejects_nonzero_compact_source_start() -> None:
         namespace,
         SHA256_FINGERPRINTER.fingerprint(namespace, tokens),
         tokens,
-        TokenRange(256, 512),
+        TokenRange(128, 384),
         LMCACHE_CACHE_KEY_PREFIX + (b"\x0a" * 32).hex(),
     )
 
