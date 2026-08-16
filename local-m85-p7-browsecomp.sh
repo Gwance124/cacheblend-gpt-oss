@@ -4,6 +4,14 @@ main() {
   cd /mnt/nvme2/mlee/rag-system || return 0
   source .env
 
+  if test -n "${PYTHON_BIN:-}"; then
+    export CACHEBLEND_P7_PYTHON="$PYTHON_BIN"
+  elif test -x /mnt/nvme2/mlee/rag-system/.venv/bin/python; then
+    export CACHEBLEND_P7_PYTHON=/mnt/nvme2/mlee/rag-system/.venv/bin/python
+  else
+    export CACHEBLEND_P7_PYTHON=python3
+  fi
+
   export CACHEBLEND_P7_RUN_BASE_DIR=/mnt/nvme2/mlee/cacheblend-gpt-oss-artifacts/browsecomp-append-only-cacheblend-20260815
   export CACHEBLEND_P7_RUN_DIR="$CACHEBLEND_P7_RUN_BASE_DIR"
   if test -e "$CACHEBLEND_P7_RUN_DIR"; then
@@ -54,7 +62,7 @@ main() {
   curl -fsS "${RAG_GENERATOR_URL%/v1}/metrics" \
     > "$CACHEBLEND_P7_RUN_DIR/metrics-before.prom"
 
-  PYTHONPATH=src python scripts/run_oss_standard_agent.py \
+  PYTHONPATH=src "$CACHEBLEND_P7_PYTHON" scripts/run_oss_standard_agent.py \
     --prepared-dir "$RAG_PREPARED_DIR" \
     --query-id 703 \
     --search-url "$RAG_SEARCH_URL" \
@@ -73,9 +81,11 @@ main() {
     --no-deduplicate-retrieved-documents \
     --generator-timeout-seconds "$GENERATOR_TIMEOUT_SECONDS" \
     --trace-jsonl "$CACHEBLEND_P7_RUN_DIR/trace.jsonl" \
-    --output-dir "$CACHEBLEND_P7_RUN_DIR/run"
+    --output-dir "$CACHEBLEND_P7_RUN_DIR/run" \
+    2>&1 | tee "$CACHEBLEND_P7_RUN_DIR/agent.log"
 
-  echo "AGENT_STATUS=$?"
+  export CACHEBLEND_AGENT_STATUS=${PIPESTATUS[0]}
+  echo "AGENT_STATUS=$CACHEBLEND_AGENT_STATUS"
 
   export CACHEBLEND_RUN_RECORD="$CACHEBLEND_P7_RUN_DIR/run/run_703.json"
   if test ! -s "$CACHEBLEND_RUN_RECORD"; then
@@ -83,7 +93,7 @@ main() {
     return 0
   fi
 
-  export CACHEBLEND_GENERATIONS="$(python -c "import json; print(json.load(open('$CACHEBLEND_RUN_RECORD'))['diagnostics']['generation_request_count'])" 2>/dev/null || echo 0)"
+  export CACHEBLEND_GENERATIONS="$("$CACHEBLEND_P7_PYTHON" -c "import json; print(json.load(open('$CACHEBLEND_RUN_RECORD'))['diagnostics']['generation_request_count'])" 2>/dev/null || echo 0)"
 
   for n in $(seq 1 120); do
     curl -fsS "${RAG_GENERATOR_URL%/v1}/metrics" \
@@ -104,7 +114,13 @@ main() {
   if test -f /mnt/nvme2/mlee/cacheblend-gpt-oss/scripts/validate_browsecomp_append_only.py; then
     cd /mnt/nvme2/mlee/cacheblend-gpt-oss || return 0
 
-    python scripts/validate_browsecomp_append_only.py \
+    if test -x /mnt/nvme2/mlee/cacheblend-gpt-oss/.venv/bin/python; then
+      export CACHEBLEND_VALIDATOR_PYTHON=/mnt/nvme2/mlee/cacheblend-gpt-oss/.venv/bin/python
+    else
+      export CACHEBLEND_VALIDATOR_PYTHON=python3
+    fi
+
+    "$CACHEBLEND_VALIDATOR_PYTHON" scripts/validate_browsecomp_append_only.py \
       --run-record "$CACHEBLEND_P7_RUN_DIR/run/run_703.json" \
       --metrics-before "$CACHEBLEND_P7_RUN_DIR/metrics-before.prom" \
       --metrics-after "$CACHEBLEND_P7_RUN_DIR/metrics-after.prom" \
