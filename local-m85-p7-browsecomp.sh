@@ -4,17 +4,33 @@ main() {
   cd /mnt/nvme2/mlee/rag-system || return 0
   source .env
 
-  export CACHEBLEND_P7_RUN_DIR=/mnt/nvme2/mlee/cacheblend-gpt-oss-artifacts/browsecomp-append-only-cacheblend-3b7bb29-20260815
-
+  export CACHEBLEND_P7_RUN_BASE_DIR=/mnt/nvme2/mlee/cacheblend-gpt-oss-artifacts/browsecomp-append-only-cacheblend-20260815
+  export CACHEBLEND_P7_RUN_DIR="$CACHEBLEND_P7_RUN_BASE_DIR"
   if test -e "$CACHEBLEND_P7_RUN_DIR"; then
-    echo "STOP_P7_RUN_DIR_ALREADY_EXISTS=$CACHEBLEND_P7_RUN_DIR"
-    return 0
+    export CACHEBLEND_P7_RUN_DIR="${CACHEBLEND_P7_RUN_BASE_DIR}-retry$(date +%Y%m%d-%H%M%S)"
+    while test -e "$CACHEBLEND_P7_RUN_DIR"; do
+      sleep 1
+      export CACHEBLEND_P7_RUN_DIR="${CACHEBLEND_P7_RUN_BASE_DIR}-retry$(date +%Y%m%d-%H%M%S)"
+    done
   fi
 
   mkdir -p "$CACHEBLEND_P7_RUN_DIR/run"
   chmod 700 "$CACHEBLEND_P7_RUN_DIR" "$CACHEBLEND_P7_RUN_DIR/run"
 
-  if ! scp labuser@192.168.3.4:/mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/solab-g3-m8.5-3b7bb29-browsecomp-append-only-20260815/runtime-identity.json \
+  export CACHEBLEND_G3_RUN_POINTER=/mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/solab-g3-m8.5-browsecomp-append-only-20260815.current
+  if ! scp labuser@192.168.3.4:"$CACHEBLEND_G3_RUN_POINTER" \
+    "$CACHEBLEND_P7_RUN_DIR/g3-run-dir.txt"; then
+    echo "G3_RUN_POINTER_TRANSFER_FAILED=$CACHEBLEND_G3_RUN_POINTER"
+    return 0
+  fi
+
+  export CACHEBLEND_G3_RUN_DIR="$(sed -n '1p' "$CACHEBLEND_P7_RUN_DIR/g3-run-dir.txt")"
+  case "$CACHEBLEND_G3_RUN_DIR" in
+    /mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/*) ;;
+    *) echo "INVALID_G3_RUN_DIR=$CACHEBLEND_G3_RUN_DIR"; return 0 ;;
+  esac
+
+  if ! scp labuser@192.168.3.4:"$CACHEBLEND_G3_RUN_DIR/runtime-identity.json" \
     "$CACHEBLEND_P7_RUN_DIR/runtime-identity.json"; then
     echo "RUNTIME_IDENTITY_TRANSFER_FAILED"
     return 0
