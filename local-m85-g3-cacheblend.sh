@@ -21,12 +21,13 @@ export CACHEBLEND_PLUGIN_COMMIT="$(git rev-parse HEAD)"
 export CACHEBLEND_MODEL_CONFIG_DIGEST=1c69c7868c1206ea76c372df01e5baa2abcadcd2ca5b9f93b97d94fa6070aae0
 export CACHEBLEND_KV_CONFIG_DIGEST=131eb7ec025bc9a4fa1dabd220bb41b75c7d8f921e537fd8be505e91c6850742
 export CACHEBLEND_STAGING_TOKENS=131072
+export CACHEBLEND_REQUIRED_BRANCH=cacheblend-scatter-diagnostic-and-checklayer
 export CACHEBLEND_RUN_DIR=/mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/solab-g3-m8.5-3b7bb29-browsecomp-append-only-20260815
 export CACHEBLEND_SIDECAR="$CACHEBLEND_RUN_DIR/sidecar.sqlite3"
 export CACHEBLEND_TRANSFER_CONFIG="$CACHEBLEND_RUN_DIR/transfer-config.json"
 export CACHEBLEND_TRANSFER_EVIDENCE="$CACHEBLEND_RUN_DIR/transfer-evidence.json"
 
-if test "$(git rev-parse --short HEAD)" = "3b7bb29"; then
+if test "$(git branch --show-current)" = "$CACHEBLEND_REQUIRED_BRANCH"; then
   if test ! -e "$CACHEBLEND_RUN_DIR"; then
     mkdir -p "$CACHEBLEND_RUN_DIR" "$TRITON_CACHE_DIR"
 
@@ -149,7 +150,7 @@ if test "$(git rev-parse --short HEAD)" = "3b7bb29"; then
     echo "STOP_RUN_DIR_ALREADY_EXISTS=$CACHEBLEND_RUN_DIR"
   fi
 else
-  echo "STOP_WRONG_COMMIT=$(git rev-parse --short HEAD)"
+  echo "STOP_WRONG_BRANCH=$(git branch --show-current)"
 fi
 }
 
