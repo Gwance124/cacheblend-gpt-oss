@@ -82,3 +82,28 @@ def test_cacheblend_custom_backend_contract() -> None:
         8,
         64,
     )
+
+
+@pytest.mark.gpu
+@pytest.mark.integration
+def test_cacheblend_model_wrapper_contract() -> None:
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("vllm")
+
+    if not torch.cuda.is_available():
+        pytest.skip("manual solab-g3 test: CUDA is not available")
+
+    from vllm.model_executor.models.gpt_oss import GptOssForCausalLM
+
+    from cacheblend_gpt_oss.vllm_compat.v0_19_1.selective_model import (
+        GptOssCacheBlendForCausalLM,
+    )
+
+    assert issubclass(GptOssCacheBlendForCausalLM, GptOssForCausalLM)
+    assert list(inspect.signature(GptOssCacheBlendForCausalLM.forward).parameters) == [
+        "self",
+        "input_ids",
+        "positions",
+        "intermediate_tensors",
+        "inputs_embeds",
+    ]

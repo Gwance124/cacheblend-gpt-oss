@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from cacheblend_gpt_oss.vllm_compat.v0_19_1.selective_plugin import (
     BACKEND_CLASS_PATH,
+    MODEL_CLASS_PATH,
     register_cacheblend_backend,
 )
 
@@ -18,4 +19,8 @@ def test_custom_backend_path_is_version_scoped() -> None:
     assert BACKEND_CLASS_PATH == (
         "cacheblend_gpt_oss.vllm_compat.v0_19_1.selective_backend."
         "GptOssCacheBlendAttentionBackend"
+    )
+    assert MODEL_CLASS_PATH == (
+        "cacheblend_gpt_oss.vllm_compat.v0_19_1.selective_model:"
+        "GptOssCacheBlendForCausalLM"
     )

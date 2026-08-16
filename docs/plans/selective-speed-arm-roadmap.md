@@ -160,20 +160,24 @@ a fail-closed, plan-aware selected-row write hook. `selective_plugin.py` registe
 the explicit matched-backend control; the helper is `local-m6-custom-backend-control.sh`. This
 is an API/control milestone, not a speed milestone.
 
-**C2–C6 (backend and serving path, still pending).** Under
+**C2 (initial model seam implemented, GPU activation pending).**
+`selective_model.py` provides a lazy subclass of the pinned GPT-OSS model that
+binds a full row plan around the exact forward signature. It is opt-in through
+`CACHEBLEND_ENABLE_CUSTOM_MODEL=1` and still recomputes every row; this only
+proves plan propagation into the CUSTOM backend.
+
+**C3–C6 (backend and serving path, still pending).** Under
 `src/cacheblend_gpt_oss/vllm_compat/v0_19_1/` (the registrar's `_PACKAGE_PREFIX`,
 `selective_registry.py:276-293`):
-1. A **GPT-OSS model override** delegating to `GptOssSelectiveModelAdapter`
-   (`gpt_oss/selective_runtime.py:148`).
-2. A CUDA **`SelectiveCacheOps`** implementation of the protocol in `selective_kv.py:341-372`.
-3. A **new connector mode** `transfer_selective` in `ConnectorTransferMode`
+1. A CUDA **`SelectiveCacheOps`** implementation of the protocol in `selective_kv.py:341-372`.
+2. A **new connector mode** `transfer_selective` in `ConnectorTransferMode`
    (`transfer_config.py:69-74`) + config type paralleling `Transfer100PctConfig`, branched into
    the transfer runtime where code switches on `isinstance(..., Transfer100PctConfig)`
    (`connector.py:374,415,439,497,658,686,936`).
-4. Extend the existing **`vllm.general_plugins` entry point** from the matched control to
+3. Extend the existing **`vllm.general_plugins` entry point** from the matched control to
    call the evidence-gated `register_selective_extension` (`selective_registry.py:468`) once
    the model override and all prerequisite artifacts are ready.
-5. Emit honest savings as **CacheBlend-internal layer-token counters** (e.g.
+4. Emit honest savings as **CacheBlend-internal layer-token counters** (e.g.
    `layer_token_rows_recomputed` / `layer_token_rows_avoided`) — see Phase E1. Do **not** relabel
    internally-skipped layer rows as native prompt tokens avoided. A narrowly-pinned vLLM patch
    for non-prefix native accounting is optional and **gated at M6** (feasibility `:767`).

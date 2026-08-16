@@ -105,6 +105,17 @@ The later selective M6 command must add the evidence-gated model override and
 not infer that command from a moving vLLM release or an unpublished CacheBlend
 image.
 
+The full-plan model-wrapper control can be enabled for a separate short
+forward test by exporting this flag before running the helper:
+
+```bash
+export CACHEBLEND_ENABLE_CUSTOM_MODEL=1
+bash /mnt/nvme3n1/mlee/cacheblend-gpt-oss/local-m6-custom-backend-control.sh
+```
+
+This remains a 100%-recompute control and must not be reported as selective
+speedup evidence.
+
 ## Stop/go
 
 Stop if the structural test reports a different backend shape/signature,

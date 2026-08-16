@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """Explicit opt-in vLLM general-plugin hook for the matched CUSTOM backend.
 
-The plugin deliberately registers only the backend.  It does not register a
-model override or activate selective recomputation.  That keeps the current
-g3 experiment a matched CUSTOM-at-100%-recompute control until the model
-override and connector ``transfer_selective`` mode are implemented and gated.
+The plugin always registers the matched CUSTOM backend when explicitly enabled.
+It optionally registers the full-plan GPT-OSS model wrapper when
+``CACHEBLEND_ENABLE_CUSTOM_MODEL=1``.  That wrapper still recomputes every row;
+neither option activates selective recomputation or the connector
+``transfer_selective`` mode.
 """
 
 from __future__ import annotations
@@ -15,6 +16,10 @@ from importlib.metadata import version
 BACKEND_CLASS_PATH = (
     "cacheblend_gpt_oss.vllm_compat.v0_19_1.selective_backend."
     "GptOssCacheBlendAttentionBackend"
+)
+MODEL_CLASS_PATH = (
+    "cacheblend_gpt_oss.vllm_compat.v0_19_1.selective_model:"
+    "GptOssCacheBlendForCausalLM"
 )
 
 
@@ -33,5 +38,12 @@ def register_cacheblend_backend() -> None:
 
     register_backend(AttentionBackendEnum.CUSTOM, BACKEND_CLASS_PATH)
 
+    if os.environ.get("CACHEBLEND_ENABLE_CUSTOM_MODEL") == "1":
+        from vllm.model_executor.models import (  # type: ignore[import-not-found]
+            ModelRegistry,
+        )
 
-__all__ = ["register_cacheblend_backend"]
+        ModelRegistry.register_model("GptOssForCausalLM", MODEL_CLASS_PATH)
+
+
+__all__ = ["BACKEND_CLASS_PATH", "MODEL_CLASS_PATH", "register_cacheblend_backend"]
