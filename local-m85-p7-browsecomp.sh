@@ -3,6 +3,7 @@
 main() {
   cd /mnt/nvme2/mlee/rag-system || return 0
   source .env
+  export CACHEBLEND_AGENT_MAX_OUTPUT_TOKENS="${CACHEBLEND_AGENT_MAX_OUTPUT_TOKENS:-4096}"
 
   if test -x /mnt/nvme2/mlee/rag-system/.venv/bin/python; then
     export CACHEBLEND_P7_PYTHON=/mnt/nvme2/mlee/rag-system/.venv/bin/python
@@ -69,7 +70,7 @@ main() {
     --generator-url "$RAG_GENERATOR_URL" \
     --model openai/gpt-oss-20b \
     --reasoning-effort "$AGENTIC_REASONING_EFFORT" \
-    --max-output-tokens "$AGENTIC_MAX_OUTPUT_TOKENS" \
+    --max-output-tokens "$CACHEBLEND_AGENT_MAX_OUTPUT_TOKENS" \
     --forced-decision-reasoning-effort "$AGENTIC_FORCED_DECISION_REASONING_EFFORT" \
     --forced-decision-max-output-tokens "$AGENTIC_FORCED_DECISION_MAX_OUTPUT_TOKENS" \
     --max-forced-decision-recoveries "$AGENTIC_MAX_FORCED_DECISION_RECOVERIES" \
