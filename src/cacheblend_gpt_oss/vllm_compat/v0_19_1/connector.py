@@ -38,6 +38,10 @@ from cacheblend_gpt_oss.connector.control_plane import (
     WorkerValidationReceipt,
 )
 from cacheblend_gpt_oss.gpt_oss.layout import AttentionKind, GroupBlockTable
+from cacheblend_gpt_oss.gpt_oss.selective import (
+    ForwardRowPlan,
+    ForwardRowPlanContext,
+)
 from cacheblend_gpt_oss.planner import MatchPlan
 from cacheblend_gpt_oss.vllm_compat.v0_19_1.adapters import (
     AdaptedKvCacheBlocks,
@@ -68,6 +72,7 @@ from cacheblend_gpt_oss.vllm_compat.v0_19_1.transfer_config import (
     LMCACHE_CHUNK_SIZE,
     CompatibilityProbeConfig,
     Transfer100PctConfig,
+    TransferSelectiveConfig,
     parse_connector_extra_config,
 )
 from cacheblend_gpt_oss.vllm_compat.v0_19_1.transfer_runtime import (
@@ -307,11 +312,12 @@ class _ActiveWorkerTransfer:
 class GptOssCacheBlendConnector(
     KVConnectorBase_V1, SupportsHMA  # type: ignore[misc]
 ):
-    """vLLM 0.19.1 connector that always performs ordinary full prefill.
+    """vLLM 0.19.1 connector for full-prefill and explicit selective modes.
 
-    Live transfer is limited to synchronous instrumentation in the audited
-    one-request, one-step envelope.  Any attempt to credit external tokens or
-    use the non-HMA completion hook fails closed.
+    ``transfer_100pct`` remains synchronous instrumentation with ordinary full
+    prefill.  ``transfer_selective`` installs one bounded row plan across the
+    worker's model forward and KV writeback hooks; it still credits zero
+    external scheduler tokens and remains an experimental GPU gate.
     """
 
     def __init__(
@@ -411,6 +417,7 @@ class GptOssCacheBlendConnector(
         self._scheduler_resources: SchedulerRuntimeResources | None = None
         self._worker_resources: WorkerRuntimeResources | None = None
         self._active_worker_transfer: _ActiveWorkerTransfer | None = None
+        self._active_forward_plan_token: object | None = None
         if (
             isinstance(self._transfer_config, Transfer100PctConfig)
             and role is KVConnectorRole.SCHEDULER
@@ -437,6 +444,24 @@ class GptOssCacheBlendConnector(
     @property
     def _transfer_enabled(self) -> bool:
         return isinstance(self._transfer_config, Transfer100PctConfig)
+
+    @property
+    def _selective_enabled(self) -> bool:
+        return isinstance(self._transfer_config, TransferSelectiveConfig)
+
+    def _install_forward_plan(self, plan: ForwardRowPlan) -> None:
+        if not self._selective_enabled:
+            return
+        if self._active_forward_plan_token is not None:
+            raise RuntimeError("A selective forward plan is already active.")
+        self._active_forward_plan_token = ForwardRowPlanContext.install(plan)
+
+    def _clear_forward_plan(self) -> None:
+        token = self._active_forward_plan_token
+        if token is None:
+            return
+        self._active_forward_plan_token = None
+        ForwardRowPlanContext.reset(token)
 
     def _adapt_handoff_blocks(
         self, handoff: RequestHandoffMetadata
@@ -523,6 +548,10 @@ class GptOssCacheBlendConnector(
             raise RuntimeError("Scheduler and worker transfer modes do not match.")
         if self._active_worker_transfer is not None:
             raise RuntimeError("A previous CacheBlend transfer is still active.")
+        if self._selective_enabled and len(metadata.handoffs) > 1:
+            raise RuntimeError(
+                "The selective transfer envelope allows one request per step."
+            )
         if len(metadata.transfers) > 1:
             raise RuntimeError(
                 "The 100%-recompute transfer envelope allows one request per step."
@@ -580,6 +609,10 @@ class GptOssCacheBlendConnector(
                     ),
                 )
                 self._pending_worker_receipts.append(receipt)
+                if self._selective_enabled:
+                    self._install_forward_plan(
+                        ForwardRowPlan.full_recompute(handoff.plan.prompt_tokens)
+                    )
                 continue
             if transfer.handoff != handoff:
                 raise RuntimeError(
@@ -614,6 +647,8 @@ class GptOssCacheBlendConnector(
                     outcome.position_correction_latency_seconds
                 ),
                 scatter_suppressed_tokens=outcome.scatter_suppressed_tokens,
+                layer_token_rows_recomputed=outcome.layer_token_rows_recomputed,
+                layer_token_rows_avoided=outcome.layer_token_rows_avoided,
             )
             receipt = self._control_plane.validate_worker(
                 handoff.plan.request_id,
@@ -623,6 +658,11 @@ class GptOssCacheBlendConnector(
             if receipt != outcome.to_worker_validation_receipt():
                 raise RuntimeError("Worker transfer receipt reconciliation failed.")
             self._pending_worker_receipts.append(receipt)
+            if self._selective_enabled:
+                self._install_forward_plan(
+                    outcome.row_plan
+                    or ForwardRowPlan.full_recompute(transfer.prompt_token_count)
+                )
             self._active_worker_transfer = _ActiveWorkerTransfer(
                 transfer,
                 adapted_blocks,
@@ -665,48 +705,53 @@ class GptOssCacheBlendConnector(
 
     def wait_for_save(self) -> None:
         self._require_role(KVConnectorRole.WORKER, "wait_for_save")
-        active = self._active_worker_transfer
-        if active is None:
-            return
-        expected_layers = set(self._registered_kv_caches)
-        if active.saved_layer_names != expected_layers:
-            raise RuntimeError(
-                "Full-prefill KV writeback did not visit every GPT-OSS layer."
-            )
-        if self._worker_resources is None:
-            raise RuntimeError("Worker transfer resources are unavailable.")
-        completion = self._worker_resources.transfer_runtime.mark_full_prefill_complete(
-            active.pre_forward,
-            recomputed_token_count=active.metadata.prompt_token_count,
-        )
-        started_at = perf_counter()
-        post_forward = self._worker_resources.transfer_runtime.after_forward(
-            completion, active.adapted_blocks
-        )
-        if (
-            isinstance(self._transfer_config, Transfer100PctConfig)
-            and self._transfer_config.transfer_evidence_path is not None
-        ):
-            if (
-                active.pre_forward.state is TransferAttemptState.SUCCEEDED
-                and post_forward.state is TransferAttemptState.SUCCEEDED
-            ):
-                self._worker_resources.bridge.finish_transfer_evidence(
-                    recomputed_tokens=active.metadata.prompt_token_count,
-                    prefill_tokens_avoided=post_forward.prefill_tokens_avoided,
+        try:
+            active = self._active_worker_transfer
+            if active is None:
+                return
+            expected_layers = set(self._registered_kv_caches)
+            if active.saved_layer_names != expected_layers:
+                raise RuntimeError(
+                    "Full-prefill KV writeback did not visit every GPT-OSS layer."
                 )
-            else:
-                self._worker_resources.bridge.abort_transfer_evidence()
-        self._stats.record_store(
-            eligible_tokens=post_forward.eligible_store_tokens,
-            stored_tokens=post_forward.stored_tokens,
-            fallback=(
-                post_forward.state
-                is TransferAttemptState.FULL_PREFILL_FALLBACK
-            ),
-            latency_seconds=perf_counter() - started_at,
-        )
-        self._active_worker_transfer = None
+            if self._worker_resources is None:
+                raise RuntimeError("Worker transfer resources are unavailable.")
+            completion = (
+                self._worker_resources.transfer_runtime.mark_full_prefill_complete(
+                    active.pre_forward,
+                    recomputed_token_count=active.metadata.prompt_token_count,
+                )
+            )
+            started_at = perf_counter()
+            post_forward = self._worker_resources.transfer_runtime.after_forward(
+                completion, active.adapted_blocks
+            )
+            if (
+                isinstance(self._transfer_config, Transfer100PctConfig)
+                and self._transfer_config.transfer_evidence_path is not None
+            ):
+                if (
+                    active.pre_forward.state is TransferAttemptState.SUCCEEDED
+                    and post_forward.state is TransferAttemptState.SUCCEEDED
+                ):
+                    self._worker_resources.bridge.finish_transfer_evidence(
+                        recomputed_tokens=active.metadata.prompt_token_count,
+                        prefill_tokens_avoided=post_forward.prefill_tokens_avoided,
+                    )
+                else:
+                    self._worker_resources.bridge.abort_transfer_evidence()
+            self._stats.record_store(
+                eligible_tokens=post_forward.eligible_store_tokens,
+                stored_tokens=post_forward.stored_tokens,
+                fallback=(
+                    post_forward.state
+                    is TransferAttemptState.FULL_PREFILL_FALLBACK
+                ),
+                latency_seconds=perf_counter() - started_at,
+            )
+            self._active_worker_transfer = None
+        finally:
+            self._clear_forward_plan()
 
     def get_finished(
         self, finished_req_ids: set[str]

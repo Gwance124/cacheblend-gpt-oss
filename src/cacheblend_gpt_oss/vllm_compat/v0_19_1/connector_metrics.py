@@ -39,6 +39,8 @@ _COUNTER_KEYS = (
     "kv_tokens_loaded",
     "kv_tokens_scatter_suppressed",
     "tokens_recomputed",
+    "layer_token_rows_recomputed",
+    "layer_token_rows_avoided",
     "prefill_tokens_avoided",
     "store_tokens_eligible",
     "store_tokens_completed",
@@ -207,6 +209,8 @@ class GptOssCacheBlendStats(KVConnectorStats):  # type: ignore[misc]
         position_correction_latency_seconds: float = 0.0,
         selective_recomputation_latency_seconds: float = 0.0,
         scatter_suppressed_tokens: int = 0,
+        layer_token_rows_recomputed: int = 0,
+        layer_token_rows_avoided: int = 0,
     ) -> None:
         counters = (
             verified_tokens,
@@ -214,6 +218,8 @@ class GptOssCacheBlendStats(KVConnectorStats):  # type: ignore[misc]
             rejected_tokens,
             recomputed_tokens,
             scatter_suppressed_tokens,
+            layer_token_rows_recomputed,
+            layer_token_rows_avoided,
         )
         if any(
             isinstance(value, bool) or not isinstance(value, int) or value < 0
@@ -232,6 +238,8 @@ class GptOssCacheBlendStats(KVConnectorStats):  # type: ignore[misc]
         self._append("kv_tokens_scatter_suppressed", scatter_suppressed_tokens)
         self._append("kv_tokens_rejected", rejected_tokens)
         self._append("tokens_recomputed", recomputed_tokens)
+        self._append("layer_token_rows_recomputed", layer_token_rows_recomputed)
+        self._append("layer_token_rows_avoided", layer_token_rows_avoided)
         self._append("prefill_tokens_avoided", 0)
         self._append("load_fallbacks", int(fallback))
         self._append("transfer_latency_seconds", latency_seconds)

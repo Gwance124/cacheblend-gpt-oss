@@ -44,6 +44,14 @@ _STORE_COUNTER_METRICS = {
     "store_tokens_completed": "vllm:cacheblend_store_tokens_completed_total",
     "store_fallbacks": "vllm:cacheblend_store_fallbacks_total",
 }
+_SELECTIVE_COUNTER_METRICS = {
+    "layer_token_rows_recomputed": (
+        "vllm:cacheblend_layer_token_rows_recomputed_total"
+    ),
+    "layer_token_rows_avoided": (
+        "vllm:cacheblend_layer_token_rows_avoided_total"
+    ),
+}
 _VLLM_PROMPT_COUNTER_METRICS = {
     # Counter constructors in the pinned logger use ``vllm:prompt_tokens``;
     # prometheus_client emits the concrete sample as ``*_total``.
@@ -297,6 +305,12 @@ def parse_connector_store_counter_snapshot(text: str) -> dict[str, int]:
     """Parse store-only counters used to gate source-cache persistence."""
 
     return _parse_counter_snapshot(text, _STORE_COUNTER_METRICS)
+
+
+def parse_selective_work_counter_snapshot(text: str) -> dict[str, int]:
+    """Parse optional row-work counters without changing 100% artifacts."""
+
+    return _parse_counter_snapshot(text, _SELECTIVE_COUNTER_METRICS)
 
 
 def has_vllm_prompt_metric_surface(text: str) -> bool:
@@ -864,6 +878,7 @@ __all__ = [
     "parse_completion_distribution",
     "parse_connector_counter_snapshot",
     "parse_connector_store_counter_snapshot",
+    "parse_selective_work_counter_snapshot",
     "parse_vllm_prefill_work_snapshot",
     "parse_vllm_prompt_counter_snapshot",
     "parse_vllm_prompt_source_snapshot",

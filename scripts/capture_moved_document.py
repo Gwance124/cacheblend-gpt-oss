@@ -56,6 +56,7 @@ from cacheblend_gpt_oss.correctness import (  # noqa: E402
     parse_completion_distribution,
     parse_connector_counter_snapshot,
     parse_connector_store_counter_snapshot,
+    parse_selective_work_counter_snapshot,
     parse_vllm_prefill_work_snapshot,
     parse_vllm_prompt_counter_snapshot,
     parse_vllm_prompt_source_snapshot,
@@ -395,7 +396,11 @@ def main() -> int:
     target_prefill_work_delta: VllmPrefillWorkSnapshot | None = None
     target_timing_delta: VllmTimingSnapshot | None = None
     connector_control_evidence: dict[str, dict[str, int]] | None = None
-    if mode is CorrectnessRunMode.CACHEBLEND_100PCT:
+    selective_work: dict[str, int] | None = None
+    if mode in {
+        CorrectnessRunMode.CACHEBLEND_100PCT,
+        CorrectnessRunMode.CACHEBLEND_SELECTIVE,
+    }:
         initial_metrics = client.get_text("/metrics")
         _require_connector_metric_surface(initial_metrics, expected=True)
         if not has_vllm_timing_metric_surface(initial_metrics):
@@ -483,6 +488,12 @@ def main() -> int:
         target_prompt_source = parse_vllm_prompt_source_snapshot(after_target_metrics)
         source_prefill_work = parse_vllm_prefill_work_snapshot(after_source_metrics)
         target_prefill_work = parse_vllm_prefill_work_snapshot(after_target_metrics)
+        after_source_selective_work = parse_selective_work_counter_snapshot(
+            after_source_metrics
+        )
+        after_target_selective_work = parse_selective_work_counter_snapshot(
+            after_target_metrics
+        )
         source_prompt_delta = vllm_prompt_counter_delta(initial_prompt, source_prompt)
         target_prompt_tokens_processed = vllm_prompt_counter_delta(
             source_prompt, target_prompt
@@ -548,6 +559,22 @@ def main() -> int:
                     f"{label} connector store counters do not reconcile"
                 )
         connector = connector_evidence_from_snapshots(after_source, after_target)
+        if mode is CorrectnessRunMode.CACHEBLEND_SELECTIVE:
+            selective_work = {
+                key: after_target_selective_work[key]
+                - after_source_selective_work[key]
+                for key in after_target_selective_work
+            }
+            total_layer_rows = 24 * len(fixture.target_prompt_token_ids)
+            if (
+                selective_work["layer_token_rows_avoided"] <= 0
+                or selective_work["layer_token_rows_recomputed"]
+                + selective_work["layer_token_rows_avoided"]
+                != total_layer_rows
+            ):
+                raise ValueError(
+                    "selective layer-token counters do not reconcile"
+                )
     else:
         initial_metrics = client.get_text("/metrics")
         _require_connector_metric_surface(
@@ -751,6 +778,7 @@ def main() -> int:
                     }
                 ),
                 "connector_control_evidence": connector_control_evidence,
+                "selective_work": selective_work,
                 "native_prompt_tokens_processed": target_prompt_tokens_processed,
                 "native_prompt_source_delta": target_prompt_source_delta,
                 "native_request_evidence": native_request_evidence.as_dict(),

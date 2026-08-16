@@ -30,6 +30,7 @@ class CorrectnessRunMode(str, Enum):
 
     FULL_PREFILL = "full_prefill"
     CACHEBLEND_100PCT = "cacheblend_100pct"
+    CACHEBLEND_SELECTIVE = "cacheblend_selective"
 
 
 def _require_text(name: str, value: object, *, maximum: int = 256) -> None:
@@ -301,6 +302,10 @@ class CorrectnessArtifact:
             or self.connector.tokens_recomputed != self.prompt.target_prompt_tokens
             or self.connector.prefill_tokens_avoided != 0
         ):
+            if self.run_mode is CorrectnessRunMode.CACHEBLEND_SELECTIVE:
+                raise ValueError(
+                    "CacheBlend selective artifact has invalid transfer evidence"
+                )
             raise ValueError("CacheBlend 100% artifact has invalid work evidence")
 
 

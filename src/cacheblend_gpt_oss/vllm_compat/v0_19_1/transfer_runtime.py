@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Dependency-free orchestration for the 100%-recompute transfer milestone.
+"""Dependency-free orchestration for the pinned transfer modes.
 
 This module is the narrow scheduler/worker seam for the pinned vLLM 0.19.1
 integration.  It imports no vLLM, LMCache, Torch, or CUDA modules.  Concrete
@@ -19,8 +19,10 @@ The lifecycle assumptions are tied to exact public sources:
   https://github.com/LMCache/LMCache/blob/7f326118a2f1afc7801988dd02e3055bdf21ef6b/lmcache/v1/multiprocess/blend_server_v2.py#L597-L687
   https://github.com/LMCache/LMCache/blob/7f326118a2f1afc7801988dd02e3055bdf21ef6b/lmcache/v1/multiprocess/blend_server_v2.py#L444-L513
 
-Loaded KV is instrumentation data only.  Every prompt token remains scheduled
-for ordinary prefill, and every outcome reports zero saved-prefill tokens.
+The ``transfer_100pct`` mode keeps loaded KV as instrumentation data only.
+The explicit ``transfer_selective`` mode additionally returns a bounded
+full-shaped row plan to the worker model; scheduler credit remains zero until
+the selective GPU evidence is independently validated.
 """
 
 from __future__ import annotations
@@ -43,6 +45,11 @@ from cacheblend_gpt_oss.gpt_oss.layout import (
     TokenTransfer,
     plan_token_scatter,
 )
+from cacheblend_gpt_oss.gpt_oss.selective import ForwardRowPlan
+from cacheblend_gpt_oss.gpt_oss.selective_policy import (
+    CacheBlendSelectionPolicy,
+    SelectionPolicyError,
+)
 from cacheblend_gpt_oss.planner.fingerprint import SHA256_FINGERPRINTER
 from cacheblend_gpt_oss.planner.models import (
     CacheNamespace,
@@ -59,6 +66,9 @@ from cacheblend_gpt_oss.storage.lmcache_types import (
     query_digest,
 )
 from cacheblend_gpt_oss.vllm_compat.v0_19_1.adapters import AdaptedKvCacheBlocks
+from cacheblend_gpt_oss.vllm_compat.v0_19_1.transfer_config import (
+    TransferSelectiveConfig,
+)
 
 
 class TransferRuntimeErrorCode(str, Enum):
@@ -411,6 +421,9 @@ class PreForwardOutcome:
     prefill_tokens_avoided: int = 0
     position_correction_latency_seconds: float = 0.0
     scatter_suppressed_tokens: int = 0
+    row_plan: ForwardRowPlan | None = None
+    layer_token_rows_recomputed: int = 0
+    layer_token_rows_avoided: int = 0
 
     def __post_init__(self) -> None:
         if not isinstance(self.metadata, SchedulerTransferMetadata) or not isinstance(
@@ -434,6 +447,8 @@ class PreForwardOutcome:
                     self.external_scheduler_tokens,
                     self.prefill_tokens_avoided,
                     self.scatter_suppressed_tokens,
+                    self.layer_token_rows_recomputed,
+                    self.layer_token_rows_avoided,
                 )
             )
             or self.scatter_suppressed_tokens < 0
@@ -444,6 +459,22 @@ class PreForwardOutcome:
             or self.tokens_to_recompute != self.metadata.prompt_token_count
             or self.external_scheduler_tokens != FULL_RECOMPUTE_EXTERNAL_TOKENS
             or self.prefill_tokens_avoided != 0
+            or self.layer_token_rows_recomputed < 0
+            or self.layer_token_rows_avoided < 0
+        ):
+            _fail(TransferRuntimeErrorCode.INVALID_OUTCOME)
+        if self.row_plan is not None and (
+            not isinstance(self.row_plan, ForwardRowPlan)
+            or self.row_plan.prompt_tokens != self.metadata.prompt_token_count
+            or self.layer_token_rows_recomputed != self.row_plan.recompute_tokens
+            or self.layer_token_rows_avoided != self.row_plan.cached_tokens
+            or self.layer_token_rows_recomputed + self.layer_token_rows_avoided
+            != 24 * self.metadata.prompt_token_count
+        ):
+            _fail(TransferRuntimeErrorCode.INVALID_OUTCOME)
+        if self.row_plan is None and (
+            self.layer_token_rows_recomputed != 0
+            or self.layer_token_rows_avoided != 0
         ):
             _fail(TransferRuntimeErrorCode.INVALID_OUTCOME)
         if (
@@ -608,7 +639,7 @@ class PostForwardOutcome:
 
 
 class TransferRuntime:
-    """Orchestrate one initial full-prefill transfer without runtime imports."""
+    """Orchestrate one initial transfer without runtime imports."""
 
     def __init__(
         self,
@@ -617,15 +648,23 @@ class TransferRuntime:
         data_plane: WorkerDataPlane,
         *,
         disable_kv_scatter: bool = False,
+        selective_config: TransferSelectiveConfig | None = None,
     ) -> None:
         if not isinstance(layout, GptOssHybridCacheLayout) or not isinstance(
             disable_kv_scatter, bool
         ):
             _fail(TransferRuntimeErrorCode.INVALID_METADATA)
+        if selective_config is not None and not isinstance(
+            selective_config, TransferSelectiveConfig
+        ):
+            _fail(TransferRuntimeErrorCode.INVALID_METADATA)
+        if selective_config is not None and disable_kv_scatter:
+            _fail(TransferRuntimeErrorCode.INVALID_METADATA)
         self._layout = layout
         self._storage = storage
         self._data_plane = data_plane
         self._disable_kv_scatter = disable_kv_scatter
+        self._selective_config = selective_config
 
     def before_forward(
         self,
@@ -660,6 +699,17 @@ class TransferRuntime:
                 loaded_kv_tokens=0,
                 tokens_to_recompute=metadata.prompt_token_count,
             )
+
+        selective_plan: ForwardRowPlan | None = None
+        if self._selective_config is not None:
+            try:
+                selective_plan = self._build_selective_row_plan(metadata)
+            except SelectionPolicyError:
+                return self._load_fallback(
+                    metadata,
+                    all_indexes,
+                    TransferFallbackCode.LOAD_PLAN_REJECTED,
+                )
 
         try:
             self._storage.preflight_retrieve(plan)
@@ -716,6 +766,13 @@ class TransferRuntime:
             loaded_kv_tokens=plan.expected_tokens,
             tokens_to_recompute=metadata.prompt_token_count,
             position_correction_latency_seconds=self._read_position_correction_latency(),
+            row_plan=selective_plan,
+            layer_token_rows_recomputed=(
+                0 if selective_plan is None else selective_plan.recompute_tokens
+            ),
+            layer_token_rows_avoided=(
+                0 if selective_plan is None else selective_plan.cached_tokens
+            ),
         )
 
     def mark_full_prefill_complete(
@@ -861,6 +918,41 @@ class TransferRuntime:
             for index, verified in enumerate(metadata.verified_candidates)
         )
         return WorkerLoadPlan(metadata, adapted_blocks, candidates)
+
+    def _build_selective_row_plan(
+        self, metadata: SchedulerTransferMetadata
+    ) -> ForwardRowPlan:
+        """Build the first explicit selective plan from verified candidates.
+
+        The check-layer score producer is deliberately not guessed here.  The
+        first execution arm uses all-zero scores, so ties are resolved by
+        prompt position and the configured ratio/suffix are visible in the
+        evidence.  This is useful for proving row-skipping mechanics, not for
+        claiming CacheBlend quality; the GPU gate must replace this with
+        measured check-layer importance scores before production use.
+        """
+
+        config = self._selective_config
+        if config is None:
+            _fail(TransferRuntimeErrorCode.INVALID_METADATA)
+        cache_ranges = tuple(
+            sorted(
+                (
+                    verified.candidate.target_range
+                    for verified in metadata.verified_candidates
+                ),
+                key=lambda token_range: (token_range.start, token_range.end),
+            )
+        )
+        result = CacheBlendSelectionPolicy().select(
+            prompt_tokens=metadata.prompt_token_count,
+            cache_ranges=cache_ranges,
+            importance_scores=(0.0,) * metadata.prompt_token_count,
+            check_layer=config.check_layer,
+            recompute_ratio=config.recompute_ratio,
+            suffix_tokens=config.suffix_tokens,
+        )
+        return result.row_plan
 
     def _build_store_plan(
         self,

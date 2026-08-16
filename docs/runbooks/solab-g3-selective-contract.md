@@ -1,9 +1,10 @@
 # solab-g3 selective backend contract gate
 
-This runbook checks the exact vLLM 0.19.1 Triton boundary that a future M6
-selective backend must replace. It does not load GPT-OSS weights, register an
-unimplemented model override, or claim selective execution. A local skip is not
-a pass; only output returned from `solab-g3` is evidence.
+This runbook checks the exact vLLM 0.19.1 Triton boundary and the first live
+GPT-OSS selective execution seam. The structural test is still only an API
+contract; the live smoke below loads GPT-OSS weights and must run on
+`solab-g3`. A local skip is not a pass; only output returned from `solab-g3`
+is evidence.
 
 The test is grounded in the pinned source:
 
@@ -100,10 +101,9 @@ starts `openai/gpt-oss-20b` with `--attention-backend CUSTOM`, and prints
 sink/backend shape, and the pinned runtime only; it is not the selective speed
 test.
 
-The later selective M6 command must add the evidence-gated model override and
-`transfer_selective` connector mode before it can reuse this launch shape. Do
-not infer that command from a moving vLLM release or an unpublished CacheBlend
-image.
+The live selective smoke uses the same pinned launch shape with the explicit
+`transfer_selective` connector mode and model opt-in. Do not infer that command
+from a moving vLLM release or an unpublished CacheBlend image.
 
 The full-plan model-wrapper control can be enabled for a separate short
 forward test by exporting this flag before running the helper:
@@ -115,6 +115,38 @@ bash /mnt/nvme3n1/mlee/cacheblend-gpt-oss/local-m6-custom-backend-control.sh
 
 This remains a 100%-recompute control and must not be reported as selective
 speedup evidence.
+
+## M7 first live selective mechanics smoke
+
+After pulling the branch, run this exact helper on `solab-g3`:
+
+```bash
+cd /mnt/nvme3n1/mlee/cacheblend-gpt-oss
+bash ./local-m7-selective-smoke-g3.sh
+```
+
+The helper creates a fresh directory under
+`/mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/`, starts LMCache on `127.0.0.1:5556`,
+starts the pinned GPT-OSS server on port `8000` with
+`CACHEBLEND_ENABLE_CUSTOM_BACKEND=1` and `CACHEBLEND_ENABLE_CUSTOM_MODEL=1`,
+then runs the synthetic moved-document request. It leaves the server running
+after the smoke so the same process can be used for the next targeted test.
+
+The required output is:
+
+- `VLLM_READY=yes`;
+- `SELECTIVE_CAPTURE_STATUS=0`;
+- `connector.kv_tokens_loaded` equal to the reusable moved-document tokens;
+- `selective_work.layer_token_rows_avoided` greater than zero; and
+- `selective_work.layer_token_rows_recomputed + layer_token_rows_avoided`
+  equal to `24 * target_prompt_tokens`.
+
+This smoke deliberately does **not** pass a 100%-overwrite transfer-evidence
+path: cached rows are supposed to remain untouched in selective mode. It proves
+row-plan propagation and bounded work accounting only; it is not yet a
+numerical-equivalence or BrowseComp speed claim. The output artifact is
+`cacheblend-selective.json` in the printed run directory, and the raw metrics
+are in `selective-metrics.prom`.
 
 ## Stop/go
 

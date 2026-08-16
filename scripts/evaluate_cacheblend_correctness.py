@@ -19,8 +19,10 @@ ensure_source_path()
 from cacheblend_gpt_oss.correctness import (  # noqa: E402
     CorrectnessArtifact,
     CorrectnessCase,
+    CorrectnessRunMode,
     artifact_digest,
     evaluate_cacheblend_100pct,
+    evaluate_cacheblend_selective,
     read_artifact,
     read_frozen_tolerance,
     read_transfer_evidence,
@@ -56,6 +58,18 @@ def main() -> int:
     parser.add_argument("--cacheblend", type=Path, required=True)
     parser.add_argument("--tolerance", type=Path, required=True)
     parser.add_argument(
+        "--mode",
+        choices=(
+            CorrectnessRunMode.CACHEBLEND_100PCT.value,
+            CorrectnessRunMode.CACHEBLEND_SELECTIVE.value,
+        ),
+        default=CorrectnessRunMode.CACHEBLEND_100PCT.value,
+        help=(
+            "candidate artifact mode; selective mode does not require "
+            "overwrite evidence"
+        ),
+    )
+    parser.add_argument(
         "--transfer-evidence",
         type=Path,
         help="all-layer transfer sidecar bound into the verdict",
@@ -80,25 +94,35 @@ def main() -> int:
 
     reference = read_artifact(args.reference)
     cacheblend = read_artifact(args.cacheblend)
+    candidate_mode = CorrectnessRunMode(args.mode)
+    if cacheblend.run_mode is not candidate_mode:
+        raise ValueError("candidate artifact mode does not match --mode")
     transfer = None
     if args.transfer_evidence is not None:
+        if candidate_mode is CorrectnessRunMode.CACHEBLEND_SELECTIVE:
+            raise ValueError(
+                "selective candidate uses row-work evidence, not 100% "
+                "overwrite evidence"
+            )
         transfer = read_transfer_evidence(args.transfer_evidence)
         validate_transfer_evidence_binding(cacheblend, transfer)
-    else:
+    elif candidate_mode is CorrectnessRunMode.CACHEBLEND_100PCT:
         try:
             _validate_no_transfer_cache_miss(cacheblend)
         except ValueError as exc:
             parser.error(str(exc))
-    verdict = evaluate_cacheblend_100pct(
-        reference,
-        cacheblend,
-        read_frozen_tolerance(args.tolerance),
+    tolerance = read_frozen_tolerance(args.tolerance)
+    verdict = (
+        evaluate_cacheblend_selective(reference, cacheblend, tolerance)
+        if candidate_mode is CorrectnessRunMode.CACHEBLEND_SELECTIVE
+        else evaluate_cacheblend_100pct(reference, cacheblend, tolerance)
     )
     comparison = verdict.comparison
     report = {
         "schema_version": 1,
         "reference_artifact_digest": artifact_digest(reference),
         "cacheblend_artifact_digest": artifact_digest(cacheblend),
+        "candidate_mode": candidate_mode.value,
         "passed": verdict.passed,
         "failure_reasons": list(verdict.failure_reasons),
         "max_abs_logprob_error": _number(comparison.max_abs_error),

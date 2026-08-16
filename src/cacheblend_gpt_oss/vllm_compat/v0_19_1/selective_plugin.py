@@ -2,10 +2,10 @@
 """Explicit opt-in vLLM general-plugin hook for the matched CUSTOM backend.
 
 The plugin always registers the matched CUSTOM backend when explicitly enabled.
-It optionally registers the full-plan GPT-OSS model wrapper when
-``CACHEBLEND_ENABLE_CUSTOM_MODEL=1``.  That wrapper still recomputes every row;
-neither option activates selective recomputation or the connector
-``transfer_selective`` mode.
+It optionally registers the GPT-OSS model wrapper when
+``CACHEBLEND_ENABLE_CUSTOM_MODEL=1``.  The wrapper preserves full recompute
+for ``transfer_100pct`` and activates row-selective MLP work only when the
+connector has installed an explicit ``transfer_selective`` plan.
 """
 
 from __future__ import annotations

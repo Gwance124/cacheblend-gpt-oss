@@ -24,6 +24,7 @@ from cacheblend_gpt_oss.vllm_compat.v0_19_1.transfer_config import (
     TransferConfigError,
     TransferConfigErrorCode,
     TransferFailurePolicy,
+    TransferSelectiveConfig,
     parse_connector_extra_config,
 )
 
@@ -131,6 +132,64 @@ def test_valid_transfer_config_is_frozen_and_builds_pinned_namespace() -> None:
     assert namespace.cuda_runtime == PINNED_TARGET.cuda_runtime
     with pytest.raises(FrozenInstanceError):
         parsed.staging_token_capacity = 2048  # type: ignore[misc]
+
+
+def test_valid_selective_config_is_explicit_and_strict() -> None:
+    raw = _valid_config()
+    raw.update(
+        {
+            "mode": "transfer_selective",
+            "check_layer": 1,
+            "recompute_ratio": 0.15,
+            "suffix_tokens": 32,
+        }
+    )
+    parsed = parse_connector_extra_config(raw)
+
+    assert isinstance(parsed, TransferSelectiveConfig)
+    assert parsed.mode is ConnectorTransferMode.TRANSFER_SELECTIVE
+    assert parsed.check_layer == 1
+    assert parsed.recompute_ratio == pytest.approx(0.15)
+    assert parsed.suffix_tokens == 32
+
+    for key, values, code in (
+        (
+            "check_layer",
+            (-1, 24, True, "1"),
+            TransferConfigErrorCode.INVALID_SELECTIVE_CHECK_LAYER,
+        ),
+        (
+            "recompute_ratio",
+            (-0.1, 1.1, float("nan"), True, "0.15"),
+            TransferConfigErrorCode.INVALID_SELECTIVE_RECOMPUTE_RATIO,
+        ),
+        (
+            "suffix_tokens",
+            (-1, 131_073, True, "32"),
+            TransferConfigErrorCode.INVALID_SELECTIVE_SUFFIX_TOKENS,
+        ),
+    ):
+        for value in values:
+            rejected = dict(raw)
+            rejected[key] = value
+            _assert_error(
+                code,
+                lambda rejected=rejected: parse_connector_extra_config(rejected),
+            )
+
+    rejected = dict(raw)
+    rejected["disable_kv_scatter"] = True
+    _assert_error(
+        TransferConfigErrorCode.INVALID_SELECTIVE_SCATTER,
+        lambda: parse_connector_extra_config(rejected),
+    )
+
+    missing = dict(raw)
+    del missing["suffix_tokens"]
+    _assert_error(
+        TransferConfigErrorCode.MISSING_TRANSFER_KEYS,
+        lambda: parse_connector_extra_config(missing),
+    )
 
 
 def test_transfer_evidence_path_is_optional_absolute_and_separate() -> None:

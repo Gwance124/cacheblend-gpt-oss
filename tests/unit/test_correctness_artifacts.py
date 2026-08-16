@@ -29,11 +29,13 @@ from cacheblend_gpt_oss.correctness import (
     connector_store_counter_delta,
     digest_token_ids,
     evaluate_cacheblend_100pct,
+    evaluate_cacheblend_selective,
     freeze_full_prefill_tolerance,
     has_connector_metric_surface,
     parse_completion_distribution,
     parse_connector_counter_snapshot,
     parse_connector_store_counter_snapshot,
+    parse_selective_work_counter_snapshot,
     read_artifact,
     read_frozen_tolerance,
     tolerance_from_dict,
@@ -102,6 +104,42 @@ def _cacheblend(
             prefill_tokens_avoided=0,
         ),
     )
+
+
+def _selective_cacheblend(
+    *, distribution: FullVocabularyLogprobs | None = None
+) -> CorrectnessArtifact:
+    prompt = build_moved_document_fixture().prompt_identity
+    return CorrectnessArtifact(
+        schema_version=ARTIFACT_SCHEMA_VERSION,
+        run_mode=CorrectnessRunMode.CACHEBLEND_SELECTIVE,
+        runtime=_runtime(),
+        prompt=prompt,
+        distribution=distribution or _distribution(),
+        connector=ConnectorCorrectnessEvidence(
+            reusable_document_tokens_requested=prompt.target_prompt_tokens,
+            kv_tokens_found=256,
+            kv_tokens_loaded=256,
+            kv_tokens_rejected=0,
+            tokens_recomputed=prompt.target_prompt_tokens,
+            prefill_tokens_avoided=0,
+        ),
+    )
+
+
+def test_selective_artifact_has_a_distinct_mode_and_evaluator() -> None:
+    reference = _baseline()
+    candidate = _selective_cacheblend()
+    tolerance = freeze_full_prefill_tolerance(
+        reference,
+        _baseline(),
+        max_abs_floor=0.0,
+        mean_abs_floor=0.0,
+    )
+
+    assert artifact_to_dict(candidate)["run_mode"] == "cacheblend_selective"
+    verdict = evaluate_cacheblend_selective(reference, candidate, tolerance)
+    assert verdict.passed is True
 
 
 def test_moved_document_fixture_is_exact_non_block_aligned_reuse() -> None:
@@ -496,3 +534,19 @@ vllm:cacheblend_store_fallbacks_total{engine="0"} 1
 
     with pytest.raises(ValueError, match="store counter"):
         connector_store_counter_delta(after, before)
+
+
+def test_selective_row_work_counters_are_optional_and_identifier_free() -> None:
+    assert parse_selective_work_counter_snapshot("") == {
+        "layer_token_rows_recomputed": 0,
+        "layer_token_rows_avoided": 0,
+    }
+    assert parse_selective_work_counter_snapshot(
+        """
+vllm:cacheblend_layer_token_rows_recomputed_total{engine="0"} 8768
+vllm:cacheblend_layer_token_rows_avoided_total{engine="0"} 5632
+"""
+    ) == {
+        "layer_token_rows_recomputed": 8768,
+        "layer_token_rows_avoided": 5632,
+    }

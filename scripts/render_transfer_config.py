@@ -25,6 +25,11 @@ from cacheblend_gpt_oss.vllm_compat.v0_19_1.transfer_config import (  # noqa: E4
 
 def main() -> int:
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--mode",
+        choices=("transfer_100pct", "transfer_selective"),
+        default="transfer_100pct",
+    )
     parser.add_argument("--lmcache-server-url", default="tcp://127.0.0.1:5555")
     parser.add_argument("--sidecar-path", type=Path, required=True)
     parser.add_argument("--model-revision", required=True)
@@ -35,6 +40,9 @@ def main() -> int:
     parser.add_argument("--staging-token-capacity", type=int, default=512)
     parser.add_argument("--request-timeout-seconds", type=float, default=120.0)
     parser.add_argument("--transfer-evidence-path", type=Path)
+    parser.add_argument("--check-layer", type=int, default=1)
+    parser.add_argument("--recompute-ratio", type=float, default=0.15)
+    parser.add_argument("--suffix-tokens", type=int, default=32)
     parser.add_argument(
         "--disable-kv-scatter",
         action="store_true",
@@ -47,7 +55,7 @@ def main() -> int:
     args = parser.parse_args()
 
     extra = {
-        "mode": "transfer_100pct",
+        "mode": args.mode,
         "lmcache_server_url": args.lmcache_server_url,
         "sidecar_path": str(args.sidecar_path),
         "lmcache_server_attestation": {
@@ -65,6 +73,14 @@ def main() -> int:
         "request_timeout_seconds": args.request_timeout_seconds,
         "transfer_failure_policy": "full_prefill",
     }
+    if args.mode == "transfer_selective":
+        extra.update(
+            {
+                "check_layer": args.check_layer,
+                "recompute_ratio": args.recompute_ratio,
+                "suffix_tokens": args.suffix_tokens,
+            }
+        )
     if args.transfer_evidence_path is not None:
         extra["transfer_evidence_path"] = str(args.transfer_evidence_path)
     if args.disable_kv_scatter:

@@ -78,6 +78,18 @@ def test_context_is_bounded_and_clears_after_forward() -> None:
     assert ForwardRowPlanContext.current_or_none() is None
 
 
+def test_context_supports_connector_lifetime_install_and_reset() -> None:
+    plan = ForwardRowPlan.full_recompute(3)
+    token = ForwardRowPlanContext.install(plan)
+    assert ForwardRowPlanContext.current() is plan
+    ForwardRowPlanContext.reset(token)
+    assert ForwardRowPlanContext.current_or_none() is None
+
+    with pytest.raises(SelectivePlanError) as cleared:
+        ForwardRowPlanContext.reset(token)
+    assert cleared.value.code is SelectivePlanErrorCode.MISSING_CONTEXT
+
+
 def test_recompute_positions_follow_canonical_ranges() -> None:
     plan = ForwardRowPlan.from_recompute_ranges(
         8,

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Strict connector-extra configuration for the 100%-recompute milestone.
+"""Strict connector-extra configuration for the pinned transfer modes.
 
 The version connector receives this value from vLLM 0.19.1's
 ``KVTransferConfig.kv_connector_extra_config``:
@@ -68,6 +68,9 @@ _TRANSFER_KEYS = frozenset(
 _TRANSFER_OPTIONAL_KEYS = frozenset(
     {"transfer_evidence_path", "disable_kv_scatter"}
 )
+_SELECTIVE_KEYS = frozenset(
+    {"check_layer", "recompute_ratio", "suffix_tokens"}
+)
 _ATTESTATION_KEYS = frozenset(
     {
         "lmcache_version",
@@ -84,6 +87,7 @@ class ConnectorTransferMode(str, Enum):
     CONTROL_FLOW = "control_flow"
     COMPATIBILITY_PROBE = "compatibility_probe"
     TRANSFER_100PCT = "transfer_100pct"
+    TRANSFER_SELECTIVE = "transfer_selective"
 
 
 class TransferFailurePolicy(str, Enum):
@@ -113,6 +117,10 @@ class TransferConfigErrorCode(str, Enum):
     INVALID_REQUEST_TIMEOUT = "invalid_request_timeout"
     INVALID_TRANSFER_FAILURE_POLICY = "invalid_transfer_failure_policy"
     INVALID_DISABLE_KV_SCATTER = "invalid_disable_kv_scatter"
+    INVALID_SELECTIVE_CHECK_LAYER = "invalid_selective_check_layer"
+    INVALID_SELECTIVE_RECOMPUTE_RATIO = "invalid_selective_recompute_ratio"
+    INVALID_SELECTIVE_SUFFIX_TOKENS = "invalid_selective_suffix_tokens"
+    INVALID_SELECTIVE_SCATTER = "invalid_selective_scatter"
 
 
 class TransferConfigError(ValueError):
@@ -223,6 +231,35 @@ def _require_transfer_evidence_path(value: object) -> str:
 def _require_disable_kv_scatter(value: object) -> bool:
     if not isinstance(value, bool):
         _fail(TransferConfigErrorCode.INVALID_DISABLE_KV_SCATTER)
+    return value
+
+
+def _require_selective_check_layer(value: object) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not 0 <= value < 24
+    ):
+        _fail(TransferConfigErrorCode.INVALID_SELECTIVE_CHECK_LAYER)
+    return value
+
+
+def _require_selective_recompute_ratio(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        _fail(TransferConfigErrorCode.INVALID_SELECTIVE_RECOMPUTE_RATIO)
+    ratio = float(value)
+    if not math.isfinite(ratio) or not 0.0 <= ratio <= 1.0:
+        _fail(TransferConfigErrorCode.INVALID_SELECTIVE_RECOMPUTE_RATIO)
+    return ratio
+
+
+def _require_selective_suffix_tokens(value: object) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not 0 <= value <= 131_072
+    ):
+        _fail(TransferConfigErrorCode.INVALID_SELECTIVE_SUFFIX_TOKENS)
     return value
 
 
@@ -368,8 +405,40 @@ class Transfer100PctConfig:
         return True
 
 
+@dataclass(frozen=True, slots=True)
+class TransferSelectiveConfig(Transfer100PctConfig):
+    """Validated opt-in selective row execution configuration.
+
+    This is a real execution mode, but it is intentionally separate from the
+    validated ``transfer_100pct`` milestone.  The current first selective arm
+    uses deterministic zero check-layer scores until a GPU importance-score
+    producer is wired in; every run must therefore be compared with the
+    full-prefill and transfer controls before any quality claim is made.
+    """
+
+    check_layer: int = 1
+    recompute_ratio: float = 0.15
+    suffix_tokens: int = 32
+    mode: ConnectorTransferMode = field(
+        default=ConnectorTransferMode.TRANSFER_SELECTIVE,
+        init=False,
+    )
+
+    def __post_init__(self) -> None:
+        Transfer100PctConfig.__post_init__(self)
+        _require_selective_check_layer(self.check_layer)
+        ratio = _require_selective_recompute_ratio(self.recompute_ratio)
+        _require_selective_suffix_tokens(self.suffix_tokens)
+        if self.disable_kv_scatter:
+            _fail(TransferConfigErrorCode.INVALID_SELECTIVE_SCATTER)
+        object.__setattr__(self, "recompute_ratio", ratio)
+
+
 ConnectorTransferConfig = (
-    ControlFlowTransferConfig | CompatibilityProbeConfig | Transfer100PctConfig
+    ControlFlowTransferConfig
+    | CompatibilityProbeConfig
+    | Transfer100PctConfig
+    | TransferSelectiveConfig
 )
 
 
@@ -420,20 +489,44 @@ def parse_connector_extra_config(
             missing_code=TransferConfigErrorCode.MODE_MISSING,
         )
         return CompatibilityProbeConfig()
-    if mode != ConnectorTransferMode.TRANSFER_100PCT.value:
+    if mode not in (
+        ConnectorTransferMode.TRANSFER_100PCT.value,
+        ConnectorTransferMode.TRANSFER_SELECTIVE.value,
+    ):
         _fail(TransferConfigErrorCode.MODE_UNSUPPORTED)
 
     actual_keys = set(extra_config)
+    allowed_keys = _TRANSFER_KEYS | _TRANSFER_OPTIONAL_KEYS
+    if mode == ConnectorTransferMode.TRANSFER_SELECTIVE.value:
+        allowed_keys |= _SELECTIVE_KEYS
     if any(not isinstance(key, str) for key in extra_config) or (
-        actual_keys - (_TRANSFER_KEYS | _TRANSFER_OPTIONAL_KEYS)
+        actual_keys - allowed_keys
     ):
         _fail(TransferConfigErrorCode.UNKNOWN_TOP_LEVEL_KEYS)
     if _TRANSFER_KEYS - actual_keys:
         _fail(TransferConfigErrorCode.MISSING_TRANSFER_KEYS)
+    if mode == ConnectorTransferMode.TRANSFER_SELECTIVE.value and (
+        _SELECTIVE_KEYS - actual_keys
+    ):
+        _fail(TransferConfigErrorCode.MISSING_TRANSFER_KEYS)
     failure_policy = extra_config["transfer_failure_policy"]
     if failure_policy != TransferFailurePolicy.FULL_PREFILL.value:
         _fail(TransferConfigErrorCode.INVALID_TRANSFER_FAILURE_POLICY)
-    return Transfer100PctConfig(
+    config_type = (
+        TransferSelectiveConfig
+        if mode == ConnectorTransferMode.TRANSFER_SELECTIVE.value
+        else Transfer100PctConfig
+    )
+    selective_kwargs = (
+        {
+            "check_layer": extra_config["check_layer"],
+            "recompute_ratio": extra_config["recompute_ratio"],
+            "suffix_tokens": extra_config["suffix_tokens"],
+        }
+        if config_type is TransferSelectiveConfig
+        else {}
+    )
+    return config_type(
         lmcache_server_url=extra_config["lmcache_server_url"],
         sidecar_path=extra_config["sidecar_path"],
         lmcache_server_attestation=_parse_attestation(
@@ -449,6 +542,7 @@ def parse_connector_extra_config(
         transfer_failure_policy=TransferFailurePolicy.FULL_PREFILL,
         transfer_evidence_path=extra_config.get("transfer_evidence_path"),
         disable_kv_scatter=extra_config.get("disable_kv_scatter", False),
+        **selective_kwargs,
     )
 
 
@@ -471,5 +565,6 @@ __all__ = [
     "TransferConfigError",
     "TransferConfigErrorCode",
     "TransferFailurePolicy",
+    "TransferSelectiveConfig",
     "parse_connector_extra_config",
 ]

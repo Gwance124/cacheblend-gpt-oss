@@ -13,10 +13,11 @@ Reference snapshot (conceptual behavior only), pinned by this repository:
 * https://github.com/YaoJiayi/CacheBlend/blob/55ad02675939f783a38d579393527d218a7fd581/vllm_blend/vllm/model_executor/models/llama.py#L300-L365
 * https://github.com/YaoJiayi/CacheBlend/blob/55ad02675939f783a38d579393527d218a7fd581/vllm_blend/vllm/attention/backends/xformers.py#L220-L305
 
-The current connector never consumes this policy.  It is deliberately
-fail-closed and records an immutable :class:`ForwardRowPlan` so a future
-GPT-OSS model/backend can compare each ratio against full prefill before any
-selective ratio is enabled in production.
+The current selective connector consumes this policy for the first mechanics
+arm.  It deliberately supplies zero importance scores until a measured
+check-layer score producer is wired in, and records an immutable
+:class:`ForwardRowPlan` so each ratio can be compared against full prefill
+before any selective ratio is enabled for BrowseComp.
 """
 
 from __future__ import annotations

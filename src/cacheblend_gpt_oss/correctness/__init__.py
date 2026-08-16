@@ -17,6 +17,7 @@ from cacheblend_gpt_oss.correctness.capture import (
     parse_completion_distribution,
     parse_connector_counter_snapshot,
     parse_connector_store_counter_snapshot,
+    parse_selective_work_counter_snapshot,
     parse_vllm_prefill_work_snapshot,
     parse_vllm_prompt_counter_snapshot,
     parse_vllm_prompt_source_snapshot,
@@ -54,6 +55,7 @@ from cacheblend_gpt_oss.correctness.evaluate import (
     FrozenFullPrefillTolerance,
     compare_distributions,
     evaluate_cacheblend_100pct,
+    evaluate_cacheblend_selective,
     freeze_full_prefill_tolerance,
 )
 from cacheblend_gpt_oss.correctness.fixture import (
@@ -226,6 +228,7 @@ __all__ = [
     "digest_token_ids",
     "evaluate_cacheblend_100pct",
     "evaluate_cacheblend_100pct_ensemble",
+    "evaluate_cacheblend_selective",
     "evaluate_probability_candidate",
     "freeze_full_prefill_tolerance",
     "has_connector_metric_surface",
@@ -239,6 +242,7 @@ __all__ = [
     "parse_completion_distribution",
     "parse_connector_counter_snapshot",
     "parse_connector_store_counter_snapshot",
+    "parse_selective_work_counter_snapshot",
     "parse_vllm_prefill_work_snapshot",
     "parse_vllm_prompt_counter_snapshot",
     "parse_vllm_prompt_source_snapshot",

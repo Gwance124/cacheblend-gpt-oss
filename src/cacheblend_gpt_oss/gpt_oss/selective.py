@@ -2,9 +2,9 @@
 """CPU-only row-plan contract for the future GPT-OSS selective data plane.
 
 This module deliberately does not import vLLM, Torch, CUDA, or model code.  It
-describes the full-shaped row invariant that a future M6 model override and
-attention backend must preserve.  The current connector does not consume this
-context and continues to recompute every prompt token.
+describes the full-shaped row invariant that the GPT-OSS model override and
+attention backend preserve.  The connector may install one plan around a
+single worker forward; CPU tests can still use the scoped ``bind`` helper.
 
 The contract is specific to the audited GPT-OSS-20B target: 24 transformer
 layers and a 131,072-token context.  A row plan is not evidence that selective
@@ -272,17 +272,38 @@ class ForwardRowPlanContext:
     """Worker-local, lifetime-bounded plan binding for one forward pass."""
 
     @staticmethod
-    @contextmanager
-    def bind(plan: ForwardRowPlan) -> Iterator[ForwardRowPlan]:
+    def install(plan: ForwardRowPlan) -> object:
+        """Install a plan before vLLM enters the model forward.
+
+        The V1 connector's ``start_load_kv`` and ``wait_for_save`` hooks are
+        separate callbacks, so a normal ``with`` block cannot span the model
+        runner call.  The opaque token is intentionally returned to the
+        connector and must be passed to :meth:`reset` exactly once.
+        """
+
         if not isinstance(plan, ForwardRowPlan):
             _fail(SelectivePlanErrorCode.INVALID_LAYER_COUNT)
         if _ACTIVE_PLAN.get() is not None:
             _fail(SelectivePlanErrorCode.ACTIVE_CONTEXT)
-        token = _ACTIVE_PLAN.set(plan)
+        return _ACTIVE_PLAN.set(plan)
+
+    @staticmethod
+    def reset(token: object) -> None:
+        """Clear a plan installed by :meth:`install`."""
+
+        try:
+            _ACTIVE_PLAN.reset(token)  # type: ignore[arg-type]
+        except (RuntimeError, TypeError, ValueError) as error:
+            raise SelectivePlanError(SelectivePlanErrorCode.MISSING_CONTEXT) from error
+
+    @staticmethod
+    @contextmanager
+    def bind(plan: ForwardRowPlan) -> Iterator[ForwardRowPlan]:
+        token = ForwardRowPlanContext.install(plan)
         try:
             yield plan
         finally:
-            _ACTIVE_PLAN.reset(token)
+            ForwardRowPlanContext.reset(token)
 
     @staticmethod
     def current() -> ForwardRowPlan:

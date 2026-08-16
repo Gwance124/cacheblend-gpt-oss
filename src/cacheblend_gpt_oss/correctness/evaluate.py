@@ -190,11 +190,43 @@ def evaluate_cacheblend_100pct(
     )
 
 
+def evaluate_cacheblend_selective(
+    reference: CorrectnessArtifact,
+    cacheblend: CorrectnessArtifact,
+    tolerance: FrozenFullPrefillTolerance,
+) -> CacheBlendCorrectnessVerdict:
+    """Compare a selective smoke artifact without claiming 100% overwrite."""
+
+    if reference.run_mode is not CorrectnessRunMode.FULL_PREFILL:
+        raise ValueError("reference must be a full-prefill artifact")
+    if cacheblend.run_mode is not CorrectnessRunMode.CACHEBLEND_SELECTIVE:
+        raise ValueError("candidate must be a CacheBlend selective artifact")
+    _require_same_case(reference, cacheblend)
+    if artifact_digest(reference) != tolerance.reference_artifact_digest:
+        raise ValueError("frozen tolerance belongs to another reference artifact")
+    comparison = compare_distributions(reference.distribution, cacheblend.distribution)
+    reasons: list[str] = []
+    if not comparison.sampled_token_agreement:
+        reasons.append("sampled_token_mismatch")
+    if not comparison.top_token_agreement:
+        reasons.append("top_token_mismatch")
+    if comparison.max_abs_error > tolerance.allowed_max_abs_error:
+        reasons.append("max_abs_error_exceeded")
+    if comparison.mean_abs_error > tolerance.allowed_mean_abs_error:
+        reasons.append("mean_abs_error_exceeded")
+    return CacheBlendCorrectnessVerdict(
+        comparison=comparison,
+        passed=not reasons,
+        failure_reasons=tuple(reasons),
+    )
+
+
 __all__ = [
     "CacheBlendCorrectnessVerdict",
     "DistributionComparison",
     "FrozenFullPrefillTolerance",
     "compare_distributions",
     "evaluate_cacheblend_100pct",
+    "evaluate_cacheblend_selective",
     "freeze_full_prefill_tolerance",
 ]

@@ -40,6 +40,14 @@ from cacheblend_gpt_oss.storage.lmcache_types import (
     query_digest,
 )
 from cacheblend_gpt_oss.vllm_compat.v0_19_1.adapters import AdaptedKvCacheBlocks
+from cacheblend_gpt_oss.vllm_compat.v0_19_1.transfer_config import (
+    LMCACHE_BLEND_PROTOCOL,
+    LMCACHE_HASH_ALGORITHM,
+    LMCACHE_SOURCE_COMMIT,
+    PinnedLmcacheServerAttestation,
+    TransferFailurePolicy,
+    TransferSelectiveConfig,
+)
 from cacheblend_gpt_oss.vllm_compat.v0_19_1.transfer_runtime import (
     FullPrefillCompletion,
     PreForwardOutcome,
@@ -328,6 +336,30 @@ def _runtime(
     )
 
 
+def _selective_config() -> TransferSelectiveConfig:
+    return TransferSelectiveConfig(
+        lmcache_server_url="tcp://127.0.0.1:5555",
+        sidecar_path="/var/lib/cacheblend/sidecar.sqlite3",
+        lmcache_server_attestation=PinnedLmcacheServerAttestation(
+            lmcache_version="0.4.3",
+            source_commit=LMCACHE_SOURCE_COMMIT,
+            protocol=LMCACHE_BLEND_PROTOCOL,
+            hash_algorithm=LMCACHE_HASH_ALGORITHM,
+        ),
+        model_revision="model-revision",
+        tokenizer_revision="tokenizer-revision",
+        model_config_digest="1" * 64,
+        kv_cache_config_digest="2" * 64,
+        adapter_revision="adapter-revision",
+        staging_token_capacity=512,
+        request_timeout_seconds=7.5,
+        transfer_failure_policy=TransferFailurePolicy.FULL_PREFILL,
+        check_layer=1,
+        recompute_ratio=0.0,
+        suffix_tokens=32,
+    )
+
+
 def _assert_runtime_error(
     code: TransferRuntimeErrorCode, operation: Callable[[], object]
 ) -> None:
@@ -384,6 +416,31 @@ def test_moved_candidate_loads_then_full_prompt_recomputes_and_stores_chunks() -
         "storage.publish_sidecar_records_atomically",
     ]
     assert mutations[-3:] == ["gather", "store", "publish:2"]
+
+
+def test_selective_transfer_emits_partial_full_shaped_row_plan() -> None:
+    metadata, blocks = _metadata()
+    runtime, _storage, _data_plane, _calls, _mutations = _runtime()
+    runtime = TransferRuntime(
+        _layout(),
+        _storage,
+        _data_plane,
+        selective_config=_selective_config(),
+    )
+
+    outcome = runtime.before_forward(metadata, blocks)
+
+    assert outcome.state is TransferAttemptState.SUCCEEDED
+    assert outcome.row_plan is not None
+    assert outcome.row_plan.layer(0).is_full_recompute
+    assert outcome.row_plan.layer(1).is_full_recompute
+    assert outcome.row_plan.layer(2).recompute_tokens == 344
+    assert outcome.layer_token_rows_recomputed == 8_768
+    assert outcome.layer_token_rows_avoided == 5_632
+    assert (
+        outcome.layer_token_rows_recomputed + outcome.layer_token_rows_avoided
+        == 24 * metadata.prompt_token_count
+    )
 
 
 def test_disabled_scatter_runs_worker_scatter_but_reports_fallback_zero_loaded() -> (

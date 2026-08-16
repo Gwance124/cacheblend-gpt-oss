@@ -1,8 +1,9 @@
 # Selective-recompute feasibility arm roadmap (append-only dev-100)
 
 > Status: **implementation in progress.** M3's connector-inclusive probability-v2 gate is
-> green on solab-g3; C0 is CPU-complete; the first dormant pinned CUSTOM backend seam is now
-> implemented. Staged roadmap, authored 2026-08-14, revised 2026-08-15 after the g3 gate.
+> green on solab-g3; C0 is CPU-complete; the pinned CUSTOM backend, model wrapper, and
+> explicit `transfer_selective` row-plan path are implemented, with GPU verification next.
+> Staged roadmap, authored 2026-08-14, revised 2026-08-15 after the g3 gate.
 > It records decisions and the milestone dependency
 > chain; it does not itself change code. All GPU/RAG steps run on `solab-g3` / `solab-p7`;
 > the authoring workstation is CPU-only. See
@@ -35,7 +36,8 @@ accuracy/recall tracked on p7.**
    processed. A vLLM patch for non-prefix work accounting is an explicit **M6-gated** option.
 4. **Selective policy gap closed on CPU:** `check_layer` now forces full recomputation through
    the check-layer prefix and applies selective ranges only to later layers. The plan reports
-   layer-token work; it is still not wired to a live vLLM model override.
+   layer-token work; the initial live model override now consumes that plan under
+   the explicit selective opt-in.
 5. **Matched-backend control arm added** (CUSTOM backend at 100% recompute, no scatter).
 6. **Calibration hygiene added:** a predeclared calibration set picks and freezes the recompute
    ratio; dev-100 is never used to choose it.
@@ -47,28 +49,27 @@ M3 numerical equivalence (PASS, connector-inclusive v2 envelope)  ──►  M4 
         │                                          │
         │                          selective policy check-layer fix (CPU, prerequisite)
         │                                          │
-        └──────────────────────────────►  M6 selective backend (UNBUILT)
+        └──────────────────────────────►  M6 selective backend (implemented; GPU pending)
                                                    │
                                           M7 recompute-ratio sweep + calibration freeze
                                                    │
               matched-backend + one-query gates  ──►  dev-100 arm  ──►  accuracy/recall on p7
 ```
 
-M3 is now green under the connector-inclusive v2 policy. The immediate next work is the
-matched CUSTOM backend control, followed by the model override and selective connector mode.
+M3 is now green under the connector-inclusive v2 policy. The matched CUSTOM backend control
+and selective serving seams are implemented. The immediate next work is one synthetic g3
+selective smoke/correctness run, followed by the ratio sweep and matched BrowseComp gates.
 
 ## Why this is a roadmap, not a one-shot change
 
-The repo today runs a deliberately *dormant* CacheBlend: it transfers KV, then recomputes
-**100%** of every prompt and overwrites the loaded KV, so `prefill_tokens_avoided` is pinned to
-`0` at emission (`connector_metrics.py:227`). The selective machinery now includes a tested
-CPU row plan with check-layer semantics and a pinned vLLM 0.19.1 CUSTOM backend adapter that
-delegates to stock Triton when no plan is bound and narrows KV writes when a plan is bound.
-The adapter is exposed only through an explicit `CACHEBLEND_ENABLE_CUSTOM_BACKEND=1` plugin
-opt-in; there is still **no live model override, no `transfer_selective` connector mode, and
-no measured layer-token speed saving**. Per `AGENTS.md`, selective recomputation remains
-disabled until the model/output path, hybrid-group handling, attention-sink behavior, and
-GPU equivalence gates are exercised.
+The validated milestone still runs a deliberately conservative *100%* path: it transfers KV,
+then recomputes **100%** of every prompt and overwrites the loaded KV, so
+`prefill_tokens_avoided` remains pinned to `0` at emission (`connector_metrics.py:227`).
+Alongside it, the selective arm now has a tested CPU row plan, an explicit
+`transfer_selective` configuration, a pinned vLLM 0.19.1 CUSTOM attention backend, and a lazy
+GPT-OSS model wrapper that skips MLP work for cached rows after the check layer. The selective
+arm is still opt-in, uses deterministic zero importance scores for the first mechanics smoke,
+and has **no GPU correctness or speed claim** until g3 evidence is captured.
 
 ### Root-cause lead for M3 (the linchpin)
 
@@ -157,26 +158,25 @@ This makes `ForwardRowPlan` per-layer-differentiated. Extend CPU tests in
 `src/cacheblend_gpt_oss/vllm_compat/v0_19_1/`, `selective_backend.py` subclasses the pinned
 sink-capable Triton backend. It preserves stock full-row writes without an active plan and has
 a fail-closed, plan-aware selected-row write hook. `selective_plugin.py` registers it only for
-the explicit matched-backend control; the helper is `local-m6-custom-backend-control.sh`. This
-is an API/control milestone, not a speed milestone.
+the explicit CUSTOM opt-in; the matched control helper is
+`local-m6-custom-backend-control.sh`. This is an API/control milestone, not a speed milestone.
 
 **C2 (initial model seam implemented, GPU activation pending).**
 `selective_model.py` provides a lazy subclass of the pinned GPT-OSS model that
-binds a full row plan around the exact forward signature. It is opt-in through
-`CACHEBLEND_ENABLE_CUSTOM_MODEL=1` and still recomputes every row; this only
-proves plan propagation into the CUSTOM backend.
+binds the exact forward signature. It preserves full execution when no selective
+plan is installed and, for `transfer_selective`, keeps full-shaped attention while
+skipping MLP work for cached rows after the check layer. It is opt-in through
+`CACHEBLEND_ENABLE_CUSTOM_MODEL=1`; this is an implementation seam, not a GPU
+correctness or speed result.
 
-**C3–C6 (backend and serving path, still pending).** Under
+**C3–C6 (initial serving path implemented; GPU validation pending).** Under
 `src/cacheblend_gpt_oss/vllm_compat/v0_19_1/` (the registrar's `_PACKAGE_PREFIX`,
 `selective_registry.py:276-293`):
-1. A CUDA **`SelectiveCacheOps`** implementation of the protocol in `selective_kv.py:341-372`.
-2. A **new connector mode** `transfer_selective` in `ConnectorTransferMode`
-   (`transfer_config.py:69-74`) + config type paralleling `Transfer100PctConfig`, branched into
-   the transfer runtime where code switches on `isinstance(..., Transfer100PctConfig)`
-   (`connector.py:374,415,439,497,658,686,936`).
-3. Extend the existing **`vllm.general_plugins` entry point** from the matched control to
-   call the evidence-gated `register_selective_extension` (`selective_registry.py:468`) once
-   the model override and all prerequisite artifacts are ready.
+1. The existing pinned CUDA data plane remains the KV transport boundary; the CUSTOM
+   backend narrows the selected KV-cache write rows.
+2. The **`transfer_selective`** connector mode and strict config are implemented in
+   `transfer_config.py`, and the runtime emits a full-shaped row plan.
+3. The explicit plugin opt-ins register the CUSTOM backend and GPT-OSS model wrapper.
 4. Emit honest savings as **CacheBlend-internal layer-token counters** (e.g.
    `layer_token_rows_recomputed` / `layer_token_rows_avoided`) — see Phase E1. Do **not** relabel
    internally-skipped layer rows as native prompt tokens avoided. A narrowly-pinned vLLM patch

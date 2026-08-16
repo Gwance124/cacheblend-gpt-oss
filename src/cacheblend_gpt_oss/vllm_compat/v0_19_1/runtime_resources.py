@@ -56,6 +56,7 @@ from cacheblend_gpt_oss.vllm_compat.v0_19_1.staging import (
 )
 from cacheblend_gpt_oss.vllm_compat.v0_19_1.transfer_config import (
     Transfer100PctConfig,
+    TransferSelectiveConfig,
 )
 from cacheblend_gpt_oss.vllm_compat.v0_19_1.transfer_probe import (
     TensorBytesReader,
@@ -461,7 +462,13 @@ def create_worker_runtime_resources(
         )
         bridge.open()
         runtime = TransferRuntime(
-            layout, bridge, bridge, disable_kv_scatter=config.disable_kv_scatter
+            layout,
+            bridge,
+            bridge,
+            disable_kv_scatter=config.disable_kv_scatter,
+            selective_config=(
+                config if isinstance(config, TransferSelectiveConfig) else None
+            ),
         )
         return WorkerRuntimeResources(bridge, runtime, sidecar)
     except Exception as exc:
