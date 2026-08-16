@@ -24,6 +24,9 @@ dev = [
   "ruff==0.12.11",
 ]
 
+[project.entry-points."vllm.general_plugins"]
+cacheblend_gpt_oss_custom_backend = "cacheblend_gpt_oss.vllm_compat.v0_19_1.selective_plugin:register_cacheblend_backend"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
@@ -59,4 +62,3 @@ explicit = true
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu128" }
-

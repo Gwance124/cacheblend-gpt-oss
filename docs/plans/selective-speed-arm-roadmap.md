@@ -1,7 +1,9 @@
 # Selective-recompute feasibility arm roadmap (append-only dev-100)
 
-> Status: **planning / not started.** Staged roadmap, authored 2026-08-14, revised
-> 2026-08-14 after external review. It records decisions and the milestone dependency
+> Status: **implementation in progress.** M3's connector-inclusive probability-v2 gate is
+> green on solab-g3; C0 is CPU-complete; the first dormant pinned CUSTOM backend seam is now
+> implemented. Staged roadmap, authored 2026-08-14, revised 2026-08-15 after the g3 gate.
+> It records decisions and the milestone dependency
 > chain; it does not itself change code. All GPU/RAG steps run on `solab-g3` / `solab-p7`;
 > the authoring workstation is CPU-only. See
 > [the feasibility plan](gpt-oss-cacheblend-feasibility.md) for the source-pinned milestone
@@ -31,9 +33,9 @@ accuracy/recall tracked on p7.**
    credits only one contiguous prefix (feasibility `:767`). Savings are reported as
    **CacheBlend-internal layer-token metrics**; native vLLM still reports the full prompt
    processed. A vLLM patch for non-prefix work accounting is an explicit **M6-gated** option.
-4. **Selective policy gap acknowledged:** `check_layer` is currently inert — the same recompute
-   ranges are replicated to all 24 layers (`selective_policy.py:386-390`). The CPU scaffold is
-   **not** a complete CacheBlend layered plan; fixing it is a Phase-C prerequisite.
+4. **Selective policy gap closed on CPU:** `check_layer` now forces full recomputation through
+   the check-layer prefix and applies selective ranges only to later layers. The plan reports
+   layer-token work; it is still not wired to a live vLLM model override.
 5. **Matched-backend control arm added** (CUSTOM backend at 100% recompute, no scatter).
 6. **Calibration hygiene added:** a predeclared calibration set picks and freezes the recompute
    ratio; dev-100 is never used to choose it.
@@ -41,7 +43,7 @@ accuracy/recall tracked on p7.**
 ## Critical path (milestone dependency chain)
 
 ```
-M3 numerical equivalence (FAILING)  ──►  M4 YaRN + M5 hybrid/sinks (CPU-done, GPU-pending)
+M3 numerical equivalence (PASS, connector-inclusive v2 envelope)  ──►  M4 YaRN + M5 hybrid/sinks (GPU evidence review)
         │                                          │
         │                          selective policy check-layer fix (CPU, prerequisite)
         │                                          │
@@ -52,22 +54,21 @@ M3 numerical equivalence (FAILING)  ──►  M4 YaRN + M5 hybrid/sinks (CPU-do
               matched-backend + one-query gates  ──►  dev-100 arm  ──►  accuracy/recall on p7
 ```
 
-Nothing downstream is trustworthy until **M3 is green**. The immediate next work is the
-**scatter-disabled M3 diagnostic — not the selective backend.**
+M3 is now green under the connector-inclusive v2 policy. The immediate next work is the
+matched CUSTOM backend control, followed by the model override and selective connector mode.
 
 ## Why this is a roadmap, not a one-shot change
 
 The repo today runs a deliberately *dormant* CacheBlend: it transfers KV, then recomputes
 **100%** of every prompt and overwrites the loaded KV, so `prefill_tokens_avoided` is pinned to
-`0` at emission (`connector_metrics.py:227`). The selective machinery is a tested **CPU
-scaffold** (row-plan invariant, selection policy, KV-write planner, ordering/forward bridges,
-fail-closed registrar) with **no live activation seam** — no connector mode, no CUDA kernel, no
-`CUSTOM` attention backend, no model override, no `vllm.general_plugins` entry point — and, per
-the gap in item 4 above, its selection policy does not yet encode per-layer check-layer
-execution. It is gated behind the **M3** numerical-equivalence gate, currently **FAILING** by
-~3.6× the baseline envelope (candidate mean-abs-logprob 0.0478 vs envelope 0.0132). Per
-`AGENTS.md`, selective recomputation must not be introduced until full-prefill equivalence,
-shifted-key correction, hybrid-group handling, and attention-sink tests pass.
+`0` at emission (`connector_metrics.py:227`). The selective machinery now includes a tested
+CPU row plan with check-layer semantics and a pinned vLLM 0.19.1 CUSTOM backend adapter that
+delegates to stock Triton when no plan is bound and narrows KV writes when a plan is bound.
+The adapter is exposed only through an explicit `CACHEBLEND_ENABLE_CUSTOM_BACKEND=1` plugin
+opt-in; there is still **no live model override, no `transfer_selective` connector mode, and
+no measured layer-token speed saving**. Per `AGENTS.md`, selective recomputation remains
+disabled until the model/output path, hybrid-group handling, attention-sink behavior, and
+GPU equivalence gates are exercised.
 
 ### Root-cause lead for M3 (the linchpin)
 
@@ -80,9 +81,15 @@ layers**, vLLM's real `slot_mapping` may not overwrite exactly the slots scatter
 corrected K to contaminate attention broadly. **But this theory is not the first thing to
 test** (see A1) — a cheaper control comes first.
 
-## Phase A — Close the M3 numerical gate (immediate blocker)
+## Phase A — Close the M3 numerical gate (completed on g3)
 
-**A1. GPU diagnostic on solab-g3, cheapest-bisection-first.** Using the moved-document capture
+The connector-attached scatter-disabled controls and the real 100%-transfer candidate were
+captured on the pinned A100 environment. The prospective probability-v2 envelope reproduced
+with `stable: true`, `status: PASS`, and the candidate evaluation returned `EVAL_STATUS=0`.
+This clears the numerical gate for the selective implementation; it does not claim selective
+compute or a BrowseComp quality result.
+
+**A1. GPU diagnostic on solab-g3, cheapest-bisection-first (historical record).** Using the moved-document capture
 (`scripts/capture_moved_document.py`, runbook `docs/runbooks/solab-g3-moved-document-correctness.md`):
 
 1. **Scatter-disabled control (do this first).** Run the connector attached but with KV scatter
@@ -101,7 +108,7 @@ test** (see A1) — a cheaper control comes first.
    request; `max_num_batched_tokens` equality with the baseline (config enforces only a lower
    bound, `config_validation.py:445-459`).
 
-**A2. Targeted fix (location depends on A1):**
+**A2. Targeted fix (location depends on A1, not required after the observed drift result):**
 - **Contamination (overwrite gap):** fix the hybrid slot math / group handling in
   `gpt_oss/layout.py` (`_scatter_group`, `_validated_tables`) and/or add an **explicit
   post-prefill overwrite-verification guard** in the connector's `wait_for_save` /
@@ -116,7 +123,7 @@ test** (see A1) — a cheaper control comes first.
   discriminating power. Keep the high-mass maximum and tight full-prefill envelope as
   secondary reported diagnostics.
 
-**A3. Re-freeze and re-run the versioned probability gate.** Re-capture 5 controls + 1
+**A3. Re-freeze and re-run the versioned probability gate (completed).** Re-capture 5 controls + 1
 candidate and run `scripts/evaluate_probability_ensemble.py` against a freshly frozen
 manifest (`scripts/freeze_probability_ensemble.py`). Pass requires every `Q ≤ U` for
 full-vocabulary mean, TV, and JS, all three hard ceilings, agreement checks, and bound
@@ -137,9 +144,8 @@ produce the five-digest `SelectiveGateEvidence` bundle via
 
 ## Phase C — Fix the selective policy, then build the backend (M6)
 
-**C0 (prerequisite, CPU, do before the CUDA work).** Correct the check-layer execution model in
-`gpt_oss/selective_policy.py`. Today `select()` replicates one recompute-range set to all 24
-layers (`:386-390`) and `check_layer` never shapes the plan. A CacheBlend-style plan needs:
+**C0 (completed, CPU).** Corrected the check-layer execution model in
+`gpt_oss/selective_policy.py`. A CacheBlend-style plan now provides:
 - **full recomputation through the check-layer prefix** (layers `≤ check_layer`);
 - importance computed **at** the check layer;
 - **selective rows only in subsequent layers** (layers `> check_layer`);
@@ -147,21 +153,27 @@ layers (`:386-390`) and `check_layer` never shapes the plan. A CacheBlend-style 
 This makes `ForwardRowPlan` per-layer-differentiated. Extend CPU tests in
 `tests/unit/test_gpt_oss_selective_policy.py` / `test_gpt_oss_selective.py`.
 
-**C1–C6 (backend, currently entirely absent).** Under `src/cacheblend_gpt_oss/vllm_compat/v0_19_1/`
-(the registrar's `_PACKAGE_PREFIX`, `selective_registry.py:276-293`):
-1. A concrete **`CUSTOM` attention backend + `AttentionImpl`** honoring update-before-attention
-   ordering (`gpt_oss/selective_attention.py`); `tests/gpu/test_selective_backend_contract.py`
-   pins the stock Triton hook boundary to build against.
-2. A **GPT-OSS model override** delegating to `GptOssSelectiveModelAdapter`
+**C1 (initial seam implemented, GPU verification pending).** Under
+`src/cacheblend_gpt_oss/vllm_compat/v0_19_1/`, `selective_backend.py` subclasses the pinned
+sink-capable Triton backend. It preserves stock full-row writes without an active plan and has
+a fail-closed, plan-aware selected-row write hook. `selective_plugin.py` registers it only for
+the explicit matched-backend control; the helper is `local-m6-custom-backend-control.sh`. This
+is an API/control milestone, not a speed milestone.
+
+**C2–C6 (backend and serving path, still pending).** Under
+`src/cacheblend_gpt_oss/vllm_compat/v0_19_1/` (the registrar's `_PACKAGE_PREFIX`,
+`selective_registry.py:276-293`):
+1. A **GPT-OSS model override** delegating to `GptOssSelectiveModelAdapter`
    (`gpt_oss/selective_runtime.py:148`).
-3. A CUDA **`SelectiveCacheOps`** implementation of the protocol in `selective_kv.py:341-372`.
-4. A **new connector mode** `transfer_selective` in `ConnectorTransferMode`
+2. A CUDA **`SelectiveCacheOps`** implementation of the protocol in `selective_kv.py:341-372`.
+3. A **new connector mode** `transfer_selective` in `ConnectorTransferMode`
    (`transfer_config.py:69-74`) + config type paralleling `Transfer100PctConfig`, branched into
    the transfer runtime where code switches on `isinstance(..., Transfer100PctConfig)`
    (`connector.py:374,415,439,497,658,686,936`).
-5. A **`vllm.general_plugins` entry point** in `pyproject.toml` calling
-   `register_selective_extension` (`selective_registry.py:468`).
-6. Emit honest savings as **CacheBlend-internal layer-token counters** (e.g.
+4. Extend the existing **`vllm.general_plugins` entry point** from the matched control to
+   call the evidence-gated `register_selective_extension` (`selective_registry.py:468`) once
+   the model override and all prerequisite artifacts are ready.
+5. Emit honest savings as **CacheBlend-internal layer-token counters** (e.g.
    `layer_token_rows_recomputed` / `layer_token_rows_avoided`) — see Phase E1. Do **not** relabel
    internally-skipped layer rows as native prompt tokens avoided. A narrowly-pinned vLLM patch
    for non-prefix native accounting is optional and **gated at M6** (feasibility `:767`).
@@ -223,7 +235,7 @@ the single-prompt schema to real dev-100 trajectories is a small adapter.
 ## Verification
 
 - **CPU (authoring workstation), after every code change:** `.venv/bin/python -m pytest -m
-  "not gpu"` (currently 842 pass), `ruff check src tests scripts`, `mypy src --strict` (green).
+  "not gpu"` (currently 872 pass), `ruff check src tests scripts`, `mypy src --strict` (green).
   Add unit tests for: the Phase-A overwrite guard/slot-math fix, the Phase-C0 per-layer
   check-layer plan, the selective connector mode, and the selective evidence contract.
 - **M3 (g3):** `scripts/evaluate_probability_ensemble.py` passes; transfer evidence digest binds.

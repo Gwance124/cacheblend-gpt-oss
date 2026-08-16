@@ -49,3 +49,36 @@ def test_pinned_triton_backend_selective_hook_contract() -> None:
         "kv_cache",
         "slot_mapping",
     ]
+
+
+@pytest.mark.gpu
+@pytest.mark.integration
+def test_cacheblend_custom_backend_contract() -> None:
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("vllm")
+
+    if not torch.cuda.is_available():
+        pytest.skip("manual solab-g3 test: CUDA is not available")
+
+    from vllm.v1.attention.backends.triton_attn import TritonAttentionBackend
+
+    from cacheblend_gpt_oss.vllm_compat.v0_19_1.selective_backend import (
+        GptOssCacheBlendAttentionBackend,
+        GptOssCacheBlendAttentionImpl,
+    )
+
+    assert issubclass(GptOssCacheBlendAttentionBackend, TritonAttentionBackend)
+    assert GptOssCacheBlendAttentionBackend.get_name() == "CUSTOM"
+    assert (
+        GptOssCacheBlendAttentionBackend.get_impl_cls()
+        is GptOssCacheBlendAttentionImpl
+    )
+    assert GptOssCacheBlendAttentionBackend.forward_includes_kv_cache_update is False
+    assert GptOssCacheBlendAttentionBackend.supports_sink() is True
+    assert GptOssCacheBlendAttentionBackend.get_kv_cache_shape(2, 16, 8, 64) == (
+        2,
+        2,
+        16,
+        8,
+        64,
+    )

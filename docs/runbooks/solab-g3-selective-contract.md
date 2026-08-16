@@ -79,21 +79,31 @@ uv run python scripts/verify_selective_gate_artifacts.py \
 This command verifies identity/freshness only; it does not approve artifact
 semantics or enable selective registration.
 
-## M6 model/backend command (not yet enabled)
+## M6 matched CUSTOM backend control
 
-Do not run a `CUSTOM` server command yet. This repository intentionally has no
-`vllm.general_plugins` entry point or concrete selective model/backend class.
-The registrar and row/update contracts are dormant until the M3--M5 GPU/model
-artifacts are supplied and reviewed. Enabling `CUSTOM` now would either fail
-startup or risk silently changing the serving path.
+The first concrete backend is now available as a matched control only. It does
+not register a model override, does not enable `transfer_selective`, and does
+not claim layer-token savings. With no row plan bound, it delegates to the
+pinned Triton KV write path. Run this exact helper on `solab-g3` after pulling
+the branch:
 
-When those prerequisites and concrete classes exist, the first M6 command will
-be a single-request, eager, TP=1 launch with `--attention-backend CUSTOM`,
-`--no-disable-hybrid-kv-cache-manager`, V2 runner disabled, prefix caching off,
-and the same pinned LMCache/sidecar configuration as
-`solab-g3-moved-document-correctness.md`. The command must be added here with
-the exact entry-point name and class paths before execution; do not infer them
-from a moving vLLM release or an unpublished CacheBlend image.
+```bash
+cd /mnt/nvme3n1/mlee/cacheblend-gpt-oss
+bash ./local-m6-custom-backend-control.sh
+```
+
+The helper creates a new directory under
+`/mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/`, reinstalls the editable
+project metadata so the new `vllm.general_plugins` entry point is visible,
+starts `openai/gpt-oss-20b` with `--attention-backend CUSTOM`, and prints
+`VLLM_READY=yes` if the API starts. A successful start validates registration,
+sink/backend shape, and the pinned runtime only; it is not the selective speed
+test.
+
+The later selective M6 command must add the evidence-gated model override and
+`transfer_selective` connector mode before it can reuse this launch shape. Do
+not infer that command from a moving vLLM release or an unpublished CacheBlend
+image.
 
 ## Stop/go
 

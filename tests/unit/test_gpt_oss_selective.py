@@ -55,6 +55,8 @@ def test_complement_is_exact_for_a_moved_document() -> None:
 def test_context_is_bounded_and_clears_after_forward() -> None:
     plan = ForwardRowPlan.full_recompute(3)
 
+    assert ForwardRowPlanContext.current_or_none() is None
+
     with pytest.raises(SelectivePlanError) as missing:
         ForwardRowPlanContext.current()
     assert missing.value.code is SelectivePlanErrorCode.MISSING_CONTEXT
@@ -62,6 +64,7 @@ def test_context_is_bounded_and_clears_after_forward() -> None:
     with ForwardRowPlanContext.bind(plan) as active:
         assert active is plan
         assert ForwardRowPlanContext.current() is plan
+        assert ForwardRowPlanContext.current_or_none() is plan
         with (
             pytest.raises(SelectivePlanError) as nested,
             ForwardRowPlanContext.bind(plan),
@@ -72,6 +75,24 @@ def test_context_is_bounded_and_clears_after_forward() -> None:
     with pytest.raises(SelectivePlanError) as cleared:
         ForwardRowPlanContext.current()
     assert cleared.value.code is SelectivePlanErrorCode.MISSING_CONTEXT
+    assert ForwardRowPlanContext.current_or_none() is None
+
+
+def test_recompute_positions_follow_canonical_ranges() -> None:
+    plan = ForwardRowPlan.from_recompute_ranges(
+        8,
+        tuple(
+            (
+                (TokenRange(0, 2), TokenRange(5, 8))
+                if layer == 0
+                else (TokenRange(0, 8),)
+            )
+            for layer in range(24)
+        ),
+    )
+
+    assert plan.layer(0).recompute_positions == (0, 1, 5, 6, 7)
+    assert plan.layer(1).recompute_positions == tuple(range(8))
 
 
 @pytest.mark.parametrize(

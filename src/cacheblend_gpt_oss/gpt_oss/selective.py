@@ -148,6 +148,16 @@ class LayerRowSelection:
         return _range_token_count(self.recompute_ranges)
 
     @property
+    def recompute_positions(self) -> tuple[int, ...]:
+        """Return the canonical prompt-row positions selected for this layer."""
+
+        return tuple(
+            position
+            for token_range in self.recompute_ranges
+            for position in range(token_range.start, token_range.end)
+        )
+
+    @property
     def cached_ranges(self) -> tuple[TokenRange, ...]:
         """Rows that may be read from verified corrected KV, not written."""
 
@@ -280,6 +290,12 @@ class ForwardRowPlanContext:
         if plan is None:
             _fail(SelectivePlanErrorCode.MISSING_CONTEXT)
         return plan
+
+    @staticmethod
+    def current_or_none() -> ForwardRowPlan | None:
+        """Return the active plan without turning ordinary vLLM into an error."""
+
+        return _ACTIVE_PLAN.get()
 
 
 __all__ = [

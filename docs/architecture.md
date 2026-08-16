@@ -3,14 +3,15 @@
 ## Status
 
 The pinned audit and CPU-side implementation are complete through the
-instrumented 100%-recomputation data plane. No `solab-g3` result has been
-provided, so this is not yet a validated GPT-OSS endpoint. The current boundary
-is:
+instrumented 100%-recomputation data plane. User-supplied `solab-g3` evidence
+now validates the pinned GPT-OSS endpoint and the connector-inclusive M3
+probability gate; selective serving and BrowseComp quality remain unvalidated.
+The current boundary is:
 
 - Connector discovery/loading: **public vLLM API, out of tree, no patch**.
 - Position-independent matching and fingerprints: **out of tree**.
 - The synchronous 100%-recompute path: **implemented out of tree, no patch;
-  GPU correctness pending**.
+  user-supplied GPU correctness evidence is green under the frozen v2 envelope**.
 - GPT-OSS YaRN correction and group-aware staging/scatter: **implemented and
   CPU-fake tested; real CUDA tests pending on `solab-g3`**.
 - Aggregate connector lookup/load/recompute/store metrics: **implemented through
@@ -23,11 +24,11 @@ is:
   validator; all GPU arms and correctness-linked confidence intervals pending
   on `solab-g3`**.
 - Selective non-prefix recomputation: **not expressible by the connector API
-  alone**. First exhaust a registered GPT-OSS model override and custom
-  sink-aware attention backend. The pinned follow-up audit confirms those
-  registration seams are public, but also shows that split Triton cache update
-  runs before the connector's per-layer wait; the custom implementation must
-  mask accepted cached rows in `do_kv_cache_update`. A pinned vLLM patch is
+  alone**. The first pinned sink-aware CUSTOM backend adapter now exists and is
+  explicitly opt-in for a matched full-recompute control; it delegates to stock
+  Triton without a bound row plan and narrows KV writes only when a plan is
+  bound. The GPT-OSS model override, `transfer_selective` connector mode, and
+  measured layer-token savings remain unimplemented. A pinned vLLM patch is
   only a gated fallback after the M3--M5 GPU evidence.
 
 The evidence behind each statement is in [the pinned source audit](source-audit.md).
@@ -106,9 +107,9 @@ vLLM until the required GPU correctness gates pass.
 registration seam. It requires explicit proof of all M3--M5 prerequisites,
 accepts only project-owned lazy model/backend paths, registers `CUSTOM` before
 the model override, is idempotent within a process, and permanently fails
-closed after a partial registration. It is intentionally not exposed as a
-`vllm.general_plugins` entry point until the pinned model/backend classes and
-GPU evidence exist.
+closed after a partial registration. A separate explicit
+`vllm.general_plugins` entry point now exposes only the matched CUSTOM backend
+control; the evidence-gated model override is not registered yet.
 
 The prerequisite proof now also carries five lowercase SHA-256 artifact
 digests: runtime identity, repeated full-prefill tolerance, 100%-transfer
@@ -154,8 +155,9 @@ enable selective execution.
 `gpt_oss.selective_runtime` now provides the worker-local CPU seam that will
 bind a `ForwardRowPlan` only around a future model-forward call, then validate
 the full-shaped hidden output and runner logits indices before returning. It is
-still dormant: no vLLM model/backend is registered, and it does not import
-Torch or mutate KV tensors.
+still dormant for model execution: the pinned CUSTOM backend is registered only
+by the explicit matched-control plugin, and this CPU seam does not import Torch
+or mutate KV tensors.
 
 `GptOssSelectiveModelAdapter` is the model-side companion. It mirrors the
 audited `GptOssForCausalLM.forward(input_ids, positions,
