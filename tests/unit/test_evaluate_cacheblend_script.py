@@ -50,6 +50,29 @@ def test_evaluator_documents_explicit_cache_miss_exception() -> None:
     assert "--allow-cache-miss-no-transfer" in result.stdout
 
 
+def test_selective_evaluator_does_not_require_transfer_evidence() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/evaluate_cacheblend_correctness.py",
+            "--reference",
+            "reference.json",
+            "--cacheblend",
+            "cacheblend.json",
+            "--tolerance",
+            "tolerance.json",
+            "--mode",
+            "cacheblend_selective",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 2
+    assert "--transfer-evidence is required" not in result.stderr
+
+
 def test_no_transfer_exception_is_limited_to_zero_transfer_cache_miss() -> None:
     validate = _evaluator["_validate_no_transfer_cache_miss"]
     cache_miss = SimpleNamespace(

@@ -84,17 +84,22 @@ def main() -> int:
     )
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
-    if args.transfer_evidence is None and not args.allow_cache_miss_no_transfer:
+    candidate_mode = CorrectnessRunMode(args.mode)
+    if (
+        args.transfer_evidence is None
+        and candidate_mode is not CorrectnessRunMode.CACHEBLEND_SELECTIVE
+        and not args.allow_cache_miss_no_transfer
+    ):
         parser.error(
             "--transfer-evidence is required unless "
-            "--allow-cache-miss-no-transfer is set"
+            "--allow-cache-miss-no-transfer is set (selective mode uses "
+            "row-work evidence)"
         )
     if args.output is not None and args.output.exists():
         raise FileExistsError("correctness verdict output already exists")
 
     reference = read_artifact(args.reference)
     cacheblend = read_artifact(args.cacheblend)
-    candidate_mode = CorrectnessRunMode(args.mode)
     if cacheblend.run_mode is not candidate_mode:
         raise ValueError("candidate artifact mode does not match --mode")
     transfer = None
