@@ -4,6 +4,8 @@ main() {
   cd /mnt/nvme2/mlee/rag-system || return 0
   source .env
   export CACHEBLEND_AGENT_MAX_OUTPUT_TOKENS="${CACHEBLEND_AGENT_MAX_OUTPUT_TOKENS:-4096}"
+  export CACHEBLEND_AGENT_MAX_ITERATIONS="${CACHEBLEND_AGENT_MAX_ITERATIONS:-$AGENTIC_MAX_ITERATIONS}"
+  export CACHEBLEND_AGENT_MAX_SEARCH_CALLS="${CACHEBLEND_AGENT_MAX_SEARCH_CALLS:-$AGENTIC_MAX_SEARCH_CALLS}"
 
   if test -x /mnt/nvme2/mlee/rag-system/.venv/bin/python; then
     export CACHEBLEND_P7_PYTHON=/mnt/nvme2/mlee/rag-system/.venv/bin/python
@@ -74,8 +76,8 @@ main() {
     --forced-decision-reasoning-effort "$AGENTIC_FORCED_DECISION_REASONING_EFFORT" \
     --forced-decision-max-output-tokens "$AGENTIC_FORCED_DECISION_MAX_OUTPUT_TOKENS" \
     --max-forced-decision-recoveries "$AGENTIC_MAX_FORCED_DECISION_RECOVERIES" \
-    --max-iterations "$AGENTIC_MAX_ITERATIONS" \
-    --max-search-calls "$AGENTIC_MAX_SEARCH_CALLS" \
+    --max-iterations "$CACHEBLEND_AGENT_MAX_ITERATIONS" \
+    --max-search-calls "$CACHEBLEND_AGENT_MAX_SEARCH_CALLS" \
     --context-budget-tokens "$AGENTIC_CONTEXT_BUDGET_TOKENS" \
     --context-strategy append_only \
     --cache-mode cacheblend \
