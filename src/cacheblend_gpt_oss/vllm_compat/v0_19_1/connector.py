@@ -41,6 +41,7 @@ from cacheblend_gpt_oss.gpt_oss.layout import AttentionKind, GroupBlockTable
 from cacheblend_gpt_oss.gpt_oss.selective import (
     ForwardRowPlan,
     ForwardRowPlanContext,
+    SelectiveForwardState,
 )
 from cacheblend_gpt_oss.planner import MatchPlan
 from cacheblend_gpt_oss.vllm_compat.v0_19_1.adapters import (
@@ -307,6 +308,7 @@ class _ActiveWorkerTransfer:
     adapted_blocks: AdaptedKvCacheBlocks
     pre_forward: PreForwardOutcome
     saved_layer_names: set[str]
+    load_latency_seconds: float
 
 
 class GptOssCacheBlendConnector(
@@ -453,7 +455,9 @@ class GptOssCacheBlendConnector(
     def _selective_enabled(self) -> bool:
         return isinstance(self._transfer_config, TransferSelectiveConfig)
 
-    def _install_forward_plan(self, plan: ForwardRowPlan) -> None:
+    def _install_forward_plan(
+        self, plan: ForwardRowPlan | SelectiveForwardState
+    ) -> None:
         if not self._selective_enabled:
             return
         if self._active_forward_plan_token is not None:
@@ -632,28 +636,37 @@ class GptOssCacheBlendConnector(
             outcome = self._worker_resources.transfer_runtime.before_forward(
                 transfer, adapted_blocks
             )
-            self._stats.record_load(
-                verified_tokens=sum(
-                    len(candidate.candidate.target_range)
-                    for candidate in transfer.verified_candidates
-                ),
-                loaded_tokens=outcome.loaded_kv_tokens,
-                rejected_tokens=sum(
-                    len(transfer.verified_candidates[index].candidate.target_range)
-                    for index in outcome.rejected_candidate_indexes
-                ),
-                recomputed_tokens=outcome.tokens_to_recompute,
-                fallback=(
-                    outcome.state is TransferAttemptState.FULL_PREFILL_FALLBACK
-                ),
-                latency_seconds=perf_counter() - started_at,
-                position_correction_latency_seconds=(
-                    outcome.position_correction_latency_seconds
-                ),
-                scatter_suppressed_tokens=outcome.scatter_suppressed_tokens,
-                layer_token_rows_recomputed=outcome.layer_token_rows_recomputed,
-                layer_token_rows_avoided=outcome.layer_token_rows_avoided,
-            )
+            load_latency_seconds = perf_counter() - started_at
+            # Selective row work is not known until the check-layer backend
+            # measures fresh-vs-loaded values.  Defer this one aggregate load
+            # observation until wait_for_save, where the final plan exists.
+            if not (
+                self._selective_enabled
+                and outcome.state is TransferAttemptState.SUCCEEDED
+                and outcome.selective_state is not None
+            ):
+                self._stats.record_load(
+                    verified_tokens=sum(
+                        len(candidate.candidate.target_range)
+                        for candidate in transfer.verified_candidates
+                    ),
+                    loaded_tokens=outcome.loaded_kv_tokens,
+                    rejected_tokens=sum(
+                        len(transfer.verified_candidates[index].candidate.target_range)
+                        for index in outcome.rejected_candidate_indexes
+                    ),
+                    recomputed_tokens=outcome.tokens_to_recompute,
+                    fallback=(
+                        outcome.state is TransferAttemptState.FULL_PREFILL_FALLBACK
+                    ),
+                    latency_seconds=load_latency_seconds,
+                    position_correction_latency_seconds=(
+                        outcome.position_correction_latency_seconds
+                    ),
+                    scatter_suppressed_tokens=outcome.scatter_suppressed_tokens,
+                    layer_token_rows_recomputed=outcome.layer_token_rows_recomputed,
+                    layer_token_rows_avoided=outcome.layer_token_rows_avoided,
+                )
             receipt = self._control_plane.validate_worker(
                 handoff.plan.request_id,
                 loaded_match_indexes=outcome.loaded_candidate_indexes,
@@ -672,6 +685,7 @@ class GptOssCacheBlendConnector(
                 adapted_blocks,
                 outcome,
                 set(),
+                load_latency_seconds,
             )
         if transfers_by_request:
             raise RuntimeError("Transfer metadata has no matching request handoff.")
@@ -720,6 +734,43 @@ class GptOssCacheBlendConnector(
                 )
             if self._worker_resources is None:
                 raise RuntimeError("Worker transfer resources are unavailable.")
+            if (
+                self._selective_enabled
+                and active.pre_forward.selective_state is not None
+            ):
+                selective_state = active.pre_forward.selective_state
+                if not selective_state.scored:
+                    raise RuntimeError(
+                        "Selective forward completed without a check-layer score."
+                    )
+                final_plan = selective_state.plan
+                verified_tokens = sum(
+                    len(candidate.candidate.target_range)
+                    for candidate in active.metadata.verified_candidates
+                )
+                rejected_tokens = sum(
+                    len(
+                        active.metadata.verified_candidates[index]
+                        .candidate.target_range
+                    )
+                    for index in active.pre_forward.rejected_candidate_indexes
+                )
+                self._stats.record_load(
+                    verified_tokens=verified_tokens,
+                    loaded_tokens=active.pre_forward.loaded_kv_tokens,
+                    rejected_tokens=rejected_tokens,
+                    recomputed_tokens=active.pre_forward.tokens_to_recompute,
+                    fallback=(
+                        active.pre_forward.state
+                        is TransferAttemptState.FULL_PREFILL_FALLBACK
+                    ),
+                    latency_seconds=active.load_latency_seconds,
+                    position_correction_latency_seconds=(
+                        active.pre_forward.position_correction_latency_seconds
+                    ),
+                    layer_token_rows_recomputed=final_plan.recompute_tokens,
+                    layer_token_rows_avoided=final_plan.cached_tokens,
+                )
             completion = (
                 self._worker_resources.transfer_runtime.mark_full_prefill_complete(
                     active.pre_forward,

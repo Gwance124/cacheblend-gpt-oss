@@ -13,11 +13,10 @@ Reference snapshot (conceptual behavior only), pinned by this repository:
 * https://github.com/YaoJiayi/CacheBlend/blob/55ad02675939f783a38d579393527d218a7fd581/vllm_blend/vllm/model_executor/models/llama.py#L300-L365
 * https://github.com/YaoJiayi/CacheBlend/blob/55ad02675939f783a38d579393527d218a7fd581/vllm_blend/vllm/attention/backends/xformers.py#L220-L305
 
-The current selective connector consumes this policy for the first mechanics
-arm.  It deliberately supplies zero importance scores until a measured
-check-layer score producer is wired in, and records an immutable
-:class:`ForwardRowPlan` so each ratio can be compared against full prefill
-before any selective ratio is enabled for BrowseComp.
+The selective connector creates a provisional zero-score plan only long
+enough to execute through the check layer.  The GPU attention backend then
+supplies measured loaded-versus-fresh value differences and the connector
+rebuilds the immutable :class:`ForwardRowPlan` before later layers.
 """
 
 from __future__ import annotations

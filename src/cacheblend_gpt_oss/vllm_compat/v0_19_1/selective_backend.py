@@ -26,7 +26,10 @@ from __future__ import annotations
 from typing import Any
 
 from cacheblend_gpt_oss.gpt_oss.layout import extract_gpt_oss_layer_index
-from cacheblend_gpt_oss.gpt_oss.selective import ForwardRowPlanContext
+from cacheblend_gpt_oss.gpt_oss.selective import (
+    ForwardRowPlanContext,
+    SelectiveForwardState,
+)
 
 try:
     import torch  # type: ignore[import-not-found]
@@ -59,6 +62,52 @@ def _selected_positions(plan: Any, layer_index: int, device: Any) -> Any:
     return chunks[0] if len(chunks) == 1 else torch.cat(chunks)
 
 
+def _read_cached_values(
+    value_cache: torch.Tensor, flat_slots: torch.Tensor
+) -> torch.Tensor:
+    """Read the logical NHD view before the stock write overwrites it.
+
+    vLLM passes ``kv_cache.unbind(1)`` to this method.  The resulting view is
+    four-dimensional with ``[block, offset, head, dim]`` indexing even when
+    the underlying allocation uses the HND stride order; indexing the view
+    therefore preserves both pinned layouts.
+    """
+
+    if value_cache.dtype == torch.uint8 or value_cache.ndim != 4:
+        raise RuntimeError(
+            "CacheBlend check-layer scoring requires an unquantized NHD/HND KV cache"
+        )
+    block_size = value_cache.shape[1]
+    if not isinstance(block_size, int) or block_size <= 0:
+        raise RuntimeError("CacheBlend received an invalid KV-cache block size")
+    if flat_slots.numel() and (
+        bool(torch.any(flat_slots < 0).item())
+        or bool(torch.any(flat_slots // block_size >= value_cache.shape[0]).item())
+    ):
+        raise RuntimeError("CacheBlend check-layer slots are outside the KV cache")
+    block_ids = torch.div(flat_slots, block_size, rounding_mode="floor")
+    offsets = flat_slots.remainder(block_size)
+    return value_cache[block_ids, offsets]
+
+
+def _measure_check_layer(
+    state: SelectiveForwardState,
+    layer_index: int,
+    value: torch.Tensor,
+    value_cache: torch.Tensor,
+    flat_slots: torch.Tensor,
+) -> None:
+    """Produce audited CacheBlend value-difference importance scores once."""
+
+    if layer_index != state.check_layer or state.scored:
+        return
+    old_value = _read_cached_values(value_cache, flat_slots)
+    if old_value.shape != value.shape:
+        raise RuntimeError("CacheBlend check-layer KV shapes do not match")
+    scores = (value.float() - old_value.float()).square().sum(dim=(1, 2))
+    state.update_importance_scores(scores.detach().cpu().tolist())
+
+
 class GptOssCacheBlendAttentionBackend(TritonAttentionBackend):  # type: ignore[misc]
     """Sink-capable Triton backend with an opt-in selective KV write seam."""
 
@@ -84,6 +133,7 @@ class GptOssCacheBlendAttentionImpl(TritonAttentionImpl):  # type: ignore[misc]
         kv_cache: torch.Tensor,
         slot_mapping: torch.Tensor,
     ) -> None:
+        state = ForwardRowPlanContext.current_state()
         plan = ForwardRowPlanContext.current_or_none()
         if plan is None:
             super().do_kv_cache_update(layer, key, value, kv_cache, slot_mapping)
@@ -115,6 +165,21 @@ class GptOssCacheBlendAttentionImpl(TritonAttentionImpl):  # type: ignore[misc]
             raise RuntimeError(
                 "CacheBlend selective backend received incompatible slot rows"
             )
+
+        key_cache, value_cache = kv_cache.unbind(1)
+        if state is not None:
+            _measure_check_layer(
+                state,
+                layer_index,
+                value,
+                value_cache,
+                flat_slots,
+            )
+            # The check-layer write remains full; later layers see the measured
+            # plan through ForwardRowPlanContext.current_or_none().
+            plan = ForwardRowPlanContext.current_or_none()
+            if plan is None:
+                raise RuntimeError("CacheBlend selective plan disappeared mid-forward")
 
         positions = _selected_positions(plan, layer_index, key.device)
         if positions.numel() == key.shape[0]:

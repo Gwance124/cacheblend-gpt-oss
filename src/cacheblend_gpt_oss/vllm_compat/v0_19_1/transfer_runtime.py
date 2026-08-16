@@ -45,7 +45,10 @@ from cacheblend_gpt_oss.gpt_oss.layout import (
     TokenTransfer,
     plan_token_scatter,
 )
-from cacheblend_gpt_oss.gpt_oss.selective import ForwardRowPlan
+from cacheblend_gpt_oss.gpt_oss.selective import (
+    ForwardRowPlan,
+    SelectiveForwardState,
+)
 from cacheblend_gpt_oss.gpt_oss.selective_policy import (
     CacheBlendSelectionPolicy,
     SelectionPolicyError,
@@ -422,6 +425,7 @@ class PreForwardOutcome:
     position_correction_latency_seconds: float = 0.0
     scatter_suppressed_tokens: int = 0
     row_plan: ForwardRowPlan | None = None
+    selective_state: SelectiveForwardState | None = None
     layer_token_rows_recomputed: int = 0
     layer_token_rows_avoided: int = 0
 
@@ -470,6 +474,22 @@ class PreForwardOutcome:
             or self.layer_token_rows_avoided != self.row_plan.cached_tokens
             or self.layer_token_rows_recomputed + self.layer_token_rows_avoided
             != 24 * self.metadata.prompt_token_count
+        ):
+            _fail(TransferRuntimeErrorCode.INVALID_OUTCOME)
+        if self.selective_state is not None and (
+            not isinstance(self.selective_state, SelectiveForwardState)
+            or self.row_plan is None
+            or self.selective_state.plan is not self.row_plan
+            or self.selective_state.plan.prompt_tokens
+            != self.metadata.prompt_token_count
+        ):
+            _fail(TransferRuntimeErrorCode.INVALID_OUTCOME)
+        # A partial row plan without the state that can produce measured scores
+        # is not a valid selective outcome.
+        if (
+            self.selective_state is None
+            and self.row_plan is not None
+            and not self.row_plan.is_full_recompute
         ):
             _fail(TransferRuntimeErrorCode.INVALID_OUTCOME)
         if self.row_plan is None and (
@@ -700,10 +720,10 @@ class TransferRuntime:
                 tokens_to_recompute=metadata.prompt_token_count,
             )
 
-        selective_plan: ForwardRowPlan | None = None
+        selective_state: SelectiveForwardState | None = None
         if self._selective_config is not None:
             try:
-                selective_plan = self._build_selective_row_plan(metadata)
+                selective_state = self._build_selective_forward_state(metadata)
             except SelectionPolicyError:
                 return self._load_fallback(
                     metadata,
@@ -766,12 +786,13 @@ class TransferRuntime:
             loaded_kv_tokens=plan.expected_tokens,
             tokens_to_recompute=metadata.prompt_token_count,
             position_correction_latency_seconds=self._read_position_correction_latency(),
-            row_plan=selective_plan,
+            row_plan=(None if selective_state is None else selective_state.plan),
+            selective_state=selective_state,
             layer_token_rows_recomputed=(
-                0 if selective_plan is None else selective_plan.recompute_tokens
+                0 if selective_state is None else selective_state.plan.recompute_tokens
             ),
             layer_token_rows_avoided=(
-                0 if selective_plan is None else selective_plan.cached_tokens
+                0 if selective_state is None else selective_state.plan.cached_tokens
             ),
         )
 
@@ -919,18 +940,10 @@ class TransferRuntime:
         )
         return WorkerLoadPlan(metadata, adapted_blocks, candidates)
 
-    def _build_selective_row_plan(
+    def _build_selective_forward_state(
         self, metadata: SchedulerTransferMetadata
-    ) -> ForwardRowPlan:
-        """Build the first explicit selective plan from verified candidates.
-
-        The check-layer score producer is deliberately not guessed here.  The
-        first execution arm uses all-zero scores, so ties are resolved by
-        prompt position and the configured ratio/suffix are visible in the
-        evidence.  This is useful for proving row-skipping mechanics, not for
-        claiming CacheBlend quality; the GPU gate must replace this with
-        measured check-layer importance scores before production use.
-        """
+    ) -> SelectiveForwardState:
+        """Build provisional state; the GPU check layer supplies row scores."""
 
         config = self._selective_config
         if config is None:
@@ -949,10 +962,19 @@ class TransferRuntime:
             cache_ranges=cache_ranges,
             importance_scores=(0.0,) * metadata.prompt_token_count,
             check_layer=config.check_layer,
+            # Before the check layer is executed, no row may be skipped.  The
+            # state replaces this provisional plan with the configured ratio
+            # after measuring loaded-versus-fresh value vectors.
+            recompute_ratio=0.0,
+            suffix_tokens=config.suffix_tokens,
+        )
+        return SelectiveForwardState(
+            plan=result.row_plan,
+            candidate_cached_ranges=cache_ranges,
+            check_layer=config.check_layer,
             recompute_ratio=config.recompute_ratio,
             suffix_tokens=config.suffix_tokens,
         )
-        return result.row_plan
 
     def _build_store_plan(
         self,

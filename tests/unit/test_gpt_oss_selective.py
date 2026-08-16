@@ -6,9 +6,11 @@ from cacheblend_gpt_oss.gpt_oss.selective import (
     ForwardRowPlan,
     ForwardRowPlanContext,
     LayerRowSelection,
+    SelectiveForwardState,
     SelectivePlanError,
     SelectivePlanErrorCode,
 )
+from cacheblend_gpt_oss.gpt_oss.selective_policy import CacheBlendSelectionPolicy
 from cacheblend_gpt_oss.planner import TokenRange
 
 
@@ -88,6 +90,57 @@ def test_context_supports_connector_lifetime_install_and_reset() -> None:
     with pytest.raises(SelectivePlanError) as cleared:
         ForwardRowPlanContext.reset(token)
     assert cleared.value.code is SelectivePlanErrorCode.MISSING_CONTEXT
+
+
+def test_check_layer_scores_replace_provisional_plan_and_context_view() -> None:
+    initial = CacheBlendSelectionPolicy().select(
+        prompt_tokens=8,
+        cache_ranges=(TokenRange(0, 8),),
+        importance_scores=(0.0,) * 8,
+        check_layer=1,
+        recompute_ratio=0.0,
+        suffix_tokens=2,
+    )
+    state = SelectiveForwardState(
+        plan=initial.row_plan,
+        candidate_cached_ranges=(TokenRange(0, 8),),
+        check_layer=1,
+        recompute_ratio=0.5,
+        suffix_tokens=2,
+    )
+    token = ForwardRowPlanContext.install(state)
+    try:
+        assert not state.scored
+        assert ForwardRowPlanContext.current() is initial.row_plan
+        state.update_importance_scores((0.0, 0.0, 9.0, 0.0, 7.0, 0.0, 1.0, 0.0))
+        assert state.scored
+        assert ForwardRowPlanContext.current() is state.plan
+        assert state.plan.layer(1).is_full_recompute
+        assert state.plan.layer(2).recompute_positions == (0, 2, 4, 6, 7)
+    finally:
+        ForwardRowPlanContext.reset(token)
+
+
+def test_check_layer_scores_can_only_be_installed_once() -> None:
+    initial = CacheBlendSelectionPolicy().select(
+        prompt_tokens=4,
+        cache_ranges=(TokenRange(0, 4),),
+        importance_scores=(0.0,) * 4,
+        check_layer=1,
+        recompute_ratio=0.5,
+        suffix_tokens=1,
+    )
+    state = SelectiveForwardState(
+        plan=initial.row_plan,
+        candidate_cached_ranges=(TokenRange(0, 4),),
+        check_layer=1,
+        recompute_ratio=0.5,
+        suffix_tokens=1,
+    )
+    state.update_importance_scores((1.0, 2.0, 3.0, 4.0))
+    with pytest.raises(SelectivePlanError) as error:
+        state.update_importance_scores((4.0, 3.0, 2.0, 1.0))
+    assert error.value.code is SelectivePlanErrorCode.IMPORTANCE_SCORES_ALREADY_SET
 
 
 def test_recompute_positions_follow_canonical_ranges() -> None:

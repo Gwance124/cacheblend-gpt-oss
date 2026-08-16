@@ -74,14 +74,19 @@ def _selective_inner_model_forward(
         )
     if input_ids is None or getattr(input_ids, "ndim", None) != 1:
         raise RuntimeError("CacheBlend selective model requires flattened token IDs")
-    plan = ForwardRowPlanContext.current()
-    if plan.prompt_tokens != int(input_ids.shape[0]):
+    initial_plan = ForwardRowPlanContext.current()
+    if initial_plan.prompt_tokens != int(input_ids.shape[0]):
         raise RuntimeError("CacheBlend selective plan does not match prompt rows")
 
     hidden_states = model.embed_input_ids(input_ids)
     residual = None
     for layer_index in range(model.start_layer, model.end_layer):
         layer = model.layers[layer_index]
+        # The check-layer attention backend replaces the provisional plan
+        # before this loop advances to the next layer.  Read the context on
+        # every iteration so measured scores, rather than prompt position,
+        # determine later-layer MLP and KV work.
+        plan = ForwardRowPlanContext.current()
         selection = plan.layer(layer_index)
         if selection.is_full_recompute:
             hidden_states, residual = layer(hidden_states, positions, residual)

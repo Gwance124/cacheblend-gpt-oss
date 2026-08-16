@@ -41,6 +41,7 @@ class SelectivePlanErrorCode(str, Enum):
     NON_CANONICAL_RANGES = "non_canonical_ranges"
     ACTIVE_CONTEXT = "active_context"
     MISSING_CONTEXT = "missing_context"
+    IMPORTANCE_SCORES_ALREADY_SET = "importance_scores_already_set"
 
 
 class SelectivePlanError(ValueError):
@@ -263,7 +264,85 @@ class ForwardRowPlan:
         return self.layers[layer_index]
 
 
-_ACTIVE_PLAN: ContextVar[ForwardRowPlan | None] = ContextVar(
+@dataclass(slots=True)
+class SelectiveForwardState:
+    """Mutable worker-local selective state for one model forward.
+
+    The initial plan recomputes every row through ``check_layer`` and leaves
+    only the configured suffix/non-cached rows selected afterwards.  The
+    attention backend replaces that provisional plan once, before writing the
+    check-layer KV, using measured loaded-versus-fresh value differences.
+    Keeping this state separate from the immutable plan lets the model query
+    the final plan on every later layer without widening the vLLM boundary.
+    """
+
+    plan: ForwardRowPlan
+    candidate_cached_ranges: tuple[TokenRange, ...]
+    check_layer: int
+    recompute_ratio: float
+    suffix_tokens: int
+    importance_scores: tuple[float, ...] | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.plan, ForwardRowPlan):
+            _fail(SelectivePlanErrorCode.INVALID_LAYER_COUNT)
+        try:
+            ranges = tuple(self.candidate_cached_ranges)
+        except TypeError:
+            _fail(SelectivePlanErrorCode.INVALID_RANGE)
+        if self.plan.prompt_tokens < 0 or any(
+            not isinstance(item, TokenRange)
+            or len(item) == 0
+            or item.end > self.plan.prompt_tokens
+            for item in ranges
+        ):
+            _fail(SelectivePlanErrorCode.INVALID_RANGE)
+        if tuple(sorted(ranges, key=lambda item: (item.start, item.end))) != ranges:
+            _fail(SelectivePlanErrorCode.NON_CANONICAL_RANGES)
+        if any(left.overlaps(right) for left, right in pairwise(ranges)):
+            _fail(SelectivePlanErrorCode.OVERLAPPING_RANGES)
+        if (
+            not _is_int(self.check_layer)
+            or not 0 <= self.check_layer < GPT_OSS_NUM_LAYERS
+            or isinstance(self.recompute_ratio, bool)
+            or not isinstance(self.recompute_ratio, int | float)
+            or not 0.0 <= float(self.recompute_ratio) <= 1.0
+            or not _is_int(self.suffix_tokens)
+            or not 0 <= self.suffix_tokens <= self.plan.prompt_tokens
+        ):
+            _fail(SelectivePlanErrorCode.INVALID_RANGE)
+        object.__setattr__(self, "candidate_cached_ranges", ranges)
+
+    @property
+    def scored(self) -> bool:
+        """Whether the check-layer measurement has replaced the provisional plan."""
+
+        return self.importance_scores is not None
+
+    def update_importance_scores(self, scores: Sequence[object]) -> None:
+        """Install one validated score vector and rebuild the later-layer plan."""
+
+        if self.scored:
+            _fail(SelectivePlanErrorCode.IMPORTANCE_SCORES_ALREADY_SET)
+        normalized = tuple(scores)
+        # Keep the policy import local: selective_policy imports ForwardRowPlan.
+        from cacheblend_gpt_oss.gpt_oss.selective_policy import (
+            CacheBlendSelectionPolicy,
+        )
+
+        result = CacheBlendSelectionPolicy().select(
+            prompt_tokens=self.plan.prompt_tokens,
+            cache_ranges=self.candidate_cached_ranges,
+            importance_scores=normalized,
+            check_layer=self.check_layer,
+            recompute_ratio=self.recompute_ratio,
+            suffix_tokens=self.suffix_tokens,
+        )
+        self.plan = result.row_plan
+        self.importance_scores = tuple(float(score) for score in normalized)
+
+
+_ACTIVE_PLAN: ContextVar[ForwardRowPlan | SelectiveForwardState | None] = ContextVar(
     "cacheblend_gpt_oss_forward_row_plan", default=None
 )
 
@@ -272,7 +351,7 @@ class ForwardRowPlanContext:
     """Worker-local, lifetime-bounded plan binding for one forward pass."""
 
     @staticmethod
-    def install(plan: ForwardRowPlan) -> object:
+    def install(plan: ForwardRowPlan | SelectiveForwardState) -> object:
         """Install a plan before vLLM enters the model forward.
 
         The V1 connector's ``start_load_kv`` and ``wait_for_save`` hooks are
@@ -281,7 +360,7 @@ class ForwardRowPlanContext:
         connector and must be passed to :meth:`reset` exactly once.
         """
 
-        if not isinstance(plan, ForwardRowPlan):
+        if not isinstance(plan, ForwardRowPlan | SelectiveForwardState):
             _fail(SelectivePlanErrorCode.INVALID_LAYER_COUNT)
         if _ACTIVE_PLAN.get() is not None:
             _fail(SelectivePlanErrorCode.ACTIVE_CONTEXT)
@@ -310,19 +389,30 @@ class ForwardRowPlanContext:
         plan = _ACTIVE_PLAN.get()
         if plan is None:
             _fail(SelectivePlanErrorCode.MISSING_CONTEXT)
-        return plan
+        return plan.plan if isinstance(plan, SelectiveForwardState) else plan
 
     @staticmethod
     def current_or_none() -> ForwardRowPlan | None:
         """Return the active plan without turning ordinary vLLM into an error."""
 
-        return _ACTIVE_PLAN.get()
+        active = _ACTIVE_PLAN.get()
+        if isinstance(active, SelectiveForwardState):
+            return active.plan
+        return active
+
+    @staticmethod
+    def current_state() -> SelectiveForwardState | None:
+        """Return mutable selective state, if this forward is selective."""
+
+        active = _ACTIVE_PLAN.get()
+        return active if isinstance(active, SelectiveForwardState) else None
 
 
 __all__ = [
     "ForwardRowPlan",
     "ForwardRowPlanContext",
     "LayerRowSelection",
+    "SelectiveForwardState",
     "SelectivePlanError",
     "SelectivePlanErrorCode",
 ]

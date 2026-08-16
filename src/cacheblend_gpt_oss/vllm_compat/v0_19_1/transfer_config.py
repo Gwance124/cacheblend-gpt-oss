@@ -410,10 +410,10 @@ class TransferSelectiveConfig(Transfer100PctConfig):
     """Validated opt-in selective row execution configuration.
 
     This is a real execution mode, but it is intentionally separate from the
-    validated ``transfer_100pct`` milestone.  The current first selective arm
-    uses deterministic zero check-layer scores until a GPU importance-score
-    producer is wired in; every run must therefore be compared with the
-    full-prefill and transfer controls before any quality claim is made.
+    validated ``transfer_100pct`` milestone.  The worker executes through the
+    check layer, measures loaded-versus-fresh value differences, and only then
+    applies this ratio to later layers.  Every run remains subject to the
+    full-prefill correctness gate before any quality claim is made.
     """
 
     check_layer: int = 1
