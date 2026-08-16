@@ -58,7 +58,8 @@ M3 numerical equivalence (PASS, connector-inclusive v2 envelope)  ──►  M4 
 
 M3 is now green under the connector-inclusive v2 policy. The matched CUSTOM backend control
 and selective serving seams are implemented. The immediate next work is one synthetic g3
-selective smoke/correctness run, followed by the ratio sweep and matched BrowseComp gates.
+selective smoke/correctness run using measured check-layer scores, followed by the ratio sweep
+and matched BrowseComp gates.
 
 ## Why this is a roadmap, not a one-shot change
 
@@ -68,8 +69,8 @@ then recomputes **100%** of every prompt and overwrites the loaded KV, so
 Alongside it, the selective arm now has a tested CPU row plan, an explicit
 `transfer_selective` configuration, a pinned vLLM 0.19.1 CUSTOM attention backend, and a lazy
 GPT-OSS model wrapper that skips MLP work for cached rows after the check layer. The selective
-arm is still opt-in, uses deterministic zero importance scores for the first mechanics smoke,
-and has **no GPU correctness or speed claim** until g3 evidence is captured.
+arm is still opt-in, measures loaded-versus-fresh value differences at the check layer, and has
+**no GPU correctness or speed claim** until g3 evidence is captured.
 
 ### Root-cause lead for M3 (the linchpin)
 
