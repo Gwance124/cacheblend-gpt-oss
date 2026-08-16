@@ -22,6 +22,7 @@ from cacheblend_gpt_oss.benchmark.browsecomp import (  # noqa: E402
     failed_browsecomp_report,
     runtime_identity_from_dict,
     validate_browsecomp_append_only,
+    validate_browsecomp_selective_append_only,
 )
 
 
@@ -92,6 +93,14 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="return nonzero when the evidence gates do not pass",
     )
+    parser.add_argument(
+        "--selective",
+        action="store_true",
+        help=(
+            "validate the transfer_selective contract and require positive, "
+            "fully reconciled layer-token work"
+        ),
+    )
     return parser
 
 
@@ -101,14 +110,19 @@ def main() -> int:
     output_error = False
     try:
         runtime = runtime_identity_from_dict(_read_json(args.runtime_identity))
-        report = validate_browsecomp_append_only(
+        validator = (
+            validate_browsecomp_selective_append_only
+            if args.selective
+            else validate_browsecomp_append_only
+        )
+        report = validator(
             _read_json(args.run_record),
             _read_text(args.metrics_before),
             _read_text(args.metrics_after),
             runtime,
         )
     except BrowseCompEvidenceError as error:
-        report = failed_browsecomp_report(runtime, error)
+        report = failed_browsecomp_report(runtime, error, selective=args.selective)
 
     rendered = json.dumps(report, allow_nan=False, indent=2, sort_keys=True) + "\n"
     if args.output is not None:
@@ -116,7 +130,11 @@ def main() -> int:
             _write_create_only(args.output, rendered)
         except BrowseCompEvidenceError as error:
             output_error = True
-            report = failed_browsecomp_report(runtime, error)
+            report = failed_browsecomp_report(
+                runtime,
+                error,
+                selective=args.selective,
+            )
             rendered = (
                 json.dumps(report, allow_nan=False, indent=2, sort_keys=True) + "\n"
             )

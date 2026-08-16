@@ -11,6 +11,16 @@ Every prompt token is still scheduled and recomputed, and
 that transfer occurred; it does not prove that model work was saved or that an
 embedded document (rather than an unchanged prompt-aligned chunk) was reused.
 
+The selective sibling gate is available through
+`local-m85-g3-selective.sh` on g3 and
+`local-m85-p7-selective-browsecomp.sh` on p7. It uses the explicit
+`transfer_selective`/CUSTOM path and runs the same append-only agent workload.
+Its validator is invoked with `--selective` and emits the separate contract
+`browsecomp_plus_agentic_append_only_transfer_selective`. In addition to the
+100% transfer counters, it requires positive reconciled layer-token work:
+`layer_token_rows_recomputed + layer_token_rows_avoided == 24 * input_tokens`.
+Native vLLM prompt accounting remains full-prompt accounting by design.
+
 No command in this runbook has been executed on the authoring workstation.
 Only user-supplied `solab-g3`/`solab-p7` output can pass the gate.
 

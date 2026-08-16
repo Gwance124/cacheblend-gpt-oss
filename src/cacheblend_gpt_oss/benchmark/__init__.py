@@ -3,6 +3,7 @@
 from cacheblend_gpt_oss.benchmark.browsecomp import (
     BROWSECOMP_EVIDENCE_CONTRACT,
     BROWSECOMP_EVIDENCE_SCHEMA_VERSION,
+    BROWSECOMP_SELECTIVE_EVIDENCE_CONTRACT,
     BrowseCompEvidenceError,
     BrowseCompEvidenceErrorCode,
     browsecomp_evidence_digest,
@@ -10,6 +11,7 @@ from cacheblend_gpt_oss.benchmark.browsecomp import (
     failed_browsecomp_report,
     runtime_identity_from_dict,
     validate_browsecomp_append_only,
+    validate_browsecomp_selective_append_only,
 )
 from cacheblend_gpt_oss.benchmark.io import (
     benchmark_artifact_digest,
@@ -53,6 +55,7 @@ __all__ = [
     "BENCHMARK_TENSOR_PARALLEL_SIZE",
     "BROWSECOMP_EVIDENCE_CONTRACT",
     "BROWSECOMP_EVIDENCE_SCHEMA_VERSION",
+    "BROWSECOMP_SELECTIVE_EVIDENCE_CONTRACT",
     "BenchmarkArm",
     "BenchmarkArmSummary",
     "BenchmarkArtifact",
@@ -77,5 +80,6 @@ __all__ = [
     "runtime_identity_from_dict",
     "summarize_benchmark",
     "validate_browsecomp_append_only",
+    "validate_browsecomp_selective_append_only",
     "write_benchmark_artifact",
 ]

@@ -15,7 +15,7 @@ main() {
     export CACHEBLEND_P7_PYTHON=python3
   fi
 
-  export CACHEBLEND_P7_RUN_BASE_DIR=/mnt/nvme2/mlee/cacheblend-gpt-oss-artifacts/browsecomp-append-only-cacheblend-20260815
+  export CACHEBLEND_P7_RUN_BASE_DIR="${CACHEBLEND_P7_RUN_BASE_DIR:-/mnt/nvme2/mlee/cacheblend-gpt-oss-artifacts/browsecomp-append-only-cacheblend-20260815}"
   export CACHEBLEND_P7_RUN_DIR="$CACHEBLEND_P7_RUN_BASE_DIR"
   if test -e "$CACHEBLEND_P7_RUN_DIR"; then
     export CACHEBLEND_P7_RUN_DIR="${CACHEBLEND_P7_RUN_BASE_DIR}-retry$(date +%Y%m%d-%H%M%S)"
@@ -28,7 +28,8 @@ main() {
   mkdir -p "$CACHEBLEND_P7_RUN_DIR/run"
   chmod 700 "$CACHEBLEND_P7_RUN_DIR" "$CACHEBLEND_P7_RUN_DIR/run"
 
-  export CACHEBLEND_G3_RUN_POINTER=/mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/solab-g3-m8.5-browsecomp-append-only-20260815.current
+  export CACHEBLEND_G3_RUN_POINTER="${CACHEBLEND_G3_RUN_POINTER:-/mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/solab-g3-m8.5-browsecomp-append-only-20260815.current}"
+  export CACHEBLEND_P7_VALIDATE_SELECTIVE="${CACHEBLEND_P7_VALIDATE_SELECTIVE:-no}"
   if ! scp labuser@192.168.3.4:"$CACHEBLEND_G3_RUN_POINTER" \
     "$CACHEBLEND_P7_RUN_DIR/g3-run-dir.txt"; then
     echo "G3_RUN_POINTER_TRANSFER_FAILED=$CACHEBLEND_G3_RUN_POINTER"
@@ -117,14 +118,26 @@ main() {
   if test -f /mnt/nvme2/mlee/cacheblend-gpt-oss/scripts/validate_browsecomp_append_only.py; then
     cd /mnt/nvme2/mlee/cacheblend-gpt-oss || return 0
 
-    PYTHONPATH=/mnt/nvme2/mlee/cacheblend-gpt-oss/src \
-      "$CACHEBLEND_P7_PYTHON" scripts/validate_browsecomp_append_only.py \
-      --run-record "$CACHEBLEND_P7_RUN_DIR/run/run_703.json" \
-      --metrics-before "$CACHEBLEND_P7_RUN_DIR/metrics-before.prom" \
-      --metrics-after "$CACHEBLEND_P7_RUN_DIR/metrics-after.prom" \
-      --runtime-identity "$CACHEBLEND_P7_RUN_DIR/runtime-identity.json" \
-      --output "$CACHEBLEND_P7_RUN_DIR/browsecomp-append-only-evidence.json" \
-      --require-passed
+    if test "$CACHEBLEND_P7_VALIDATE_SELECTIVE" = yes; then
+      PYTHONPATH=/mnt/nvme2/mlee/cacheblend-gpt-oss/src \
+        "$CACHEBLEND_P7_PYTHON" scripts/validate_browsecomp_append_only.py \
+        --run-record "$CACHEBLEND_P7_RUN_DIR/run/run_703.json" \
+        --metrics-before "$CACHEBLEND_P7_RUN_DIR/metrics-before.prom" \
+        --metrics-after "$CACHEBLEND_P7_RUN_DIR/metrics-after.prom" \
+        --runtime-identity "$CACHEBLEND_P7_RUN_DIR/runtime-identity.json" \
+        --output "$CACHEBLEND_P7_RUN_DIR/browsecomp-append-only-evidence.json" \
+        --selective \
+        --require-passed
+    else
+      PYTHONPATH=/mnt/nvme2/mlee/cacheblend-gpt-oss/src \
+        "$CACHEBLEND_P7_PYTHON" scripts/validate_browsecomp_append_only.py \
+        --run-record "$CACHEBLEND_P7_RUN_DIR/run/run_703.json" \
+        --metrics-before "$CACHEBLEND_P7_RUN_DIR/metrics-before.prom" \
+        --metrics-after "$CACHEBLEND_P7_RUN_DIR/metrics-after.prom" \
+        --runtime-identity "$CACHEBLEND_P7_RUN_DIR/runtime-identity.json" \
+        --output "$CACHEBLEND_P7_RUN_DIR/browsecomp-append-only-evidence.json" \
+        --require-passed
+    fi
 
     echo "BROWSECOMP_VALIDATOR_STATUS=$?"
   else

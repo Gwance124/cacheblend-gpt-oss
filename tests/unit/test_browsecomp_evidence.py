@@ -12,10 +12,12 @@ import pytest
 
 from cacheblend_gpt_oss.benchmark.browsecomp import (
     BROWSECOMP_EVIDENCE_CONTRACT,
+    BROWSECOMP_SELECTIVE_EVIDENCE_CONTRACT,
     BrowseCompEvidenceError,
     BrowseCompEvidenceErrorCode,
     browsecomp_evidence_digest,
     validate_browsecomp_append_only,
+    validate_browsecomp_selective_append_only,
 )
 from cacheblend_gpt_oss.correctness.models import CorrectnessRuntimeIdentity
 
@@ -165,10 +167,12 @@ def _metric_snapshot(
     prefill_tokens: int = 100,
     timing_count: int = 5,
     timing_sum: float = 1.0,
+    selective_work: dict[str, int] | None = None,
 ) -> str:
     values: dict[str, int | float] = {}
     values.update(connector or _CONNECTOR_BASE)
     values.update(store or _STORE_BASE)
+    values.update(selective_work or {})
     values["vllm:prompt_tokens_total"] = prompt_tokens
     for source, value in (
         ("local_compute", local_compute),
@@ -202,7 +206,7 @@ def _metric_snapshot(
     return "\n".join(lines) + "\n"
 
 
-def _metric_pair() -> tuple[str, str]:
+def _metric_pair(*, selective: bool = False) -> tuple[str, str]:
     before = _metric_snapshot()
     after_connector = {
         key: _CONNECTOR_BASE[key] + _CONNECTOR_DELTA[key] for key in _CONNECTOR_BASE
@@ -217,12 +221,27 @@ def _metric_pair() -> tuple[str, str]:
         prefill_tokens=340,
         timing_count=7,
         timing_sum=3.0,
+        selective_work=(
+            {
+                "vllm:cacheblend_layer_token_rows_recomputed_total": 5_000,
+                "vllm:cacheblend_layer_token_rows_avoided_total": 760,
+            }
+            if selective
+            else None
+        ),
     )
 
 
 def _valid_report() -> dict[str, object]:
     before, after = _metric_pair()
     return validate_browsecomp_append_only(_run_record(), before, after, _runtime())
+
+
+def _valid_selective_report() -> dict[str, object]:
+    before, after = _metric_pair(selective=True)
+    return validate_browsecomp_selective_append_only(
+        _run_record(), before, after, _runtime()
+    )
 
 
 def _assert_failure(
@@ -287,6 +306,26 @@ def test_happy_path_reports_only_bounded_aggregate_evidence() -> None:
         "kv_computed_tokens": 240,
     }
     assert report["timing"]["ttft_seconds"]["count"] == 2  # type: ignore[index]
+
+
+def test_selective_happy_path_reconciles_layer_token_work() -> None:
+    report = _valid_selective_report()
+
+    assert report["contract"] == BROWSECOMP_SELECTIVE_EVIDENCE_CONTRACT
+    assert report["passed"] is True
+    assert report["selective_work"] == {
+        "layer_token_rows_recomputed": 5_000,
+        "layer_token_rows_avoided": 760,
+    }
+
+
+def test_selective_requires_positive_reconciled_work() -> None:
+    before, after = _metric_pair()
+    with pytest.raises(BrowseCompEvidenceError) as caught:
+        validate_browsecomp_selective_append_only(
+            _run_record(), before, after, _runtime()
+        )
+    assert caught.value.code is BrowseCompEvidenceErrorCode.INVALID_PROMETHEUS
 
 
 def test_private_run_and_metric_data_never_cross_into_report_or_digest() -> None:

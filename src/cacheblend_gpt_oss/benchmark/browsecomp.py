@@ -29,6 +29,7 @@ from cacheblend_gpt_oss.correctness.capture import (
     has_vllm_timing_metric_surface,
     parse_connector_counter_snapshot,
     parse_connector_store_counter_snapshot,
+    parse_selective_work_counter_snapshot,
     parse_vllm_prefill_work_snapshot,
     parse_vllm_prompt_counter_snapshot,
     parse_vllm_prompt_source_snapshot,
@@ -45,6 +46,10 @@ from cacheblend_gpt_oss.correctness.models import CorrectnessRuntimeIdentity
 
 BROWSECOMP_EVIDENCE_SCHEMA_VERSION = 1
 BROWSECOMP_EVIDENCE_CONTRACT = "browsecomp_plus_agentic_append_only_transfer_100pct"
+BROWSECOMP_SELECTIVE_EVIDENCE_CONTRACT = (
+    "browsecomp_plus_agentic_append_only_transfer_selective"
+)
+GPT_OSS_LAYER_COUNT = 24
 
 _RUNTIME_KEYS = frozenset(
     {
@@ -80,6 +85,12 @@ _STORE_METRIC_NAMES = frozenset(
         "vllm:cacheblend_store_fallbacks_total",
     }
 )
+_SELECTIVE_WORK_METRIC_NAMES = frozenset(
+    {
+        "vllm:cacheblend_layer_token_rows_recomputed_total",
+        "vllm:cacheblend_layer_token_rows_avoided_total",
+    }
+)
 _WORKLOAD_KEYS = (
     "searches",
     "retrieval_requests",
@@ -107,6 +118,7 @@ class BrowseCompEvidenceErrorCode(str, Enum):
     INVALID_RUNTIME = "invalid_runtime"
     INVALID_PROMETHEUS = "invalid_prometheus"
     INVALID_CONNECTOR_METRICS = "invalid_connector_metrics"
+    INVALID_SELECTIVE_METRICS = "invalid_selective_metrics"
     INVALID_STORE_METRICS = "invalid_store_metrics"
     INVALID_NATIVE_METRICS = "invalid_native_metrics"
     INVALID_TIMING_METRICS = "invalid_timing_metrics"
@@ -146,6 +158,9 @@ _ERROR_MESSAGES = {
     ),
     BrowseCompEvidenceErrorCode.INVALID_CONNECTOR_METRICS: (
         "CacheBlend connector counters do not reconcile"
+    ),
+    BrowseCompEvidenceErrorCode.INVALID_SELECTIVE_METRICS: (
+        "CacheBlend selective layer-token work does not reconcile"
     ),
     BrowseCompEvidenceErrorCode.INVALID_STORE_METRICS: (
         "CacheBlend store counters do not reconcile"
@@ -554,10 +569,13 @@ def _parse_metric_deltas(
     metrics_before: str,
     metrics_after: str,
     facts: _RunFacts,
+    *,
+    selective: bool,
 ) -> tuple[
     dict[str, int],
     dict[str, int],
     int,
+    dict[str, int],
     dict[str, int],
     VllmPrefillWorkSnapshot,
     VllmTimingSnapshot,
@@ -582,6 +600,17 @@ def _parse_metric_deltas(
         _STORE_METRIC_NAMES,
         BrowseCompEvidenceErrorCode.INVALID_STORE_METRICS,
     )
+    if selective:
+        _require_optional_metric_surface(
+            before_text,
+            _SELECTIVE_WORK_METRIC_NAMES,
+            BrowseCompEvidenceErrorCode.INVALID_SELECTIVE_METRICS,
+        )
+        _require_metric_surface(
+            after_text,
+            _SELECTIVE_WORK_METRIC_NAMES,
+            BrowseCompEvidenceErrorCode.INVALID_SELECTIVE_METRICS,
+        )
     if not has_connector_metric_surface(after_text):
         _fail(BrowseCompEvidenceErrorCode.INVALID_CONNECTOR_METRICS)
     if not has_vllm_prompt_metric_surface(after_text):
@@ -611,6 +640,16 @@ def _parse_metric_deltas(
         store = connector_store_counter_delta(before_store, after_store)
     except (TypeError, ValueError):
         _fail(BrowseCompEvidenceErrorCode.INVALID_STORE_METRICS)
+    try:
+        selective_work = parse_selective_work_counter_snapshot(after_text)
+        if selective:
+            before_selective = parse_selective_work_counter_snapshot(before_text)
+            selective_work = {
+                key: selective_work[key] - before_selective[key]
+                for key in selective_work
+            }
+    except (TypeError, ValueError):
+        _fail(BrowseCompEvidenceErrorCode.INVALID_SELECTIVE_METRICS)
 
     try:
         before_prompt = parse_vllm_prompt_counter_snapshot(before_text)
@@ -645,6 +684,16 @@ def _parse_metric_deltas(
         or connector["prefill_tokens_avoided"] != 0
     ):
         _fail(BrowseCompEvidenceErrorCode.INVALID_CONNECTOR_METRICS)
+    if selective:
+        total_layer_token_rows = facts.input_tokens * GPT_OSS_LAYER_COUNT
+        if (
+            selective_work["layer_token_rows_recomputed"] <= 0
+            or selective_work["layer_token_rows_avoided"] <= 0
+            or selective_work["layer_token_rows_recomputed"]
+            + selective_work["layer_token_rows_avoided"]
+            != total_layer_token_rows
+        ):
+            _fail(BrowseCompEvidenceErrorCode.INVALID_SELECTIVE_METRICS)
     if (
         store["store_fallbacks"] != 0
         or store["store_tokens_eligible"] <= 0
@@ -670,7 +719,15 @@ def _parse_metric_deltas(
         require_vllm_timing_delta(timing, expected_requests=facts.generation_requests)
     except (TypeError, ValueError):
         _fail(BrowseCompEvidenceErrorCode.INVALID_TIMING_METRICS)
-    return connector, store, prompt_tokens, prompt_source, prefill_work, timing
+    return (
+        connector,
+        store,
+        prompt_tokens,
+        prompt_source,
+        selective_work,
+        prefill_work,
+        timing,
+    )
 
 
 def _empty_workload() -> dict[str, int]:
@@ -691,11 +748,13 @@ def _report_without_digest(
     store: Mapping[str, int] | None,
     native: Mapping[str, object] | None,
     timing: Mapping[str, object] | None,
+    contract: str = BROWSECOMP_EVIDENCE_CONTRACT,
+    selective_work: Mapping[str, int] | None = None,
     failure: BrowseCompEvidenceError | None = None,
 ) -> dict[str, object]:
     report: dict[str, object] = {
         "schema_version": BROWSECOMP_EVIDENCE_SCHEMA_VERSION,
-        "contract": BROWSECOMP_EVIDENCE_CONTRACT,
+        "contract": contract,
         "runtime": None if runtime is None else _runtime_to_dict(runtime),
         "passed": passed,
         "workload": dict(workload),
@@ -705,6 +764,8 @@ def _report_without_digest(
         "native": None if native is None else dict(native),
         "timing": None if timing is None else dict(timing),
     }
+    if selective_work is not None:
+        report["selective_work"] = dict(selective_work)
     if failure is not None:
         report["failure"] = {
             "code": failure.code.value,
@@ -741,6 +802,8 @@ def browsecomp_evidence_digest(report: Mapping[str, object]) -> str:
 def failed_browsecomp_report(
     runtime: CorrectnessRuntimeIdentity | None,
     error: BrowseCompEvidenceError,
+    *,
+    selective: bool = False,
 ) -> dict[str, object]:
     """Build a sanitized failed report for CLI inspection."""
 
@@ -753,6 +816,11 @@ def failed_browsecomp_report(
         store=None,
         native=None,
         timing=None,
+        contract=(
+            BROWSECOMP_SELECTIVE_EVIDENCE_CONTRACT
+            if selective
+            else BROWSECOMP_EVIDENCE_CONTRACT
+        ),
         failure=error,
     )
     report["evidence_digest"] = browsecomp_evidence_digest(report)
@@ -764,6 +832,8 @@ def validate_browsecomp_append_only(
     metrics_before: str,
     metrics_after: str,
     runtime: CorrectnessRuntimeIdentity,
+    *,
+    selective: bool = False,
 ) -> dict[str, object]:
     """Validate one completed append-only CacheBlend transfer smoke run.
 
@@ -778,9 +848,15 @@ def validate_browsecomp_append_only(
         store,
         prompt_tokens,
         prompt_source,
+        selective_work,
         prefill_work,
         timing,
-    ) = _parse_metric_deltas(metrics_before, metrics_after, facts)
+    ) = _parse_metric_deltas(
+        metrics_before,
+        metrics_after,
+        facts,
+        selective=selective,
+    )
     workload = {
         "searches": facts.searches,
         "retrieval_requests": facts.retrieval_requests,
@@ -814,14 +890,38 @@ def validate_browsecomp_append_only(
         store=store,
         native=native,
         timing=timing.as_dict(),
+        contract=(
+            BROWSECOMP_SELECTIVE_EVIDENCE_CONTRACT
+            if selective
+            else BROWSECOMP_EVIDENCE_CONTRACT
+        ),
+        selective_work=selective_work if selective else None,
     )
     report["evidence_digest"] = browsecomp_evidence_digest(report)
     return report
 
 
+def validate_browsecomp_selective_append_only(
+    run_record: object,
+    metrics_before: str,
+    metrics_after: str,
+    runtime: CorrectnessRuntimeIdentity,
+) -> dict[str, object]:
+    """Validate one selective append-only run with reconciled layer-row work."""
+
+    return validate_browsecomp_append_only(
+        run_record,
+        metrics_before,
+        metrics_after,
+        runtime,
+        selective=True,
+    )
+
+
 __all__ = [
     "BROWSECOMP_EVIDENCE_CONTRACT",
     "BROWSECOMP_EVIDENCE_SCHEMA_VERSION",
+    "BROWSECOMP_SELECTIVE_EVIDENCE_CONTRACT",
     "BrowseCompEvidenceError",
     "BrowseCompEvidenceErrorCode",
     "browsecomp_evidence_digest",
@@ -829,4 +929,5 @@ __all__ = [
     "failed_browsecomp_report",
     "runtime_identity_from_dict",
     "validate_browsecomp_append_only",
+    "validate_browsecomp_selective_append_only",
 ]

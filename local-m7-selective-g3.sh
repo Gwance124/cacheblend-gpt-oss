@@ -37,7 +37,7 @@ main() {
   export CACHEBLEND_SELECTIVE_CHECK_LAYER="${CACHEBLEND_SELECTIVE_CHECK_LAYER:-1}"
   export CACHEBLEND_SELECTIVE_RECOMPUTE_RATIO="${CACHEBLEND_SELECTIVE_RECOMPUTE_RATIO:-0.15}"
   export CACHEBLEND_SELECTIVE_SUFFIX_TOKENS="${CACHEBLEND_SELECTIVE_SUFFIX_TOKENS:-32}"
-  export CACHEBLEND_RUN_BASE_DIR=/mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/solab-g3-m7-selective-$(date +%Y%m%d-%H%M%S)
+  export CACHEBLEND_RUN_BASE_DIR="${CACHEBLEND_RUN_BASE_DIR:-/mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/solab-g3-m7-selective-$(date +%Y%m%d-%H%M%S)}"
   export CACHEBLEND_RUN_DIR="$CACHEBLEND_RUN_BASE_DIR"
   while test -e "$CACHEBLEND_RUN_DIR"; do
     sleep 1
