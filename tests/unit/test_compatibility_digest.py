@@ -157,6 +157,17 @@ def test_model_and_kv_changes_are_separated() -> None:
     assert kv_digest != baseline_kv
 
 
+def test_selective_custom_dispatch_alias_preserves_triton_kv_identity() -> None:
+    config, kv_config = _runtime()
+    triton_model, triton_kv = _derive(config, kv_config)
+
+    config.attention_config.backend.name = "CUSTOM"
+    custom_model, custom_kv = _derive(config, kv_config)
+
+    assert custom_model == triton_model
+    assert custom_kv == triton_kv
+
+
 def test_runtime_capacity_is_not_part_of_kv_representation_identity() -> None:
     config, kv_config = _runtime()
     baseline = _derive(config, kv_config)

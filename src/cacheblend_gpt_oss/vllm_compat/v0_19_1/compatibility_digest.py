@@ -164,6 +164,25 @@ def _named_or_stringified(value: object) -> str:
     return _stringified(value)
 
 
+def _kv_representation_backend_identity(value: object) -> str:
+    """Return the backend identity that defines the persisted KV ABI.
+
+    The selective plugin is an explicit subclass of vLLM 0.19.1's
+    sink-capable ``TritonAttentionBackend``.  vLLM dispatches that class using
+    the ``CUSTOM`` enum token, but it preserves the stock Triton KV tensor
+    layout and cache-update ABI.  Cache identity must therefore distinguish
+    storage representation, not the dispatch alias; otherwise the selective
+    launcher would reject the pinned full-prefill KV digest solely because the
+    plugin is enabled.
+
+    If a future custom backend changes the KV representation, it must receive
+    a new digest schema/identity instead of reusing this alias.
+    """
+
+    identity = _named_or_stringified(value)
+    return "TRITON_ATTN" if identity == "CUSTOM" else identity
+
+
 def _served_names(model_config: object) -> list[str]:
     raw = _attribute(model_config, "served_model_name")
     if isinstance(raw, str):
@@ -240,7 +259,7 @@ def derive_runtime_compatibility_digests(
         "cache_dtype": _stringified(_attribute(cache, "cache_dtype")),
         "cache_block_size": _attribute(cache, "block_size"),
         "model_dtype": _stringified(_attribute(model, "dtype")),
-        "attention_backend": _named_or_stringified(attention_backend),
+        "attention_backend": _kv_representation_backend_identity(attention_backend),
         "tensor_parallel_size": _attribute(parallel, "tensor_parallel_size"),
         "pipeline_parallel_size": _attribute(parallel, "pipeline_parallel_size"),
         "data_parallel_size": _attribute(parallel, "data_parallel_size"),
