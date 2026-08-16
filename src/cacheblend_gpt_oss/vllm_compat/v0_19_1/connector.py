@@ -337,10 +337,16 @@ class GptOssCacheBlendConnector(
                 "three-argument constructor with a finalized KVCacheConfig."
             )
 
+        transfer_config = parse_connector_extra_config(
+            vllm_config.kv_transfer_config.kv_connector_extra_config
+        )
         require_pinned_config(
             vllm_config,
             kv_cache_config,
             v2_model_runner_enabled=_v2_model_runner_enabled(),
+            allow_custom_attention_backend=isinstance(
+                transfer_config, TransferSelectiveConfig
+            ),
         )
 
         # vLLM otherwise defaults to disabling HMA whenever a connector is set.
@@ -365,9 +371,7 @@ class GptOssCacheBlendConnector(
         self._adapted_kv_cache_config: AdaptedKvCacheConfig = (
             adapt_kv_cache_config(kv_cache_config)
         )
-        self._transfer_config = parse_connector_extra_config(
-            vllm_config.kv_transfer_config.kv_connector_extra_config
-        )
+        self._transfer_config = transfer_config
         if isinstance(self._transfer_config, CompatibilityProbeConfig):
             digests = derive_runtime_compatibility_digests(
                 vllm_config, self._adapted_kv_cache_config

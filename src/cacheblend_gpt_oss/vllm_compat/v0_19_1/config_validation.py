@@ -153,8 +153,16 @@ def collect_pinned_config_issues(
     kv_cache_config: object,
     *,
     v2_model_runner_enabled: bool,
+    allow_custom_attention_backend: bool = False,
 ) -> tuple[PinnedConfigIssue, ...]:
-    """Return every static incompatibility in deterministic field order."""
+    """Return every static incompatibility in deterministic field order.
+
+    ``CUSTOM`` is an explicit, repository-local vLLM plugin boundary.  It is
+    permitted only for the experimental selective transfer path, whose
+    connector validates the parsed transfer configuration before calling this
+    function.  All ordinary serving and full-prefill transfer paths retain the
+    strict pinned ``TRITON_ATTN`` requirement.
+    """
 
     issues: list[PinnedConfigIssue] = []
 
@@ -266,7 +274,21 @@ def collect_pinned_config_issues(
         _get(scheduler, "disable_hybrid_kv_cache_manager"),
     )
     expect("runner.v2_enabled", False, v2_model_runner_enabled)
-    expect("attention.backend", "TRITON_ATTN", _display(_get(attention, "backend")))
+    observed_attention_backend = _display(_get(attention, "backend"))
+    allowed_attention_backends = {"TRITON_ATTN"}
+    if allow_custom_attention_backend:
+        allowed_attention_backends.add("CUSTOM")
+    if observed_attention_backend not in allowed_attention_backends:
+        expected_attention_backends = "TRITON_ATTN"
+        if allow_custom_attention_backend:
+            expected_attention_backends = "TRITON_ATTN|CUSTOM"
+        issues.append(
+            PinnedConfigIssue(
+                field="attention.backend",
+                expected=expected_attention_backends,
+                observed=observed_attention_backend,
+            )
+        )
     expect(
         "features.speculative_decoding",
         None,
@@ -353,13 +375,19 @@ def require_pinned_config(
     kv_cache_config: object,
     *,
     v2_model_runner_enabled: bool,
+    allow_custom_attention_backend: bool = False,
 ) -> None:
-    """Raise a structured error unless all static target facts match."""
+    """Raise a structured error unless all static target facts match.
+
+    The custom backend exception is intentionally opt-in and is only used by
+    the connector after it has parsed ``transfer_selective``.
+    """
 
     issues = collect_pinned_config_issues(
         vllm_config,
         kv_cache_config,
         v2_model_runner_enabled=v2_model_runner_enabled,
+        allow_custom_attention_backend=allow_custom_attention_backend,
     )
     if issues:
         raise UnsupportedPinnedConfigError(issues)

@@ -148,6 +148,35 @@ def test_exact_pinned_configuration_is_accepted() -> None:
     )
 
 
+def test_custom_attention_backend_is_only_an_explicit_selective_exception() -> None:
+    vllm_config, kv_cache_config = _valid_config()
+    vllm_config.attention_config.backend.name = "CUSTOM"
+
+    with pytest.raises(UnsupportedPinnedConfigError) as error:
+        require_pinned_config(
+            vllm_config,
+            kv_cache_config,
+            v2_model_runner_enabled=False,
+        )
+    assert "attention.backend" in {issue.field for issue in error.value.issues}
+
+    assert (
+        collect_pinned_config_issues(
+            vllm_config,
+            kv_cache_config,
+            v2_model_runner_enabled=False,
+            allow_custom_attention_backend=True,
+        )
+        == ()
+    )
+    require_pinned_config(
+        vllm_config,
+        kv_cache_config,
+        v2_model_runner_enabled=False,
+        allow_custom_attention_backend=True,
+    )
+
+
 def test_finalized_rope_parameters_must_contain_theta() -> None:
     """Do not treat raw top-level rope_theta as the model-consumed value.
 
