@@ -4,10 +4,10 @@ main() {
   cd /mnt/nvme2/mlee/rag-system || return 0
   source .env
 
-  if test -n "${PYTHON_BIN:-}"; then
-    export CACHEBLEND_P7_PYTHON="$PYTHON_BIN"
-  elif test -x /mnt/nvme2/mlee/rag-system/.venv/bin/python; then
+  if test -x /mnt/nvme2/mlee/rag-system/.venv/bin/python; then
     export CACHEBLEND_P7_PYTHON=/mnt/nvme2/mlee/rag-system/.venv/bin/python
+  elif test -n "${PYTHON_BIN:-}"; then
+    export CACHEBLEND_P7_PYTHON="$PYTHON_BIN"
   else
     export CACHEBLEND_P7_PYTHON=python3
   fi
