@@ -1022,6 +1022,7 @@ class GptOssCacheBlendConnector(
             request_id,
             block_ids_by_group,
             external_scheduler_tokens=0,
+            allow_duplicate_block_ids=self._allow_prefix_caching,
         )
         if request_id not in self._pending_handoff_ids:
             self._pending_handoff_ids.append(request_id)

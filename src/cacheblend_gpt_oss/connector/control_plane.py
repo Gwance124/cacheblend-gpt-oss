@@ -13,9 +13,14 @@ prompt token must still pass through ordinary prefill.
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from enum import Enum
 from typing import NoReturn
+
+_duplicate_block_ids_allowed: ContextVar[bool] = ContextVar(
+    "_duplicate_block_ids_allowed", default=False
+)
 
 from cacheblend_gpt_oss.metrics import RequestMetricCounters
 from cacheblend_gpt_oss.planner import MatchPlan, TokenRange, TokenSegment
@@ -138,7 +143,8 @@ class GroupBlockSnapshot:
         if any(not _is_int(block_id) or block_id < 0 for block_id in block_ids):
             _fail(ControlPlaneErrorCode.INVALID_BLOCK_ID)
         if len(block_ids) != len(set(block_ids)):
-            _fail(ControlPlaneErrorCode.INVALID_BLOCK_ID)
+            if not _duplicate_block_ids_allowed.get(False):
+                _fail(ControlPlaneErrorCode.INVALID_BLOCK_ID)
         object.__setattr__(self, "layer_names", layer_names)
         object.__setattr__(self, "block_ids", block_ids)
 
@@ -169,6 +175,8 @@ class GroupedBlockAllocation:
         cls,
         group_layout: CacheGroupLayout,
         block_ids_by_group: Sequence[Sequence[int]],
+        *,
+        allow_duplicate_block_ids: bool = False,
     ) -> GroupedBlockAllocation:
         """Copy grouped block tables without sorting away logical block order."""
 
@@ -178,17 +186,21 @@ class GroupedBlockAllocation:
             _fail(ControlPlaneErrorCode.GROUP_COUNT_MISMATCH)
         if len(block_groups) != group_layout.group_count:
             _fail(ControlPlaneErrorCode.GROUP_COUNT_MISMATCH)
-        return cls(
-            group_layout=group_layout,
-            groups=tuple(
-                GroupBlockSnapshot(
-                    group_index=group_index,
-                    layer_names=group_layout.layer_names_by_group[group_index],
-                    block_ids=block_ids,
-                )
-                for group_index, block_ids in enumerate(block_groups)
-            ),
-        )
+        token = _duplicate_block_ids_allowed.set(allow_duplicate_block_ids)
+        try:
+            return cls(
+                group_layout=group_layout,
+                groups=tuple(
+                    GroupBlockSnapshot(
+                        group_index=group_index,
+                        layer_names=group_layout.layer_names_by_group[group_index],
+                        block_ids=block_ids,
+                    )
+                    for group_index, block_ids in enumerate(block_groups)
+                ),
+            )
+        finally:
+            _duplicate_block_ids_allowed.reset(token)
 
     @property
     def block_ids_by_group(self) -> tuple[tuple[int, ...], ...]:
@@ -418,6 +430,7 @@ class RequestLifecycleState:
         block_ids_by_group: Sequence[Sequence[int]],
         *,
         external_scheduler_tokens: int,
+        allow_duplicate_block_ids: bool = False,
     ) -> RequestLifecycleState:
         """Bind the lookup plan to blocks, accepting only exact duplicates."""
 
@@ -430,7 +443,9 @@ class RequestLifecycleState:
             request_id=self.plan.request_id,
             allocation_generation=self.allocation_generation,
             grouped_blocks=GroupedBlockAllocation.capture(
-                group_layout, block_ids_by_group
+                group_layout,
+                block_ids_by_group,
+                allow_duplicate_block_ids=allow_duplicate_block_ids,
             ),
             external_scheduler_tokens=external_scheduler_tokens,
         )
@@ -642,11 +657,13 @@ class RequestControlPlane:
         block_ids_by_group: Sequence[Sequence[int]],
         *,
         external_scheduler_tokens: int,
+        allow_duplicate_block_ids: bool = False,
     ) -> RequestLifecycleState:
         state = self._require_state(request_id).allocate(
             self._group_layout,
             block_ids_by_group,
             external_scheduler_tokens=external_scheduler_tokens,
+            allow_duplicate_block_ids=allow_duplicate_block_ids,
         )
         self._states[request_id] = state
         return state

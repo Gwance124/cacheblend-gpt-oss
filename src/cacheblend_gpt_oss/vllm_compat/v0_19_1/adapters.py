@@ -372,6 +372,7 @@ def adapt_kv_cache_blocks(
         grouped_allocation = GroupedBlockAllocation.capture(
             config.control_plane_layout,
             block_ids_by_group,
+            allow_duplicate_block_ids=allow_null_blocks,
         )
         group_block_tables = tuple(
             GroupBlockTable(
