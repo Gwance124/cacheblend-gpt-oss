@@ -63,6 +63,81 @@ main() {
   : > "$CACHEBLEND_PROBE_MARKER"
   export CACHEBLEND_PROBE_MONITOR_PID=""
 
+  record_metrics_sample() {
+    CACHEBLEND_SAMPLE_PROM="$1" \
+      CACHEBLEND_SAMPLE_TIME="$2" \
+      PYTHONPATH=/mnt/nvme2/mlee/cacheblend-gpt-oss/src \
+      "$CACHEBLEND_P7_PYTHON" - <<'PY'
+import json
+import os
+from pathlib import Path
+
+from cacheblend_gpt_oss.correctness import (
+    parse_connector_counter_snapshot,
+    parse_connector_store_counter_snapshot,
+    parse_selective_work_counter_snapshot,
+)
+
+
+def metric_total(text: str, name: str) -> float:
+    total = 0.0
+    for line in text.splitlines():
+        fields = line.strip().split()
+        if len(fields) < 2:
+            continue
+        if fields[0].split("{", 1)[0] != name:
+            continue
+        total += float(fields[1])
+    return total
+
+
+text = Path(os.environ["CACHEBLEND_SAMPLE_PROM"]).read_text()
+connector = parse_connector_counter_snapshot(text)
+store = parse_connector_store_counter_snapshot(text)
+work = parse_selective_work_counter_snapshot(text)
+connector_latency = {}
+for key in (
+    "lookup_latency_seconds",
+    "transfer_latency_seconds",
+    "position_correction_latency_seconds",
+    "selective_recomputation_latency_seconds",
+    "store_latency_seconds",
+):
+    prefix = f"vllm:cacheblend_{key}"
+    connector_latency[key] = {
+        "count": int(metric_total(text, f"{prefix}_count")),
+        "sum_seconds": metric_total(text, f"{prefix}_sum"),
+    }
+vllm_timing = {}
+for key, metric in (
+    ("ttft_seconds", "vllm:time_to_first_token_seconds"),
+    ("end_to_end_latency_seconds", "vllm:e2e_request_latency_seconds"),
+    ("prefill_latency_seconds", "vllm:request_prefill_time_seconds"),
+):
+    vllm_timing[key] = {
+        "count": int(metric_total(text, f"{metric}_count")),
+        "sum_seconds": metric_total(text, f"{metric}_sum"),
+    }
+print(
+    json.dumps(
+        {
+            "time": os.environ["CACHEBLEND_SAMPLE_TIME"],
+            "requests": connector["requests"],
+            "kv_tokens_found": connector["kv_tokens_found"],
+            "kv_tokens_loaded": connector["kv_tokens_loaded"],
+            "store_tokens_eligible": store["store_tokens_eligible"],
+            "store_tokens_completed": store["store_tokens_completed"],
+            "layer_token_rows_recomputed": work["layer_token_rows_recomputed"],
+            "layer_token_rows_avoided": work["layer_token_rows_avoided"],
+            "connector_latency": connector_latency,
+            "vllm_timing": vllm_timing,
+        },
+        sort_keys=True,
+    )
+)
+PY
+  }
+
   cleanup() {
     rm -f "$CACHEBLEND_PROBE_MARKER"
     if test -n "${CACHEBLEND_PROBE_MONITOR_PID:-}"; then
@@ -76,9 +151,7 @@ main() {
       export CACHEBLEND_SAMPLE_PROM="$CACHEBLEND_P7_RUN_DIR/metrics-sample.prom"
       if curl -fsS "$CACHEBLEND_METRICS_URL" > "$CACHEBLEND_SAMPLE_PROM" 2>/dev/null; then
         export CACHEBLEND_SAMPLE_TIME="$(date +%s.%N)"
-        PYTHONPATH=/mnt/nvme2/mlee/cacheblend-gpt-oss/src \
-          "$CACHEBLEND_P7_PYTHON" -c \
-          "import json,os; from pathlib import Path; from cacheblend_gpt_oss.correctness import parse_connector_counter_snapshot,parse_connector_store_counter_snapshot,parse_selective_work_counter_snapshot; t=Path(os.environ['CACHEBLEND_SAMPLE_PROM']).read_text(); c=parse_connector_counter_snapshot(t); s=parse_connector_store_counter_snapshot(t); w=parse_selective_work_counter_snapshot(t); print(json.dumps({'time':os.environ['CACHEBLEND_SAMPLE_TIME'],'requests':c['requests'],'kv_tokens_found':c['kv_tokens_found'],'kv_tokens_loaded':c['kv_tokens_loaded'],'store_tokens_eligible':s['store_tokens_eligible'],'store_tokens_completed':s['store_tokens_completed'],'layer_token_rows_recomputed':w['layer_token_rows_recomputed'],'layer_token_rows_avoided':w['layer_token_rows_avoided']},sort_keys=True))" \
+        record_metrics_sample "$CACHEBLEND_SAMPLE_PROM" "$CACHEBLEND_SAMPLE_TIME" \
           >> "$CACHEBLEND_METRICS_SAMPLES" 2>/dev/null || true
       fi
       sleep 1
@@ -127,9 +200,80 @@ main() {
   curl -fsS "$CACHEBLEND_METRICS_URL" > "$CACHEBLEND_P7_RUN_DIR/metrics-after.prom" 2>/dev/null || true
 
   if test -s "$CACHEBLEND_METRICS_SAMPLES"; then
-    PYTHONPATH=/mnt/nvme2/mlee/cacheblend-gpt-oss/src \
-      "$CACHEBLEND_P7_PYTHON" -c \
-      "import json,os; from pathlib import Path; rows=[json.loads(x) for x in Path(os.environ['CACHEBLEND_METRICS_SAMPLES']).read_text().splitlines() if x.strip()]; print('PROBE_SAMPLE_COUNT='+str(len(rows))); previous=rows[0] if rows else None; print(json.dumps({'baseline_requests':previous['requests'],'baseline_store_tokens_completed':previous['store_tokens_completed'],'baseline_store_tokens_eligible':previous['store_tokens_eligible'],'baseline_layer_token_rows_recomputed':previous['layer_token_rows_recomputed'],'baseline_layer_token_rows_avoided':previous['layer_token_rows_avoided']},sort_keys=True)) if previous else None; [print(json.dumps({'request':row['requests'],'store_tokens_completed_delta':row['store_tokens_completed']-previous['store_tokens_completed'],'store_tokens_eligible_delta':row['store_tokens_eligible']-previous['store_tokens_eligible'],'layer_token_rows_recomputed_delta':row['layer_token_rows_recomputed']-previous['layer_token_rows_recomputed'],'layer_token_rows_avoided_delta':row['layer_token_rows_avoided']-previous['layer_token_rows_avoided']},sort_keys=True)) or globals().__setitem__('previous',row) for row in rows[1:] if row['requests'] != previous['requests']]" \
+    CACHEBLEND_METRICS_SAMPLES="$CACHEBLEND_METRICS_SAMPLES" \
+      "$CACHEBLEND_P7_PYTHON" - <<'PY'
+import json
+import os
+from pathlib import Path
+
+
+rows = [
+    json.loads(line)
+    for line in Path(os.environ["CACHEBLEND_METRICS_SAMPLES"]).read_text().splitlines()
+    if line.strip()
+]
+print(f"PROBE_SAMPLE_COUNT={len(rows)}")
+if rows:
+    previous = rows[0]
+    print(
+        json.dumps(
+            {
+                "baseline_requests": previous["requests"],
+                "baseline_store_tokens_completed": previous["store_tokens_completed"],
+                "baseline_store_tokens_eligible": previous["store_tokens_eligible"],
+                "baseline_layer_token_rows_recomputed": previous[
+                    "layer_token_rows_recomputed"
+                ],
+                "baseline_layer_token_rows_avoided": previous[
+                    "layer_token_rows_avoided"
+                ],
+                "baseline_connector_latency": previous["connector_latency"],
+                "baseline_vllm_timing": previous["vllm_timing"],
+            },
+            sort_keys=True,
+        )
+    )
+    for row in rows[1:]:
+        if row["requests"] == previous["requests"]:
+            continue
+        print(
+            json.dumps(
+                {
+                    "request": row["requests"],
+                    "store_tokens_completed_delta": row["store_tokens_completed"]
+                    - previous["store_tokens_completed"],
+                    "store_tokens_eligible_delta": row["store_tokens_eligible"]
+                    - previous["store_tokens_eligible"],
+                    "layer_token_rows_recomputed_delta": row[
+                        "layer_token_rows_recomputed"
+                    ]
+                    - previous["layer_token_rows_recomputed"],
+                    "layer_token_rows_avoided_delta": row["layer_token_rows_avoided"]
+                    - previous["layer_token_rows_avoided"],
+                    "connector_latency_delta": {
+                        key: {
+                            "count": row["connector_latency"][key]["count"]
+                            - previous["connector_latency"][key]["count"],
+                            "sum_seconds": row["connector_latency"][key]["sum_seconds"]
+                            - previous["connector_latency"][key]["sum_seconds"],
+                        }
+                        for key in row["connector_latency"]
+                    },
+                    "vllm_timing_delta": {
+                        key: {
+                            "count": row["vllm_timing"][key]["count"]
+                            - previous["vllm_timing"][key]["count"],
+                            "sum_seconds": row["vllm_timing"][key]["sum_seconds"]
+                            - previous["vllm_timing"][key]["sum_seconds"],
+                        }
+                        for key in row["vllm_timing"]
+                    },
+                },
+                sort_keys=True,
+            )
+        )
+        previous = row
+PY
       2>/dev/null || true
   else
     echo "PROBE_METRICS_SAMPLES_EMPTY"
