@@ -35,6 +35,7 @@ input storage.
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from enum import Enum
 from importlib import import_module
 from typing import Any, NoReturn, Protocol
@@ -59,6 +60,7 @@ GPT_OSS_YARN_CONFIG = YarnRopeConfig(
     truncate=False,
 )
 GPT_OSS_YARN_INVERSE_FREQUENCIES = yarn_inverse_frequencies(GPT_OSS_YARN_CONFIG)
+_ROTATION_CACHE_CAPACITY = 128
 
 
 class TorchYarnErrorCode(str, Enum):
@@ -243,6 +245,9 @@ class TorchYarnTensorArithmetic:
 
     def __init__(self, torch_module: object) -> None:
         self._torch = torch_module
+        self._rotation_cache: OrderedDict[
+            tuple[str, int, tuple[float, ...]], tuple[object, object]
+        ] = OrderedDict()
 
     def _require_tensor(self, tensor: object) -> Any:
         tensor_type = getattr(self._torch, "Tensor", None)
@@ -271,25 +276,62 @@ class TorchYarnTensorArithmetic:
         value = self._require_tensor(key_rows)
         float32 = torch.float32
         working = value.to(dtype=float32)
-        delta_tensor = torch.tensor(
-            deltas,
-            dtype=float32,
-            device=value.device,
-        ).reshape(len(deltas), 1, 1)
-        frequency_tensor = torch.tensor(
-            inverse_frequencies,
-            dtype=float32,
-            device=value.device,
-        ).reshape(1, 1, GPT_OSS_HEAD_DIM // 2)
-        angles = delta_tensor * frequency_tensor
-        cosine = angles.cos()
-        sine = angles.sin()
+        constant_delta = _constant_delta(deltas)
+        if constant_delta is None:
+            delta_tensor = torch.tensor(
+                deltas,
+                dtype=float32,
+                device=value.device,
+            ).reshape(len(deltas), 1, 1)
+            frequency_tensor = torch.tensor(
+                inverse_frequencies,
+                dtype=float32,
+                device=value.device,
+            ).reshape(1, 1, GPT_OSS_HEAD_DIM // 2)
+            angles = delta_tensor * frequency_tensor
+            cosine = angles.cos()
+            sine = angles.sin()
+        else:
+            cosine, sine = self._cached_rotation_vectors(
+                value.device,
+                constant_delta,
+                inverse_frequencies,
+            )
         first = working[..., : GPT_OSS_HEAD_DIM // 2]
         second = working[..., GPT_OSS_HEAD_DIM // 2 :]
         first_rotated = first * cosine - second * sine
         second_rotated = second * cosine + first * sine
         rotated = torch.cat((first_rotated, second_rotated), dim=-1)
         return rotated.to(dtype=value.dtype)
+
+    def _cached_rotation_vectors(
+        self,
+        device: object,
+        delta: int,
+        inverse_frequencies: tuple[float, ...],
+    ) -> tuple[object, object]:
+        torch: Any = self._torch
+        key = (str(device), delta, inverse_frequencies)
+        cached = self._rotation_cache.pop(key, None)
+        if cached is not None:
+            self._rotation_cache[key] = cached
+            return cached
+        frequency_tensor = torch.tensor(
+            inverse_frequencies,
+            dtype=torch.float32,
+            device=device,
+        ).reshape(1, 1, GPT_OSS_HEAD_DIM // 2)
+        delta_tensor = torch.tensor(
+            (delta,),
+            dtype=torch.float32,
+            device=device,
+        ).reshape(1, 1, 1)
+        angles = delta_tensor * frequency_tensor
+        vectors = (angles.cos(), angles.sin())
+        self._rotation_cache[key] = vectors
+        while len(self._rotation_cache) > _ROTATION_CACHE_CAPACITY:
+            self._rotation_cache.popitem(last=False)
+        return vectors
 
     def shares_storage(self, left: object, right: object) -> bool:
         left_tensor = self._require_tensor(left)
@@ -298,6 +340,15 @@ class TorchYarnTensorArithmetic:
             left_tensor.untyped_storage().data_ptr()
             == right_tensor.untyped_storage().data_ptr()
         )
+
+
+def _constant_delta(deltas: tuple[int, ...]) -> int | None:
+    """Return the shared shift when a span uses one position delta."""
+
+    if not deltas:
+        return None
+    first = deltas[0]
+    return first if all(delta == first for delta in deltas[1:]) else None
 
 
 def load_torch_yarn_corrector() -> GptOssTorchYarnCorrector:

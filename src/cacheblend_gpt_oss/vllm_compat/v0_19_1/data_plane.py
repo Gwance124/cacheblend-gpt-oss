@@ -767,7 +767,11 @@ class TorchTensorOps:
     def copy(self, destination: object, source: object) -> None:
         destination_tensor = self._require_tensor(destination)
         source_tensor = self._require_tensor(source)
-        destination_tensor.copy_(source_tensor, non_blocking=False)
+        # Every production caller performs an explicit device synchronize after
+        # the complete prepared-copy batch.  Allow the individual CUDA copies
+        # to queue so one request does not serialize hundreds of tiny layer /
+        # chunk copies on the host.
+        destination_tensor.copy_(source_tensor, non_blocking=True)
 
     def synchronize(self, tensor: object) -> None:
         value = self._require_tensor(tensor)
