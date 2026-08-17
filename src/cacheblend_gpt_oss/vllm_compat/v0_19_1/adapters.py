@@ -364,7 +364,7 @@ def adapt_kv_cache_blocks(
     block_ids_by_group = _copy_block_ids(kv_cache_blocks, config)
     if not allow_null_blocks:
         _reject_observable_null_blocks(kv_cache_blocks, block_ids_by_group)
-    if any(
+    if not allow_null_blocks and any(
         len(group) != len(set(group)) for group in block_ids_by_group
     ):
         _fail(VllmAdapterErrorCode.INVALID_BLOCK_IDS)
