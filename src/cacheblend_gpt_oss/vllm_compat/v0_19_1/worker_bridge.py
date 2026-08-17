@@ -268,6 +268,17 @@ class DataPlaneOperations(Protocol):
     ) -> DataPlaneReceipt:
         """Gather one complete prompt chunk into compact staging."""
 
+    def gather_precomputed_kv_batch(
+        self,
+        *,
+        paged_caches: Mapping[str, object],
+        staging: object,
+        chunk_layer_spans: Sequence[Sequence[LayerTokenScatterSpan]],
+        document_target_ranges: Sequence[TokenRange],
+        store_buffer_offsets: Sequence[int],
+    ) -> tuple[DataPlaneReceipt, ...]:
+        """Gather one request's store chunks with one final device barrier."""
+
 
 class DataPlaneFactory(Protocol):
     """Factory for the active and no-copy validation data planes."""
@@ -685,16 +696,23 @@ class GptOssWorkerBridge:
         self._validate_store_plan(plan)
         staging = self._staging.tensor
         base_chunk_index = plan.chunks[0].chunk_index
-        for chunk in plan.chunks:
-            receipt = self._preflight_data_plane.gather_precomputed_kv(
-                paged_caches=self._paged_caches,
-                staging=staging,
-                layer_spans=chunk.gather_plan.layer_spans,
-                document_target_range=chunk.token_range,
-                store_buffer_offset=self._chunk_store_offset(
-                    chunk.chunk_index - base_chunk_index
-                ),
-            )
+        receipts = self._preflight_data_plane.gather_precomputed_kv_batch(
+            paged_caches=self._paged_caches,
+            staging=staging,
+            chunk_layer_spans=tuple(
+                chunk.gather_plan.layer_spans for chunk in plan.chunks
+            ),
+            document_target_ranges=tuple(
+                chunk.token_range for chunk in plan.chunks
+            ),
+            store_buffer_offsets=tuple(
+                self._chunk_store_offset(chunk.chunk_index - base_chunk_index)
+                for chunk in plan.chunks
+            ),
+        )
+        if len(receipts) != len(plan.chunks):
+            _fail(WorkerBridgeErrorCode.RECEIPT_MISMATCH)
+        for chunk, receipt in zip(plan.chunks, receipts, strict=True):
             self._validate_data_receipt(
                 receipt,
                 TransferDirection.STORE_TO_STAGING,
@@ -721,16 +739,25 @@ class GptOssWorkerBridge:
         staging = self._staging.tensor
         base_chunk_index = plan.chunks[0].chunk_index
         try:
-            for chunk in plan.chunks:
-                receipt = self._data_plane.gather_precomputed_kv(
-                    paged_caches=self._paged_caches,
-                    staging=staging,
-                    layer_spans=chunk.gather_plan.layer_spans,
-                    document_target_range=chunk.token_range,
-                    store_buffer_offset=self._chunk_store_offset(
+            receipts = self._data_plane.gather_precomputed_kv_batch(
+                paged_caches=self._paged_caches,
+                staging=staging,
+                chunk_layer_spans=tuple(
+                    chunk.gather_plan.layer_spans for chunk in plan.chunks
+                ),
+                document_target_ranges=tuple(
+                    chunk.token_range for chunk in plan.chunks
+                ),
+                store_buffer_offsets=tuple(
+                    self._chunk_store_offset(
                         chunk.chunk_index - base_chunk_index
-                    ),
-                )
+                    )
+                    for chunk in plan.chunks
+                ),
+            )
+            if len(receipts) != len(plan.chunks):
+                _fail(WorkerBridgeErrorCode.RECEIPT_MISMATCH)
+            for chunk, receipt in zip(plan.chunks, receipts, strict=True):
                 self._validate_data_receipt(
                     receipt,
                     TransferDirection.STORE_TO_STAGING,

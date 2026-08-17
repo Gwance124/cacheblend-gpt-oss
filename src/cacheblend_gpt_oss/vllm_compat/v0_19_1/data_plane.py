@@ -352,54 +352,91 @@ class GptOssDataPlane:
         document_target_range: TokenRange,
         store_buffer_offset: int,
     ) -> DataPlaneReceipt:
-        """Compact one document's post-RoPE K and ordinary V into staging.
+        """Compact one document's post-RoPE K and ordinary V into staging."""
 
-        A precomputed-document store sends only the document tokens to LMCache,
-        so staging is compact: target position ``document_target_range.start``
-        maps exactly to ``store_buffer_offset``.  No position correction occurs
-        while storing; correction is deferred until the document is loaded at a
-        new position.
+        return self.gather_precomputed_kv_batch(
+            paged_caches=paged_caches,
+            staging=staging,
+            chunk_layer_spans=(layer_spans,),
+            document_target_ranges=(document_target_range,),
+            store_buffer_offsets=(store_buffer_offset,),
+        )[0]
+
+    def gather_precomputed_kv_batch(
+        self,
+        *,
+        paged_caches: Mapping[str, object],
+        staging: object,
+        chunk_layer_spans: Sequence[Sequence[LayerTokenScatterSpan]],
+        document_target_ranges: Sequence[TokenRange],
+        store_buffer_offsets: Sequence[int],
+    ) -> tuple[DataPlaneReceipt, ...]:
+        """Gather all store chunks for one request with one device synchronize.
+
+        Mirrors :meth:`scatter_retrieved_kv_batch`: every chunk is validated
+        before the first destination mutation, and only the final CUDA barrier
+        is issued.  No position correction occurs while storing; correction is
+        deferred until the document is loaded at a new position.
         """
 
-        validated = self._preflight_common(staging, paged_caches, layer_spans)
-        if not isinstance(document_target_range, TokenRange):
-            _fail(DataPlaneErrorCode.INVALID_SPAN, "invalid document target range")
-        if document_target_range != validated.target_range:
-            _fail(
-                DataPlaneErrorCode.RANGE_COVERAGE_MISMATCH,
-                "document range must equal the complete span target coverage",
-            )
-        _require_plain_int("store_buffer_offset", store_buffer_offset, 0)
-        staging_shape = self._safe_shape(staging)
-        if store_buffer_offset + len(document_target_range) > staging_shape[2]:
-            _fail(
-                DataPlaneErrorCode.STAGING_RANGE_OUT_OF_BOUNDS,
-                "compact document placement exceeds staging capacity",
-            )
+        groups = tuple(tuple(spans) for spans in chunk_layer_spans)
+        ranges = tuple(document_target_ranges)
+        offsets = tuple(store_buffer_offsets)
+        if not groups or len(groups) != len(ranges) or len(groups) != len(offsets):
+            _fail(DataPlaneErrorCode.EMPTY_SPANS)
 
         prepared: list[_PreparedCopy] = []
-        for span in validated.spans:
-            relative_start = span.target_range.start - document_target_range.start
-            staging_start = store_buffer_offset + relative_start
-            prepared.extend(
-                self._prepare_gather_span(
-                    paged_caches[span.layer_name],
-                    staging,
-                    span,
-                    staging_start=staging_start,
+        receipts: list[DataPlaneReceipt] = []
+        for layer_spans, document_target_range, store_buffer_offset in zip(
+            groups, ranges, offsets, strict=True
+        ):
+            validated = self._preflight_common(staging, paged_caches, layer_spans)
+            if not isinstance(document_target_range, TokenRange):
+                _fail(
+                    DataPlaneErrorCode.INVALID_SPAN,
+                    "invalid document target range",
+                )
+            if document_target_range != validated.target_range:
+                _fail(
+                    DataPlaneErrorCode.RANGE_COVERAGE_MISMATCH,
+                    "document range must equal the complete span target coverage",
+                )
+            _require_plain_int("store_buffer_offset", store_buffer_offset, 0)
+            staging_shape = self._safe_shape(staging)
+            if store_buffer_offset + len(document_target_range) > staging_shape[2]:
+                _fail(
+                    DataPlaneErrorCode.STAGING_RANGE_OUT_OF_BOUNDS,
+                    "compact document placement exceeds staging capacity",
+                )
+
+            for span in validated.spans:
+                relative_start = (
+                    span.target_range.start - document_target_range.start
+                )
+                staging_start = store_buffer_offset + relative_start
+                prepared.extend(
+                    self._prepare_gather_span(
+                        paged_caches[span.layer_name],
+                        staging,
+                        span,
+                        staging_start=staging_start,
+                    )
+                )
+
+            receipts.append(
+                DataPlaneReceipt(
+                    direction=TransferDirection.STORE_TO_STAGING,
+                    logical_tokens=validated.logical_tokens,
+                    layer_token_rows=validated.layer_token_rows,
+                    span_count=len(validated.spans),
+                    corrected_key_rows=0,
+                    copied_key_rows=validated.layer_token_rows,
+                    copied_value_rows=validated.layer_token_rows,
                 )
             )
 
         self._apply(prepared, staging)
-        return DataPlaneReceipt(
-            direction=TransferDirection.STORE_TO_STAGING,
-            logical_tokens=validated.logical_tokens,
-            layer_token_rows=validated.layer_token_rows,
-            span_count=len(validated.spans),
-            corrected_key_rows=0,
-            copied_key_rows=validated.layer_token_rows,
-            copied_value_rows=validated.layer_token_rows,
-        )
+        return tuple(receipts)
 
     def _preflight_common(
         self,

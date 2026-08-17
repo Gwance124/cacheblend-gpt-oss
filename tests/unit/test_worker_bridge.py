@@ -668,6 +668,31 @@ class _FakeDataPlane:
             rows,
         )
 
+    def gather_precomputed_kv_batch(
+        self,
+        *,
+        paged_caches: Mapping[str, object],
+        staging: object,
+        chunk_layer_spans: Sequence[Sequence[LayerTokenScatterSpan]],
+        document_target_ranges: Sequence[TokenRange],
+        store_buffer_offsets: Sequence[int],
+    ) -> tuple[DataPlaneReceipt, ...]:
+        return tuple(
+            self.gather_precomputed_kv(
+                paged_caches=paged_caches,
+                staging=staging,
+                layer_spans=layer_spans,
+                document_target_range=document_target_range,
+                store_buffer_offset=store_buffer_offset,
+            )
+            for layer_spans, document_target_range, store_buffer_offset in zip(
+                chunk_layer_spans,
+                document_target_ranges,
+                store_buffer_offsets,
+                strict=True,
+            )
+        )
+
 
 class _DataPlaneFactory:
     def __init__(self, trace: list[str]) -> None:
