@@ -356,11 +356,14 @@ def _reject_observable_null_blocks(
 def adapt_kv_cache_blocks(
     kv_cache_blocks: object,
     config: AdaptedKvCacheConfig,
+    *,
+    allow_null_blocks: bool = False,
 ) -> AdaptedKvCacheBlocks:
     """Copy one grouped allocation into control-plane and scatter descriptors."""
 
     block_ids_by_group = _copy_block_ids(kv_cache_blocks, config)
-    _reject_observable_null_blocks(kv_cache_blocks, block_ids_by_group)
+    if not allow_null_blocks:
+        _reject_observable_null_blocks(kv_cache_blocks, block_ids_by_group)
     if any(
         len(group) != len(set(group)) for group in block_ids_by_group
     ):

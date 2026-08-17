@@ -374,6 +374,10 @@ class GptOssCacheBlendConnector(
             adapt_kv_cache_config(kv_cache_config)
         )
         self._transfer_config = transfer_config
+        self._allow_prefix_caching = (
+            isinstance(transfer_config, Transfer100PctConfig)
+            and transfer_config.allow_prefix_caching
+        )
         if isinstance(self._transfer_config, CompatibilityProbeConfig):
             digests = derive_runtime_compatibility_digests(
                 vllm_config, self._adapted_kv_cache_config
@@ -1001,13 +1005,14 @@ class GptOssCacheBlendConnector(
         num_external_tokens: int,
     ) -> None:
         self._require_role(KVConnectorRole.SCHEDULER, "update_state_after_alloc")
-        if num_external_tokens != 0:
+        if num_external_tokens != 0 and not self._allow_prefix_caching:
             raise RuntimeError(
                 "The 100%-recompute milestone must report zero external tokens."
             )
         adapted_blocks = adapt_kv_cache_blocks(
             blocks,
             self._adapted_kv_cache_config,
+            allow_null_blocks=self._allow_prefix_caching,
         )
         block_ids_by_group = adapted_blocks.block_ids_by_group
         request_id = request.request_id
