@@ -334,7 +334,10 @@ def _validate_run_record(
         _fail(BrowseCompEvidenceErrorCode.INVALID_CONFIGURATION)
     if metadata.get("api") not in {"responses", "/v1/responses"}:
         _fail(BrowseCompEvidenceErrorCode.INVALID_CONFIGURATION)
-    if "endpoint" in metadata and metadata["endpoint"] != "/v1/responses":
+    if "endpoint" in metadata and metadata["endpoint"] not in {
+        None,
+        "/v1/responses",
+    }:
         _fail(BrowseCompEvidenceErrorCode.INVALID_CONFIGURATION)
     if metadata.get("scaffold") != "standard_search_only_top5_first512":
         _fail(BrowseCompEvidenceErrorCode.INVALID_CONFIGURATION)

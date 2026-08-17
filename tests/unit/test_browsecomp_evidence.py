@@ -62,6 +62,7 @@ def _run_record() -> dict[str, object]:
         "metadata": {
             "model": "openai/gpt-oss-20b",
             "api": "responses",
+            "endpoint": None,
             "scaffold": "standard_search_only_top5_first512",
             "cache_mode": "cacheblend",
             "context_strategy": "append_only",
