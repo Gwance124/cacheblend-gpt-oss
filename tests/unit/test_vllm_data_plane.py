@@ -402,6 +402,29 @@ def test_default_scatter_path_is_unchanged_and_reports_not_suppressed() -> None:
     assert ops.copy_count == 96
 
 
+def test_batched_scatter_synchronizes_once_for_multiple_candidates() -> None:
+    ops = FakeTensorOps()
+    data_plane = GptOssDataPlane(ops)
+    stage = staging()
+    caches = paged_caches()
+    seed_retrieved_staging(stage)
+    corrector = RecordingCorrector(ops)
+
+    receipts = data_plane.scatter_retrieved_kv_batch(
+        staging=stage,
+        paged_caches=caches,
+        candidate_layer_spans=(spans(), spans()),
+        retrieval_buffer_offset=RETRIEVAL_OFFSET,
+        query_token_count=TARGET.end,
+        correct_key_positions=corrector,
+    )
+
+    assert len(receipts) == 2
+    assert all(receipt.logical_tokens == len(TARGET) for receipt in receipts)
+    assert ops.copy_count == 192
+    assert len(ops.synchronizations) == 1
+
+
 def test_receipt_rejects_suppressed_flag_with_nonzero_copied_rows() -> None:
     with pytest.raises(DataPlaneError) as caught:
         module.DataPlaneReceipt(

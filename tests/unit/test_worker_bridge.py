@@ -613,6 +613,30 @@ class _FakeDataPlane:
             ),
         )
 
+    def scatter_retrieved_kv_batch(
+        self,
+        *,
+        staging: object,
+        paged_caches: Mapping[str, object],
+        candidate_layer_spans: Sequence[Sequence[LayerTokenScatterSpan]],
+        retrieval_buffer_offset: int,
+        query_token_count: int,
+        correct_key_positions: KeyPositionCorrector,
+        disable_scatter: bool = False,
+    ) -> tuple[DataPlaneReceipt, ...]:
+        return tuple(
+            self.scatter_retrieved_kv(
+                staging=staging,
+                paged_caches=paged_caches,
+                layer_spans=layer_spans,
+                retrieval_buffer_offset=retrieval_buffer_offset,
+                query_token_count=query_token_count,
+                correct_key_positions=correct_key_positions,
+                disable_scatter=disable_scatter,
+            )
+            for layer_spans in candidate_layer_spans
+        )
+
     def gather_precomputed_kv(
         self,
         *,

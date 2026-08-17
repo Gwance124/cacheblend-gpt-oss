@@ -253,24 +253,40 @@ class GptOssDataPlane:
         correct_key_positions: KeyPositionCorrector,
         disable_scatter: bool = False,
     ) -> DataPlaneReceipt:
-        """Load LMCache candidate rows into paged caches.
+        """Load one LMCache candidate into paged caches."""
 
-        LMCache placed each candidate at
-        ``retrieval_buffer_offset + span.target_range.start``.  In particular,
-        ``span.source_range`` is never used as a staging address; it supplies
-        only the old absolute positions passed to ``correct_key_positions``.
+        return self.scatter_retrieved_kv_batch(
+            staging=staging,
+            paged_caches=paged_caches,
+            candidate_layer_spans=(layer_spans,),
+            retrieval_buffer_offset=retrieval_buffer_offset,
+            query_token_count=query_token_count,
+            correct_key_positions=correct_key_positions,
+            disable_scatter=disable_scatter,
+        )[0]
 
-        ``disable_scatter`` is an explicit opt-in diagnostic switch (see
-        :class:`~.transfer_config.Transfer100PctConfig.disable_kv_scatter`).
-        Every staging view, tensor-shape/device/dtype check, and the YaRN
-        ``correct_key_positions`` callback still run exactly as in the normal
-        path.  Only the final destination mutation in :meth:`_apply` is
-        skipped, so the paged KV cache is left untouched.  The returned
-        receipt honestly reports zero copied rows and
-        ``scatter_suppressed=True``; it never fabricates a completed transfer.
+    def scatter_retrieved_kv_batch(
+        self,
+        *,
+        staging: object,
+        paged_caches: Mapping[str, object],
+        candidate_layer_spans: Sequence[Sequence[LayerTokenScatterSpan]],
+        retrieval_buffer_offset: int,
+        query_token_count: int,
+        correct_key_positions: KeyPositionCorrector,
+        disable_scatter: bool = False,
+    ) -> tuple[DataPlaneReceipt, ...]:
+        """Load all candidates for one request with one device synchronize.
+
+        Every candidate is still validated and position-corrected before the
+        first destination mutation.  Only the final synchronization moves out
+        of the candidate loop; this avoids one global CUDA barrier per matched
+        256-token chunk on long append-only prompts.
         """
 
-        validated = self._preflight_common(staging, paged_caches, layer_spans)
+        groups = tuple(tuple(spans) for spans in candidate_layer_spans)
+        if not groups:
+            _fail(DataPlaneErrorCode.EMPTY_SPANS)
         _require_plain_int("retrieval_buffer_offset", retrieval_buffer_offset, 0)
         _require_plain_int("query_token_count", query_token_count, 1)
         if query_token_count > GPT_OSS_MAX_CONTEXT_TOKENS:
@@ -278,53 +294,54 @@ class GptOssDataPlane:
                 DataPlaneErrorCode.STAGING_RANGE_OUT_OF_BOUNDS,
                 "query_token_count exceeds the GPT-OSS context limit",
             )
-        if validated.target_range.end > query_token_count:
-            _fail(
-                DataPlaneErrorCode.STAGING_RANGE_OUT_OF_BOUNDS,
-                "scatter target exceeds the lookup query",
-            )
-        staging_shape = self._safe_shape(staging)
-        if retrieval_buffer_offset + query_token_count > staging_shape[2]:
-            _fail(
-                DataPlaneErrorCode.STAGING_RANGE_OUT_OF_BOUNDS,
-                "LMCache retrieval placement exceeds staging capacity",
-            )
 
         prepared: list[_PreparedCopy] = []
-        correction_latency_seconds = 0.0
-        for span in validated.spans:
-            staging_start = retrieval_buffer_offset + span.target_range.start
-            span_prepared, span_correction_latency = self._prepare_scatter_span(
-                staging,
-                paged_caches[span.layer_name],
-                span,
-                staging_start=staging_start,
-                correct_key_positions=correct_key_positions,
-            )
-            prepared.extend(span_prepared)
-            correction_latency_seconds += span_correction_latency
+        receipts: list[DataPlaneReceipt] = []
+        for layer_spans in groups:
+            validated = self._preflight_common(staging, paged_caches, layer_spans)
+            if validated.target_range.end > query_token_count:
+                _fail(
+                    DataPlaneErrorCode.STAGING_RANGE_OUT_OF_BOUNDS,
+                    "scatter target exceeds the lookup query",
+                )
+            staging_shape = self._safe_shape(staging)
+            if retrieval_buffer_offset + query_token_count > staging_shape[2]:
+                _fail(
+                    DataPlaneErrorCode.STAGING_RANGE_OUT_OF_BOUNDS,
+                    "LMCache retrieval placement exceeds staging capacity",
+                )
 
-        if disable_scatter:
-            # Diagnostic mode: every view, shape/dtype/device check, and the
-            # YaRN correction above already ran in full.  Skip only the
-            # destination mutation so the paged KV cache is never touched.
-            copied_key_rows = 0
-            copied_value_rows = 0
-        else:
+            correction_latency_seconds = 0.0
+            for span in validated.spans:
+                staging_start = retrieval_buffer_offset + span.target_range.start
+                span_prepared, span_correction_latency = self._prepare_scatter_span(
+                    staging,
+                    paged_caches[span.layer_name],
+                    span,
+                    staging_start=staging_start,
+                    correct_key_positions=correct_key_positions,
+                )
+                prepared.extend(span_prepared)
+                correction_latency_seconds += span_correction_latency
+
+            copied_key_rows = 0 if disable_scatter else validated.layer_token_rows
+            receipts.append(
+                DataPlaneReceipt(
+                    direction=TransferDirection.LOAD_FROM_STAGING,
+                    logical_tokens=validated.logical_tokens,
+                    layer_token_rows=validated.layer_token_rows,
+                    span_count=len(validated.spans),
+                    corrected_key_rows=validated.layer_token_rows,
+                    copied_key_rows=copied_key_rows,
+                    copied_value_rows=copied_key_rows,
+                    position_correction_latency_seconds=correction_latency_seconds,
+                    scatter_suppressed=disable_scatter,
+                )
+            )
+
+        if not disable_scatter:
             self._apply(prepared, next(iter(paged_caches.values())))
-            copied_key_rows = validated.layer_token_rows
-            copied_value_rows = validated.layer_token_rows
-        return DataPlaneReceipt(
-            direction=TransferDirection.LOAD_FROM_STAGING,
-            logical_tokens=validated.logical_tokens,
-            layer_token_rows=validated.layer_token_rows,
-            span_count=len(validated.spans),
-            corrected_key_rows=validated.layer_token_rows,
-            copied_key_rows=copied_key_rows,
-            copied_value_rows=copied_value_rows,
-            position_correction_latency_seconds=correction_latency_seconds,
-            scatter_suppressed=disable_scatter,
-        )
+        return tuple(receipts)
 
     def gather_precomputed_kv(
         self,

@@ -244,6 +244,19 @@ class DataPlaneOperations(Protocol):
         skipped and the returned receipt reports zero copied rows.
         """
 
+    def scatter_retrieved_kv_batch(
+        self,
+        *,
+        staging: object,
+        paged_caches: Mapping[str, object],
+        candidate_layer_spans: Sequence[Sequence[LayerTokenScatterSpan]],
+        retrieval_buffer_offset: int,
+        query_token_count: int,
+        correct_key_positions: KeyPositionCorrector,
+        disable_scatter: bool = False,
+    ) -> tuple[DataPlaneReceipt, ...]:
+        """Scatter one request's candidates with one final device barrier."""
+
     def gather_precomputed_kv(
         self,
         *,
@@ -517,17 +530,19 @@ class GptOssWorkerBridge:
 
         self._require_plan(self._load_storage_preflight, plan)
         staging = self._staging.tensor
-        for candidate in plan.candidates:
-            receipt = self._preflight_data_plane.scatter_retrieved_kv(
-                staging=staging,
-                paged_caches=self._paged_caches,
-                layer_spans=candidate.scatter_plan.layer_spans,
-                retrieval_buffer_offset=(
-                    self._buffer_config.retrieval_buffer_offset
-                ),
-                query_token_count=plan.metadata.prompt_token_count,
-                correct_key_positions=self._correct_key_positions,
-            )
+        receipts = self._preflight_data_plane.scatter_retrieved_kv_batch(
+            staging=staging,
+            paged_caches=self._paged_caches,
+            candidate_layer_spans=tuple(
+                candidate.scatter_plan.layer_spans for candidate in plan.candidates
+            ),
+            retrieval_buffer_offset=self._buffer_config.retrieval_buffer_offset,
+            query_token_count=plan.metadata.prompt_token_count,
+            correct_key_positions=self._correct_key_positions,
+        )
+        if len(receipts) != len(plan.candidates):
+            _fail(WorkerBridgeErrorCode.RECEIPT_MISMATCH)
+        for candidate, receipt in zip(plan.candidates, receipts, strict=True):
             self._validate_data_receipt(
                 receipt,
                 TransferDirection.LOAD_FROM_STAGING,
@@ -592,18 +607,21 @@ class GptOssWorkerBridge:
                         self._buffer_config.retrieval_buffer_offset
                     ),
                 )
-            for candidate in plan.candidates:
-                receipt = self._data_plane.scatter_retrieved_kv(
-                    staging=staging,
-                    paged_caches=self._paged_caches,
-                    layer_spans=candidate.scatter_plan.layer_spans,
-                    retrieval_buffer_offset=(
-                        self._buffer_config.retrieval_buffer_offset
-                    ),
-                    query_token_count=plan.metadata.prompt_token_count,
-                    correct_key_positions=self._correct_key_positions,
-                    disable_scatter=self._disable_kv_scatter,
-                )
+            receipts = self._data_plane.scatter_retrieved_kv_batch(
+                staging=staging,
+                paged_caches=self._paged_caches,
+                candidate_layer_spans=tuple(
+                    candidate.scatter_plan.layer_spans
+                    for candidate in plan.candidates
+                ),
+                retrieval_buffer_offset=self._buffer_config.retrieval_buffer_offset,
+                query_token_count=plan.metadata.prompt_token_count,
+                correct_key_positions=self._correct_key_positions,
+                disable_scatter=self._disable_kv_scatter,
+            )
+            if len(receipts) != len(plan.candidates):
+                _fail(WorkerBridgeErrorCode.RECEIPT_MISMATCH)
+            for candidate, receipt in zip(plan.candidates, receipts, strict=True):
                 self._validate_data_receipt(
                     receipt,
                     TransferDirection.LOAD_FROM_STAGING,
