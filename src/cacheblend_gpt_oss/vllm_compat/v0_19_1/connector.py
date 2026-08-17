@@ -190,8 +190,14 @@ def _is_ordered_subsequence(
         # Allocation snapshots are captured from real writable blocks.  The
         # pinned adapter rejects observable null blocks before they enter the
         # control plane, and a request cannot own the same physical block twice
-        # within one cache group.
-        if len(original) != len(set(original)):
+        # within one cache group.  With prefix caching the allocation table
+        # may contain null-block entries, so filter them before checking.
+        original_real_blocks = tuple(
+            block_id
+            for block_id in original
+            if block_id != _VLLM_NULL_BLOCK_ID
+        )
+        if len(original_real_blocks) != len(set(original_real_blocks)):
             return False
 
         # A block can be reused after a sliding-window block is freed, but a
