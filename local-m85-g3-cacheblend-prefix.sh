@@ -101,6 +101,7 @@ if test "$(git branch --show-current)" = "$CACHEBLEND_REQUIRED_BRANCH"; then
         --transfer-evidence-path "$CACHEBLEND_TRANSFER_EVIDENCE" \
         --staging-token-capacity "$CACHEBLEND_STAGING_TOKENS" \
         --request-timeout-seconds 300 \
+        --allow-prefix-caching \
         > "$CACHEBLEND_TRANSFER_CONFIG"
 
       export CACHEBLEND_KV_CONFIG_JSON="$(<"$CACHEBLEND_TRANSFER_CONFIG")"

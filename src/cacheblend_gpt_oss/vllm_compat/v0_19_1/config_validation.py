@@ -397,6 +397,7 @@ def collect_transfer_100pct_config_issues(
     vllm_config: object,
     *,
     staging_token_capacity: int,
+    allow_prefix_caching: bool = False,
 ) -> tuple[PinnedConfigIssue, ...]:
     """Validate the stricter execution envelope for live KV transfer.
 
@@ -449,7 +450,7 @@ def collect_transfer_100pct_config_issues(
     if _get(model, "enforce_eager") is not True:
         reject("transfer.model.enforce_eager", True, _get(model, "enforce_eager"))
 
-    if _get(cache, "enable_prefix_caching") is not False:
+    if not allow_prefix_caching and _get(cache, "enable_prefix_caching") is not False:
         reject(
             "transfer.cache.enable_prefix_caching",
             False,
@@ -506,12 +507,14 @@ def require_transfer_100pct_config(
     vllm_config: object,
     *,
     staging_token_capacity: int,
+    allow_prefix_caching: bool = False,
 ) -> None:
     """Reject startup outside the audited live-transfer scheduler envelope."""
 
     issues = collect_transfer_100pct_config_issues(
         vllm_config,
         staging_token_capacity=staging_token_capacity,
+        allow_prefix_caching=allow_prefix_caching,
     )
     if issues:
         raise UnsupportedPinnedConfigError(issues)

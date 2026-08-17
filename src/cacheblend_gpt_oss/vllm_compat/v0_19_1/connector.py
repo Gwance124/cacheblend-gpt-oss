@@ -389,6 +389,9 @@ class GptOssCacheBlendConnector(
                 staging_token_capacity=(
                     self._transfer_config.staging_token_capacity
                 ),
+                allow_prefix_caching=(
+                    self._transfer_config.allow_prefix_caching
+                ),
             )
             require_runtime_compatibility_digests(
                 vllm_config,

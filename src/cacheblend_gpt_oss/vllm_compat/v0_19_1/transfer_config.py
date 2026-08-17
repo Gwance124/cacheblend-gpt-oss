@@ -66,7 +66,7 @@ _TRANSFER_KEYS = frozenset(
     }
 )
 _TRANSFER_OPTIONAL_KEYS = frozenset(
-    {"transfer_evidence_path", "disable_kv_scatter"}
+    {"transfer_evidence_path", "disable_kv_scatter", "allow_prefix_caching"}
 )
 _SELECTIVE_KEYS = frozenset(
     {"check_layer", "recompute_ratio", "suffix_tokens"}
@@ -117,6 +117,7 @@ class TransferConfigErrorCode(str, Enum):
     INVALID_REQUEST_TIMEOUT = "invalid_request_timeout"
     INVALID_TRANSFER_FAILURE_POLICY = "invalid_transfer_failure_policy"
     INVALID_DISABLE_KV_SCATTER = "invalid_disable_kv_scatter"
+    INVALID_ALLOW_PREFIX_CACHING = "invalid_allow_prefix_caching"
     INVALID_SELECTIVE_CHECK_LAYER = "invalid_selective_check_layer"
     INVALID_SELECTIVE_RECOMPUTE_RATIO = "invalid_selective_recompute_ratio"
     INVALID_SELECTIVE_SUFFIX_TOKENS = "invalid_selective_suffix_tokens"
@@ -351,6 +352,7 @@ class Transfer100PctConfig:
     transfer_failure_policy: TransferFailurePolicy
     transfer_evidence_path: str | None = None
     disable_kv_scatter: bool = False
+    allow_prefix_caching: bool = False
     mode: ConnectorTransferMode = field(
         default=ConnectorTransferMode.TRANSFER_100PCT,
         init=False,
@@ -370,6 +372,8 @@ class Transfer100PctConfig:
         kv_digest = _require_config_digest(self.kv_cache_config_digest)
         adapter_revision = _require_identity_field(self.adapter_revision)
         _require_disable_kv_scatter(self.disable_kv_scatter)
+        if not isinstance(self.allow_prefix_caching, bool):
+            _fail(TransferConfigErrorCode.INVALID_ALLOW_PREFIX_CACHING)
         _require_staging_capacity(self.staging_token_capacity)
         timeout = _require_request_timeout(self.request_timeout_seconds)
         if self.transfer_failure_policy is not TransferFailurePolicy.FULL_PREFILL:
@@ -542,6 +546,7 @@ def parse_connector_extra_config(
         transfer_failure_policy=TransferFailurePolicy.FULL_PREFILL,
         transfer_evidence_path=extra_config.get("transfer_evidence_path"),
         disable_kv_scatter=extra_config.get("disable_kv_scatter", False),
+        allow_prefix_caching=extra_config.get("allow_prefix_caching", False),
         **selective_kwargs,
     )
 
