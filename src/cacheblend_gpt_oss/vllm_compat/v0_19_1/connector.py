@@ -907,6 +907,15 @@ class GptOssCacheBlendConnector(
         num_computed_tokens: int,
     ) -> tuple[int | None, bool]:
         self._require_role(KVConnectorRole.SCHEDULER, "get_num_new_matched_tokens")
+        import sys
+        print(
+            f"CACHEBLEND_PREFIX_DIAG request={request.request_id} "
+            f"prompt_tokens={request.num_tokens} "
+            f"prefix_cache_hits={num_computed_tokens} "
+            f"pct={100*num_computed_tokens/max(1,request.num_tokens):.1f}%",
+            file=sys.stderr,
+            flush=True,
+        )
         prompt_token_ids = copy_request_prompt_token_ids(request)
         request_id = request.request_id
         # These fields are present on the pinned vLLM 0.19.1 ``Request``.
@@ -1056,6 +1065,15 @@ class GptOssCacheBlendConnector(
                 request_id = handoff.plan.request_id
                 lookup = self._scheduler_lookup_metadata.get(request_id)
                 scheduled_tokens = scheduled_by_request.get(request_id)
+                import sys
+                print(
+                    f"CACHEBLEND_SCHED_DIAG request={request_id} "
+                    f"prompt_tokens={len(lookup.prompt_token_ids) if lookup else '?'} "
+                    f"scheduled_tokens={scheduled_tokens} "
+                    f"complete_step={scheduled_tokens == len(lookup.prompt_token_ids) if lookup and isinstance(scheduled_tokens, int) else '?'}",
+                    file=sys.stderr,
+                    flush=True,
+                )
                 if lookup is None:
                     raise RuntimeError("Transfer handoff has no scheduler lookup.")
                 if (
