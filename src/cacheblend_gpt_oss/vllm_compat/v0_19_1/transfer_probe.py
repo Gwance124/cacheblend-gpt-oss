@@ -156,6 +156,8 @@ class GptOssTransferEvidenceProbe:
         self._source_prompt_digest: str | None = None
         self._target_prompt_digest: str | None = None
         self._load_write_observed = False
+        self._evidence_written = False
+
     @property
     def active(self) -> bool:
         return self._plan is not None
@@ -169,6 +171,8 @@ class GptOssTransferEvidenceProbe:
     ) -> None:
         """Sample destination-before and independent staging/source content."""
 
+        if self._evidence_written:
+            return
         if self._plan is not None:
             _fail(TransferProbeErrorCode.INVALID_STATE)
         spans = self._canonical_spans(plan)
@@ -308,6 +312,7 @@ class GptOssTransferEvidenceProbe:
             )
         evidence = builder.finish()
         write_transfer_evidence(self._output_path, evidence)
+        self._evidence_written = True
         self._clear()
 
     def abort(self) -> None:
