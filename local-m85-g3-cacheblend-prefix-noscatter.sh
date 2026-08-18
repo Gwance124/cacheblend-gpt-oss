@@ -3,8 +3,8 @@
 # Same as local-m85-g3-cacheblend-prefix.sh except:
 #   1. --disable-kv-scatter in render_transfer_config.py
 #   2. CACHEBLEND_TRANSFER_DIAG=1 to log transfer eligibility decisions
-# If output tokens match arm 2 (~2800), scatter is the root cause.
-# If output tokens still diverge (~12K+), the issue is elsewhere.
+# This historical agent run did not pin sampling. Output-token divergence alone
+# cannot identify scatter or connector overhead; use a deterministic A/B gate.
 
 main() {
 cd /mnt/nvme3n1/mlee/cacheblend-gpt-oss || return 0

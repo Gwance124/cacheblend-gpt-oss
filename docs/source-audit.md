@@ -238,12 +238,27 @@ and is forwarded into sampling
 One fast agent trajectory cannot identify a server configuration effect when
 the compared runs sampled different reasoning/tool paths.
 
-`local-m85-g3-hybrid-flag-equivalence.sh` is the next stop/go gate. It runs an
-A/B/A with fresh connector-free servers, resolves both raw flag values through
-the installed pinned `EngineArgs`, sends byte-stable append-only Responses with
-temperature 0, top-p 1, and seed 0, requires prefix reuse, and compares a full
-vocabulary next-token distribution. A future RAG diagnostic may expose those
-three sampling controls, but `rag-system` remains read-only until that separate
+`local-m85-g3-hybrid-flag-equivalence.sh` passed on `solab-g3` in run
+`solab-g3-m8.5-hybrid-flag-equivalence-20260818-retry20260818-024341`.
+The installed `EngineArgs` resolved both raw values to identical snapshots with
+`disable_hybrid_kv_cache_manager=False`. Across fresh implicit/explicit/implicit
+servers, all three byte-stable request digests, output digests, usage records,
+and cached-token counts (`[0, 48, 80]`) matched exactly. Explicit-false latency
+was 3.592 seconds versus a 3.559-second implicit mean, a ratio of 1.0092. Its
+201,088-value next-token errors were no greater than the implicit repeat
+envelope, with sampled- and top-token agreement throughout. The gate therefore
+returned `PASS_IMPLICIT_EQUALS_EXPLICIT_FALSE`.
+
+This kills the flag hypothesis: the earlier 3--5x connector-free timing delta
+did not come from omitted versus explicit-false HMA configuration. Those RAG
+runs sampled different reasoning/tool trajectories and cannot support a server
+performance comparison. The next isolated variable is connector absence versus
+presence under the same finalized HMA configuration and a fixed long
+append-only transcript. `local-m85-g3-connector-presence-equivalence.sh`
+implements that A/B/A with fresh servers, a metric-settled sub-chunk warmup,
+three distinct 20,000-unit append-only fillers, exact output and usage
+signatures, per-turn latency ratios, prefix-cache evidence, and bounded
+connector/store counter deltas. `rag-system` remains read-only until a separate
 change is explicitly authorized.
 
 ### Public out-of-tree extension points beyond the connector

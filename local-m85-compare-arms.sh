@@ -91,6 +91,5 @@ for label_dir in "Prefix-only:$PREFIX_DIR" "Prefix+CB:$CACHEBLEND_DIR"; do
 done
 
 echo "=== Output Token Comparison ==="
-echo "(Run this after the new arm 4 test to compare decode step counts"
-echo " with arm 2 timing. If arm 4 has 3x more decode steps, the slowdown"
-echo " is from model non-determinism, not connector overhead.)"
+echo "Decode-step differences explain wall time but do not isolate server"
+echo "configuration when sampling and the resulting agent path differ."

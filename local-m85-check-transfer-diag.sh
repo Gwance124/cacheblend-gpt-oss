@@ -185,7 +185,7 @@ main() {
   else
     gate=PASS_NONZERO_REUSE_OBSERVED
     key_finding="At least one connector lookup received nonzero prefix-cached tokens."
-    next_action="Trace disable_hybrid_kv_cache_manager=None versus True beyond hybrid-spec unification."
+    next_action="Run the deterministic long-context connector-presence A/B/A gate."
   fi
 
   local log_sha256

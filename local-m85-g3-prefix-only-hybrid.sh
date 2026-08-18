@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# Isolation test: prefix cache + hybrid KV cache manager, NO CacheBlend.
-# If this matches arm 2 speed (~149s for 30 searches), the hybrid manager
-# is innocent and something in the connector init causes the divergence.
-# If this diverges from arm 2, the hybrid manager IS the cause.
+# Historical unseeded BrowseComp arm: prefix cache + explicit HMA, no connector.
+# Do not infer a flag effect from its wall time or output length. The deterministic
+# A/B/A gate proved omitted and explicit-false configurations equivalent.
 
 main() {
 cd /mnt/nvme3n1/mlee/cacheblend-gpt-oss || return 0

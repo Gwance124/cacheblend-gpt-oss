@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# Arm 4 with unified KV cache manager (no --no-disable-hybrid-kv-cache-manager).
-# The hybrid manager causes output divergence; unified mode uses a single KV
-# cache group (UnitaryKVCacheCoordinator) which matches arm 2's behavior.
-# CacheBlend connector is still loaded but is inert under prefix caching.
+# Historical unseeded arm with connector-default unified KV cache allocation.
+# Its divergent agent trajectory is not evidence against the hybrid manager.
+# CacheBlend transfer remained inert while native prefix caching was observed.
 
 main() {
 cd /mnt/nvme3n1/mlee/cacheblend-gpt-oss || return 0
