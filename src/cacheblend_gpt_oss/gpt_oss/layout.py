@@ -161,7 +161,14 @@ class AttentionLayerLayout:
 
 @dataclass(frozen=True, slots=True)
 class GptOssHybridCacheLayout:
-    """The complete, validated 24-layer GPT-OSS-20B hybrid layout."""
+    """The complete, validated 24-layer GPT-OSS-20B cache layout.
+
+    Accepts two modes:
+    * **Hybrid** (2 groups): alternating sliding-window / full-attention,
+      used when ``--no-disable-hybrid-kv-cache-manager`` is active.
+    * **Unified** (1 group): all layers treated as full attention, used
+      when vLLM collapses groups via ``disable_hybrid_kv_cache_manager``.
+    """
 
     groups: tuple[CacheGroupLayout, ...]
     layers: tuple[AttentionLayerLayout, ...] = field(init=False)
@@ -169,19 +176,14 @@ class GptOssHybridCacheLayout:
     def __post_init__(self) -> None:
         groups = tuple(self.groups)
         object.__setattr__(self, "groups", groups)
-        if len(groups) != GPT_OSS_NUM_CACHE_GROUPS:
-            _raise(HybridLayoutErrorCode.INVALID_GROUP_COUNT)
 
-        group_ids = tuple(group.group_id for group in groups)
-        if len(set(group_ids)) != len(group_ids):
-            _raise(HybridLayoutErrorCode.DUPLICATE_GROUP_ID)
-        if set(group_ids) != set(range(GPT_OSS_NUM_CACHE_GROUPS)):
-            _raise(HybridLayoutErrorCode.INVALID_GROUP_ID)
-        if {group.attention_kind for group in groups} != {
-            AttentionKind.SLIDING,
-            AttentionKind.FULL,
-        }:
-            _raise(HybridLayoutErrorCode.ATTENTION_PATTERN_MISMATCH)
+        num_groups = len(groups)
+        if num_groups == 1:
+            self._validate_unified(groups)
+        elif num_groups == GPT_OSS_NUM_CACHE_GROUPS:
+            self._validate_hybrid(groups)
+        else:
+            _raise(HybridLayoutErrorCode.INVALID_GROUP_COUNT)
 
         layer_count = sum(len(group.layer_names) for group in groups)
         if layer_count != GPT_OSS_NUM_LAYERS:
@@ -200,13 +202,14 @@ class GptOssHybridCacheLayout:
                     _raise(HybridLayoutErrorCode.DUPLICATE_LAYER_INDEX)
                 seen_indexes.add(layer_index)
 
-                expected_kind = (
-                    AttentionKind.SLIDING
-                    if layer_index % 2 == 0
-                    else AttentionKind.FULL
-                )
-                if group.attention_kind is not expected_kind:
-                    _raise(HybridLayoutErrorCode.ATTENTION_PATTERN_MISMATCH)
+                if num_groups == GPT_OSS_NUM_CACHE_GROUPS:
+                    expected_kind = (
+                        AttentionKind.SLIDING
+                        if layer_index % 2 == 0
+                        else AttentionKind.FULL
+                    )
+                    if group.attention_kind is not expected_kind:
+                        _raise(HybridLayoutErrorCode.ATTENTION_PATTERN_MISMATCH)
                 layers.append(
                     AttentionLayerLayout(
                         layer_name=layer_name,
@@ -225,6 +228,27 @@ class GptOssHybridCacheLayout:
             "layers",
             tuple(sorted(layers, key=lambda layer: layer.layer_index)),
         )
+
+    @staticmethod
+    def _validate_unified(groups: tuple[CacheGroupLayout, ...]) -> None:
+        group = groups[0]
+        if group.group_id != 0:
+            _raise(HybridLayoutErrorCode.INVALID_GROUP_ID)
+        if group.attention_kind is not AttentionKind.FULL:
+            _raise(HybridLayoutErrorCode.ATTENTION_PATTERN_MISMATCH)
+
+    @staticmethod
+    def _validate_hybrid(groups: tuple[CacheGroupLayout, ...]) -> None:
+        group_ids = tuple(group.group_id for group in groups)
+        if len(set(group_ids)) != len(group_ids):
+            _raise(HybridLayoutErrorCode.DUPLICATE_GROUP_ID)
+        if set(group_ids) != set(range(GPT_OSS_NUM_CACHE_GROUPS)):
+            _raise(HybridLayoutErrorCode.INVALID_GROUP_ID)
+        if {group.attention_kind for group in groups} != {
+            AttentionKind.SLIDING,
+            AttentionKind.FULL,
+        }:
+            _raise(HybridLayoutErrorCode.ATTENTION_PATTERN_MISMATCH)
 
     def group(self, group_id: int) -> CacheGroupLayout:
         """Return a group by its exact vLLM group ID or fail closed."""

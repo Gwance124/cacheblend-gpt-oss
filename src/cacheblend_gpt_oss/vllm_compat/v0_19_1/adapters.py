@@ -156,7 +156,12 @@ class AdaptedKvCacheBlocks:
 
 
 def adapt_kv_cache_config(kv_cache_config: object) -> AdaptedKvCacheConfig:
-    """Validate and translate the exact GPT-OSS finalized KV-cache config."""
+    """Validate and translate the exact GPT-OSS finalized KV-cache config.
+
+    Accepts both the hybrid layout (2 groups: sliding + full) and the unified
+    layout (1 group: all full-attention, produced when vLLM's hybrid KV cache
+    manager is disabled).
+    """
 
     num_blocks = _attribute(kv_cache_config, "num_blocks")
     if not _is_int(num_blocks) or num_blocks < 1:
@@ -166,7 +171,8 @@ def adapt_kv_cache_config(kv_cache_config: object) -> AdaptedKvCacheConfig:
     if not isinstance(raw_groups, list):
         _fail(VllmAdapterErrorCode.INVALID_KV_CACHE_CONFIG)
     groups = tuple(raw_groups)
-    if len(groups) != GPT_OSS_NUM_CACHE_GROUPS:
+    num_groups = len(groups)
+    if num_groups not in (1, GPT_OSS_NUM_CACHE_GROUPS):
         _fail(VllmAdapterErrorCode.CACHE_GROUP_COUNT_MISMATCH)
 
     gpt_oss_groups: list[GptOssCacheGroupLayout] = []
@@ -217,9 +223,10 @@ def adapt_kv_cache_config(kv_cache_config: object) -> AdaptedKvCacheConfig:
         if all_indexes.intersection(indexes):
             _fail(VllmAdapterErrorCode.INVALID_LAYER_NAMES)
         all_indexes.update(indexes)
-        expected_parity = 0 if attention_kind is AttentionKind.SLIDING else 1
-        if any(index % 2 != expected_parity for index in indexes):
-            _fail(VllmAdapterErrorCode.INVALID_LAYER_NAMES)
+        if num_groups == GPT_OSS_NUM_CACHE_GROUPS:
+            expected_parity = 0 if attention_kind is AttentionKind.SLIDING else 1
+            if any(index % 2 != expected_parity for index in indexes):
+                _fail(VllmAdapterErrorCode.INVALID_LAYER_NAMES)
         seen_kinds.add(attention_kind)
         gpt_oss_groups.append(
             GptOssCacheGroupLayout(
@@ -231,10 +238,14 @@ def adapt_kv_cache_config(kv_cache_config: object) -> AdaptedKvCacheConfig:
             )
         )
 
-    if all_indexes != set(range(GPT_OSS_NUM_LAYERS)) or seen_kinds != {
+    if all_indexes != set(range(GPT_OSS_NUM_LAYERS)):
+        _fail(VllmAdapterErrorCode.INVALID_LAYER_NAMES)
+    if num_groups == GPT_OSS_NUM_CACHE_GROUPS and seen_kinds != {
         AttentionKind.SLIDING,
         AttentionKind.FULL,
     }:
+        _fail(VllmAdapterErrorCode.INVALID_LAYER_NAMES)
+    if num_groups == 1 and seen_kinds != {AttentionKind.FULL}:
         _fail(VllmAdapterErrorCode.INVALID_LAYER_NAMES)
 
     try:

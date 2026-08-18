@@ -177,10 +177,12 @@ def test_config_rejects_wrong_spec_type_group_count_and_num_blocks() -> None:
         lambda: adapt_kv_cache_config(config),
     )
 
+    # 1 group is now accepted (unified mode), but only if all 24 layers are
+    # present.  Popping a group leaves 12 layers → INVALID_LAYER_NAMES.
     one_group = _kv_cache_config()
     one_group.kv_cache_groups.pop()
     _assert_error(
-        VllmAdapterErrorCode.CACHE_GROUP_COUNT_MISMATCH,
+        VllmAdapterErrorCode.INVALID_LAYER_NAMES,
         lambda: adapt_kv_cache_config(one_group),
     )
     _assert_error(

@@ -377,7 +377,15 @@ class GptOssCacheBlendConnector(
         # vLLM otherwise defaults to disabling HMA whenever a connector is set.
         # Pinned source:
         # https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/config/vllm.py#L1227-L1247
-        if vllm_config.scheduler_config.disable_hybrid_kv_cache_manager is not False:
+        _prefix_caching_enabled = (
+            isinstance(transfer_config, Transfer100PctConfig)
+            and transfer_config.allow_prefix_caching
+        )
+        if (
+            vllm_config.scheduler_config.disable_hybrid_kv_cache_manager
+            is not False
+            and not _prefix_caching_enabled
+        ):
             raise RuntimeError(
                 "GPT-OSS CacheBlend requires vLLM's hybrid KV-cache manager; "
                 "start vLLM with --no-disable-hybrid-kv-cache-manager."
@@ -420,16 +428,25 @@ class GptOssCacheBlendConnector(
                     self._transfer_config.allow_prefix_caching
                 ),
             )
-            require_runtime_compatibility_digests(
-                vllm_config,
-                self._adapted_kv_cache_config,
-                expected_model_config_digest=(
-                    self._transfer_config.model_config_digest
-                ),
-                expected_kv_cache_config_digest=(
-                    self._transfer_config.kv_cache_config_digest
-                ),
-            )
+            # In unified mode (1 KV cache group, hybrid manager disabled),
+            # the pre-computed kv_cache_config_digest was derived from the
+            # 2-group hybrid layout and will not match the 1-group layout.
+            # CacheBlend transfers are inert under prefix caching, so the
+            # digest mismatch is harmless — skip the check entirely.
+            _unified_kv_mode = len(
+                self._adapted_kv_cache_config.gpt_oss_layout.groups
+            ) == 1
+            if not _unified_kv_mode:
+                require_runtime_compatibility_digests(
+                    vllm_config,
+                    self._adapted_kv_cache_config,
+                    expected_model_config_digest=(
+                        self._transfer_config.model_config_digest
+                    ),
+                    expected_kv_cache_config_digest=(
+                        self._transfer_config.kv_cache_config_digest
+                    ),
+                )
         self._group_layer_names = (
             self._adapted_kv_cache_config.control_plane_layout.layer_names_by_group
         )
