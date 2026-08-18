@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# Arm 4 diagnostic: prefix cache + CacheBlend with scatter DISABLED.
+# Same as local-m85-g3-cacheblend-prefix.sh except:
+#   1. --disable-kv-scatter in render_transfer_config.py
+#   2. CACHEBLEND_TRANSFER_DIAG=1 to log transfer eligibility decisions
+# If output tokens match arm 2 (~2800), scatter is the root cause.
+# If output tokens still diverge (~12K+), the issue is elsewhere.
 
 main() {
 cd /mnt/nvme3n1/mlee/cacheblend-gpt-oss || return 0
@@ -26,8 +32,8 @@ export CACHEBLEND_STAGING_TOKENS=131072
 export CACHEBLEND_L1_SIZE_GB=8
 export CACHEBLEND_MAX_BATCHED_TOKENS=131072
 export CACHEBLEND_REQUIRED_BRANCH=cacheblend-scatter-diagnostic-and-checklayer
-export CACHEBLEND_RUN_BASE_DIR=/mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/solab-g3-m8.5-browsecomp-append-only-prefix-cacheblend-20260817
-export CACHEBLEND_RUN_POINTER=/mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/solab-g3-m8.5-browsecomp-append-only-prefix-cacheblend-20260817.current
+export CACHEBLEND_RUN_BASE_DIR=/mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/solab-g3-m8.5-browsecomp-append-only-prefix-cacheblend-noscatter-20260817
+export CACHEBLEND_RUN_POINTER=/mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/solab-g3-m8.5-browsecomp-append-only-prefix-cacheblend-noscatter-20260817.current
 
 if test "$(git branch --show-current)" = "$CACHEBLEND_REQUIRED_BRANCH"; then
     export CACHEBLEND_RUN_DIR="$CACHEBLEND_RUN_BASE_DIR"
@@ -104,11 +110,12 @@ if test "$(git branch --show-current)" = "$CACHEBLEND_REQUIRED_BRANCH"; then
         --staging-token-capacity "$CACHEBLEND_STAGING_TOKENS" \
         --request-timeout-seconds 300 \
         --allow-prefix-caching \
+        --disable-kv-scatter \
         > "$CACHEBLEND_TRANSFER_CONFIG"
 
       export CACHEBLEND_KV_CONFIG_JSON="$(<"$CACHEBLEND_TRANSFER_CONFIG")"
 
-      .venv/bin/python -c "import json,os; d={'model_id':'openai/gpt-oss-20b','model_revision':os.environ['CACHEBLEND_MODEL_REVISION'],'tokenizer_revision':os.environ['CACHEBLEND_TOKENIZER_REVISION'],'plugin_commit':os.environ['CACHEBLEND_PLUGIN_COMMIT'],'model_config_digest':os.environ['CACHEBLEND_MODEL_CONFIG_DIGEST'],'kv_cache_config_digest':os.environ['CACHEBLEND_KV_CONFIG_DIGEST'],'vllm_version':'0.19.1','lmcache_version':'0.4.3','torch_version':'2.10.0+cu128','cuda_runtime':'12.8','gpu_name':'NVIDIA A100-SXM4-80GB','dtype':'torch.bfloat16'}; json.dump(d,open(os.path.join(os.environ['CACHEBLEND_RUN_DIR'],'runtime-identity.json'),'w'),indent=2); print('RUNTIME_IDENTITY_OK')"
+      .venv/bin/python -c "import json,os; d={'model_id':'openai/gpt-oss-20b','model_revision':os.environ['CACHEBLEND_MODEL_REVISION'],'tokenizer_revision':os.environ['CACHEBLEND_TOKENIZER_REVISION'],'plugin_commit':os.environ['CACHEBLEND_PLUGIN_COMMIT'],'model_config_digest':os.environ['CACHEBLEND_MODEL_CONFIG_DIGEST'],'kv_cache_config_digest':os.environ['CACHEBLEND_KV_CONFIG_DIGEST'],'vllm_version':'0.19.1','lmcache_version':'0.4.3','torch_version':'2.10.0+cu128','cuda_runtime':'12.8','gpu_name':'NVIDIA A100-SXM4-80GB','dtype':'torch.bfloat16','disable_kv_scatter':True}; json.dump(d,open(os.path.join(os.environ['CACHEBLEND_RUN_DIR'],'runtime-identity.json'),'w'),indent=2); print('RUNTIME_IDENTITY_OK')"
 
       nohup .venv/bin/vllm serve \
         "$CACHEBLEND_MODEL_PATH" \
