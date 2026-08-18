@@ -49,6 +49,7 @@ def _write_run(
     enclosing_seconds: float = 1.1,
     subphases: dict[str, float] | None = None,
     submitted_operations: int = 48,
+    mechanic_batches: int = 1,
 ) -> None:
     connector_dir = run_dir / "connector"
     connector_dir.mkdir(parents=True)
@@ -64,7 +65,7 @@ def _write_run(
         encoding="utf-8",
     )
     after_path.write_text(
-        _metrics(histograms, count=2) + _counters(batches=2),
+        _metrics(histograms, count=2) + _counters(batches=mechanic_batches),
         encoding="utf-8",
     )
 
@@ -138,6 +139,8 @@ def test_block_index_view_breakdown_reconciles_and_selects_index_construction(
     assert geometry["expected_block_index_owner_constructions_per_store_batch"] == 1
     assert geometry["expected_block_index_row_views_per_store_batch"] == 24
     assert geometry["expected_staging_view_constructions_per_store_batch"] == 48
+    assert geometry["timing_observations"] == 2
+    assert geometry["observed_store_batches"] == 1
     assert geometry["observed_block_index_owner_constructions_per_store_batch"] == 1
     assert geometry["observed_block_index_row_views_per_store_batch"] == 24
     assert geometry["observed_staging_view_constructions_per_store_batch"] == 48
@@ -167,6 +170,15 @@ def test_block_index_view_breakdown_rejects_non_batched_geometry(
     _write_run(tmp_path, submitted_operations=59_904)
 
     with pytest.raises(ValueError, match="pinned fast path"):
+        _analysis["analyze"](tmp_path)
+
+
+def test_block_index_view_breakdown_rejects_mechanics_per_timing_observation(
+    tmp_path: Path,
+) -> None:
+    _write_run(tmp_path, mechanic_batches=2)
+
+    with pytest.raises(ValueError, match="mechanics do not match"):
         _analysis["analyze"](tmp_path)
 
 

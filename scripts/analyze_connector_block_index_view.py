@@ -274,6 +274,14 @@ def analyze(run_dir: Path) -> dict[str, object]:
     observation_count = int(enclosing["count"])
     if observation_count <= 0:
         raise ValueError("block-index/view envelope has no observations")
+    submissions_per_store_batch = PINNED_LAYER_COUNT * PINNED_KV_COMPONENTS
+    submitted_operations = geometry["preflight_submitted_copy_operations"]
+    if (
+        submitted_operations <= 0
+        or submitted_operations % submissions_per_store_batch != 0
+    ):
+        raise ValueError("block-index/view store-batch geometry does not reconcile")
+    store_batch_count = submitted_operations // submissions_per_store_batch
 
     mechanics = {
         "observed_block_index_owner_constructions": _counter_delta(
@@ -287,14 +295,17 @@ def analyze(run_dir: Path) -> dict[str, object]:
         ),
     }
     expected_mechanics = {
-        "observed_block_index_owner_constructions": observation_count,
-        "observed_block_index_row_views": observation_count * PINNED_LAYER_COUNT,
+        "observed_block_index_owner_constructions": store_batch_count,
+        "observed_block_index_row_views": store_batch_count * PINNED_LAYER_COUNT,
         "observed_staging_view_constructions": (
-            observation_count * PINNED_LAYER_COUNT * PINNED_KV_COMPONENTS
+            store_batch_count * PINNED_LAYER_COUNT * PINNED_KV_COMPONENTS
         ),
     }
     if mechanics != expected_mechanics:
-        raise ValueError("block-index/view mechanics do not match batched owner path")
+        raise ValueError(
+            "block-index/view mechanics do not match batched owner path: "
+            f"observed={mechanics!r} expected={expected_mechanics!r}"
+        )
 
     subphases = {key: _histogram_delta(before, after, key) for key in SUBPHASE_KEYS}
     if any(int(value["count"]) != observation_count for value in subphases.values()):
@@ -342,15 +353,17 @@ def analyze(run_dir: Path) -> dict[str, object]:
             "expected_staging_view_constructions_per_store_batch": (
                 PINNED_LAYER_COUNT * PINNED_KV_COMPONENTS
             ),
+            "timing_observations": observation_count,
+            "observed_store_batches": store_batch_count,
             "observed_block_index_owner_constructions_per_store_batch": (
                 mechanics["observed_block_index_owner_constructions"]
-                // observation_count
+                // store_batch_count
             ),
             "observed_block_index_row_views_per_store_batch": (
-                mechanics["observed_block_index_row_views"] // observation_count
+                mechanics["observed_block_index_row_views"] // store_batch_count
             ),
             "observed_staging_view_constructions_per_store_batch": (
-                mechanics["observed_staging_view_constructions"] // observation_count
+                mechanics["observed_staging_view_constructions"] // store_batch_count
             ),
         },
         "block_index_view": {
