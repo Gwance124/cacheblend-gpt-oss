@@ -166,12 +166,25 @@ def test_gpu_runner_uses_valid_connector_request_timeout() -> None:
     assert "scripts/analyze_connector_batched_block_indices.py" in runner
     assert "connector-batched-block-indices.json" in runner
     assert "BATCHED_BLOCK_INDICES_STATUS" in runner
+    assert "SKIP_BATCHED_BLOCK_INDICES_BLOCK_INDEX_VIEW_STATUS" in runner
     assert "retry20260818-140016" in runner
     assert "scripts/analyze_connector_block_batched_gather.py" in runner
     assert "connector-block-batched-gather.json" in runner
     assert "BLOCK_BATCHED_GATHER_STATUS" in runner
     assert "retry20260818-111912" in runner
     assert "test_cuda_block_batched_gather_matches_exact_noncontiguous_blocks" in runner
+
+
+def test_batched_index_repair_runner_reuses_existing_artifacts() -> None:
+    runner = Path("local-m85-analyze-batched-block-indices.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "scripts/analyze_connector_block_index_view.py" in runner
+    assert "scripts/analyze_connector_batched_block_indices.py" in runner
+    assert "retry20260818-140016" in runner
+    assert "block_index_owner_constructions_total" in runner
+    assert "git pull --ff-only" in runner
 
 
 def test_no_store_gpu_runner_is_an_exact_gated_diagnostic() -> None:

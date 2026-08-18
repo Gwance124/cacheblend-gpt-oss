@@ -38,7 +38,7 @@ def _counters(*, batches: int) -> str:
         "store_preflight_staging_view_constructions": batches * 48,
     }
     return "".join(
-        f'vllm:cacheblend_{key}{{engine="0"}} {value}\n'
+        f'vllm:cacheblend_{key}_total{{engine="0"}} {value}\n'
         for key, value in values.items()
     )
 

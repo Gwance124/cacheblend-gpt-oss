@@ -352,14 +352,19 @@ main() {
   local block_index_view_status=${PIPESTATUS[0]}
   set -e
 
-  set +e
-  .venv/bin/python scripts/analyze_connector_batched_block_indices.py \
-    --baseline-run-dir "$CACHEBLEND_BATCHED_INDEX_BASELINE_RUN_DIR" \
-    --candidate-run-dir "$CACHEBLEND_RUN_DIR" \
-    --output "$CACHEBLEND_RUN_DIR/connector-batched-block-indices.json" \
-    | tee "$CACHEBLEND_RUN_DIR/connector-batched-block-indices.txt"
-  local batched_block_indices_status=${PIPESTATUS[0]}
-  set -e
+  local batched_block_indices_status=1
+  if test "$block_index_view_status" -eq 0; then
+    set +e
+    .venv/bin/python scripts/analyze_connector_batched_block_indices.py \
+      --baseline-run-dir "$CACHEBLEND_BATCHED_INDEX_BASELINE_RUN_DIR" \
+      --candidate-run-dir "$CACHEBLEND_RUN_DIR" \
+      --output "$CACHEBLEND_RUN_DIR/connector-batched-block-indices.json" \
+      | tee "$CACHEBLEND_RUN_DIR/connector-batched-block-indices.txt"
+    batched_block_indices_status=${PIPESTATUS[0]}
+    set -e
+  else
+    echo "SKIP_BATCHED_BLOCK_INDICES_BLOCK_INDEX_VIEW_STATUS=$block_index_view_status"
+  fi
 
   set +e
   .venv/bin/python scripts/analyze_connector_block_batched_gather.py \

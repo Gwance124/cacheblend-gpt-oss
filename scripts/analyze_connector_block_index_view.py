@@ -136,7 +136,7 @@ def _histogram_delta(before: str, after: str, key: str) -> dict[str, int | float
 
 
 def _counter_delta(before: str, after: str, key: str) -> int:
-    metric = f"vllm:cacheblend_{key}"
+    metric = f"vllm:cacheblend_{key}_total"
     before_total = _metric_total(before, metric, allow_missing=True)
     after_total = _metric_total(after, metric)
     delta = after_total - before_total
