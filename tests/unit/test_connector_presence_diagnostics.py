@@ -154,12 +154,15 @@ def test_gpu_runner_uses_valid_connector_request_timeout() -> None:
     assert "--timeout-seconds 1800" in runner
     assert "scripts/analyze_connector_store_stages.py" in runner
     assert "connector-store-stage-breakdown.json" in runner
+    assert "scripts/analyze_connector_store_data_plane.py" in runner
+    assert "connector-store-data-plane-breakdown.json" in runner
+    assert "STORE_DATA_PLANE_STATUS" in runner
 
 
 def test_no_store_gpu_runner_is_an_exact_gated_diagnostic() -> None:
-    runner = Path(
-        "local-m85-g3-connector-no-store-equivalence.sh"
-    ).read_text(encoding="utf-8")
+    runner = Path("local-m85-g3-connector-no-store-equivalence.sh").read_text(
+        encoding="utf-8"
+    )
 
     assert re.findall(r"--request-timeout-seconds ([0-9.]+)", runner) == [
         str(int(MAX_REQUEST_TIMEOUT_SECONDS))

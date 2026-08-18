@@ -44,6 +44,8 @@ _COUNTER_KEYS = (
     "prefill_tokens_avoided",
     "store_tokens_eligible",
     "store_tokens_completed",
+    "store_preflight_prepared_copy_operations",
+    "store_gather_prepared_copy_operations",
     "load_fallbacks",
     "store_fallbacks",
 )
@@ -58,6 +60,13 @@ _LATENCY_KEYS = (
     "store_gather_latency_seconds",
     "store_lmcache_latency_seconds",
     "store_sidecar_publish_latency_seconds",
+    "store_storage_preflight_latency_seconds",
+    "store_preflight_prepare_latency_seconds",
+    "store_preflight_enqueue_latency_seconds",
+    "store_preflight_synchronize_latency_seconds",
+    "store_gather_prepare_latency_seconds",
+    "store_gather_enqueue_latency_seconds",
+    "store_gather_synchronize_latency_seconds",
 )
 _ALL_KEYS = (*_COUNTER_KEYS, *_LATENCY_KEYS)
 
@@ -93,11 +102,9 @@ class CacheBlendLookupObservation:
         if (
             self.reusable_segments_hit > self.reusable_segments_requested
             or self.kv_tokens_verified > self.kv_tokens_found
-            or self.kv_tokens_verified
-            > self.reusable_document_tokens_requested
+            or self.kv_tokens_verified > self.reusable_document_tokens_requested
             or self.kv_tokens_found > self.reusable_document_tokens_requested
-            or self.kv_tokens_found
-            != self.kv_tokens_verified + self.kv_tokens_rejected
+            or self.kv_tokens_found != self.kv_tokens_verified + self.kv_tokens_rejected
             or self.reusable_document_tokens_requested > self.prompt_tokens
             or isinstance(self.latency_seconds, bool)
             or not isinstance(self.latency_seconds, int | float)
@@ -166,9 +173,7 @@ class GptOssCacheBlendStats(KVConnectorStats):  # type: ignore[misc]
         }
         for key in _LATENCY_KEYS:
             values = self.data[key]
-            reduced[key] = (
-                round(float(sum(values)) / len(values), 6) if values else 0.0
-            )
+            reduced[key] = round(float(sum(values)) / len(values), 6) if values else 0.0
         reduced["document_hit_fraction"] = _fraction(
             int(reduced["reusable_segments_hit"]),
             int(reduced["reusable_segments_requested"]),
@@ -179,8 +184,7 @@ class GptOssCacheBlendStats(KVConnectorStats):  # type: ignore[misc]
         )
         reduced["effective_saved_prefill_fraction"] = _fraction(
             int(reduced["prefill_tokens_avoided"]),
-            int(reduced["tokens_recomputed"])
-            + int(reduced["prefill_tokens_avoided"]),
+            int(reduced["tokens_recomputed"]) + int(reduced["prefill_tokens_avoided"]),
         )
         return reduced
 
@@ -269,10 +273,24 @@ class GptOssCacheBlendStats(KVConnectorStats):  # type: ignore[misc]
         store_gather_latency_seconds: float = 0.0,
         store_lmcache_latency_seconds: float = 0.0,
         store_sidecar_publish_latency_seconds: float = 0.0,
+        store_storage_preflight_latency_seconds: float = 0.0,
+        store_preflight_prepare_latency_seconds: float = 0.0,
+        store_preflight_enqueue_latency_seconds: float = 0.0,
+        store_preflight_synchronize_latency_seconds: float = 0.0,
+        store_preflight_prepared_copy_operations: int = 0,
+        store_gather_prepare_latency_seconds: float = 0.0,
+        store_gather_enqueue_latency_seconds: float = 0.0,
+        store_gather_synchronize_latency_seconds: float = 0.0,
+        store_gather_prepared_copy_operations: int = 0,
     ) -> None:
         if any(
             isinstance(value, bool) or not isinstance(value, int) or value < 0
-            for value in (eligible_tokens, stored_tokens)
+            for value in (
+                eligible_tokens,
+                stored_tokens,
+                store_preflight_prepared_copy_operations,
+                store_gather_prepared_copy_operations,
+            )
         ):
             raise ValueError("CacheBlend store counters require non-negative integers")
         if not isinstance(fallback, bool):
@@ -281,17 +299,51 @@ class GptOssCacheBlendStats(KVConnectorStats):  # type: ignore[misc]
             raise ValueError("stored KV tokens cannot exceed eligible tokens")
         self._append("store_tokens_eligible", eligible_tokens)
         self._append("store_tokens_completed", stored_tokens)
+        self._append(
+            "store_preflight_prepared_copy_operations",
+            store_preflight_prepared_copy_operations,
+        )
+        self._append(
+            "store_gather_prepared_copy_operations",
+            store_gather_prepared_copy_operations,
+        )
         self._append("store_fallbacks", int(fallback))
         self._append("store_latency_seconds", latency_seconds)
         self._append("store_plan_latency_seconds", store_plan_latency_seconds)
-        self._append(
-            "store_preflight_latency_seconds", store_preflight_latency_seconds
-        )
+        self._append("store_preflight_latency_seconds", store_preflight_latency_seconds)
         self._append("store_gather_latency_seconds", store_gather_latency_seconds)
         self._append("store_lmcache_latency_seconds", store_lmcache_latency_seconds)
         self._append(
             "store_sidecar_publish_latency_seconds",
             store_sidecar_publish_latency_seconds,
+        )
+        self._append(
+            "store_storage_preflight_latency_seconds",
+            store_storage_preflight_latency_seconds,
+        )
+        self._append(
+            "store_preflight_prepare_latency_seconds",
+            store_preflight_prepare_latency_seconds,
+        )
+        self._append(
+            "store_preflight_enqueue_latency_seconds",
+            store_preflight_enqueue_latency_seconds,
+        )
+        self._append(
+            "store_preflight_synchronize_latency_seconds",
+            store_preflight_synchronize_latency_seconds,
+        )
+        self._append(
+            "store_gather_prepare_latency_seconds",
+            store_gather_prepare_latency_seconds,
+        )
+        self._append(
+            "store_gather_enqueue_latency_seconds",
+            store_gather_enqueue_latency_seconds,
+        )
+        self._append(
+            "store_gather_synchronize_latency_seconds",
+            store_gather_synchronize_latency_seconds,
         )
 
     def _append(self, key: str, value: int | float) -> None:
@@ -322,9 +374,7 @@ class GptOssCacheBlendPromMetrics(KVConnectorPromMetrics):  # type: ignore[misc]
         labelnames: list[str],
         per_engine_labelvalues: dict[int, list[object]],
     ) -> None:
-        super().__init__(
-            vllm_config, metric_types, labelnames, per_engine_labelvalues
-        )
+        super().__init__(vllm_config, metric_types, labelnames, per_engine_labelvalues)
         self._counters = {
             key: self._counter_cls(
                 name=f"vllm:cacheblend_{key}_total",

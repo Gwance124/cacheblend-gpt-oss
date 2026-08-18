@@ -129,8 +129,7 @@ class FakeTensorOps:
     ) -> FakeView:
         assert isinstance(tensor, FakeTensor)
         refs = tuple(
-            (block_id, component, block_offset + index)
-            for index in range(token_count)
+            (block_id, component, block_offset + index) for index in range(token_count)
         )
         return FakeView(tensor, refs, (token_count, 8, 64))
 
@@ -144,9 +143,7 @@ class FakeTensorOps:
         token_count: int,
     ) -> FakeView:
         assert isinstance(tensor, FakeTensor)
-        self.staging_reads.append(
-            (component, layer_index, token_start, token_count)
-        )
+        self.staging_reads.append((component, layer_index, token_start, token_count))
         refs = tuple(
             (component, layer_index, token_start + index)
             for index in range(token_count)
@@ -227,8 +224,7 @@ def _rows(value: FakeView | FakeValue) -> tuple[object, ...]:
 
 def paged_caches() -> dict[str, FakeTensor]:
     return {
-        layer_name(index): FakeTensor((6, 2, BLOCK_SIZE, 8, 64))
-        for index in range(24)
+        layer_name(index): FakeTensor((6, 2, BLOCK_SIZE, 8, 64)) for index in range(24)
     }
 
 
@@ -461,6 +457,8 @@ def test_gather_compacts_target_rows_without_position_correction() -> None:
     assert receipt.copied_value_rows == len(TARGET) * 24
     assert not receipt.sinks_touched
     assert ops.copy_count == 96
+    assert data_plane.last_gather_timing.prepared_copy_operations == 96
+    assert data_plane.last_gather_timing.total_latency_seconds >= 0.0
     assert stage.rows is not None
     assert stage.rows[(0, 0, STORE_OFFSET)] == ("paged-k", 0, TARGET.start)
     assert stage.rows[(1, 0, STORE_OFFSET)] == ("paged-v", 0, TARGET.start)
@@ -524,14 +522,22 @@ def test_late_key_correction_failure_preflights_before_any_mutation() -> None:
 @pytest.mark.parametrize(
     ("mutation", "code"),
     [
-        (lambda tensor: setattr(tensor, "shape", (2, 23, 64, 512)),
-         DataPlaneErrorCode.INVALID_STAGING_SHAPE),
-        (lambda tensor: setattr(tensor, "dtype", "torch.float32"),
-         DataPlaneErrorCode.DTYPE_MISMATCH),
-        (lambda tensor: setattr(tensor, "device", "cuda:1"),
-         DataPlaneErrorCode.DEVICE_MISMATCH),
-        (lambda tensor: setattr(tensor, "device", "cpu"),
-         DataPlaneErrorCode.INVALID_DEVICE),
+        (
+            lambda tensor: setattr(tensor, "shape", (2, 23, 64, 512)),
+            DataPlaneErrorCode.INVALID_STAGING_SHAPE,
+        ),
+        (
+            lambda tensor: setattr(tensor, "dtype", "torch.float32"),
+            DataPlaneErrorCode.DTYPE_MISMATCH,
+        ),
+        (
+            lambda tensor: setattr(tensor, "device", "cuda:1"),
+            DataPlaneErrorCode.DEVICE_MISMATCH,
+        ),
+        (
+            lambda tensor: setattr(tensor, "device", "cpu"),
+            DataPlaneErrorCode.INVALID_DEVICE,
+        ),
     ],
 )
 def test_staging_shape_dtype_and_device_fail_closed(

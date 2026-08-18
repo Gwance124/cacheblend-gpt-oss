@@ -193,9 +193,7 @@ def _is_ordered_subsequence(
         # within one cache group.  With prefix caching the allocation table
         # may contain null-block entries, so filter them before checking.
         original_real_blocks = tuple(
-            block_id
-            for block_id in original
-            if block_id != _VLLM_NULL_BLOCK_ID
+            block_id for block_id in original if block_id != _VLLM_NULL_BLOCK_ID
         )
         if len(original_real_blocks) != len(set(original_real_blocks)):
             return False
@@ -204,9 +202,7 @@ def _is_ordered_subsequence(
         # current table cannot contain the same real block twice.  Repeated
         # null IDs are the intentional representation of dropped positions.
         current_real_blocks = tuple(
-            block_id
-            for block_id in current
-            if block_id != _VLLM_NULL_BLOCK_ID
+            block_id for block_id in current if block_id != _VLLM_NULL_BLOCK_ID
         )
         if len(current_real_blocks) != len(set(current_real_blocks)):
             return False
@@ -246,13 +242,10 @@ def _is_ordered_subsequence(
         ):
             null_prefix_length += 1
         allocation_suffix_start = min(null_prefix_length, len(original))
-        if (
-            current[allocation_suffix_start : len(original)]
-            != original[allocation_suffix_start:]
-            or any(
-                block_id == _VLLM_NULL_BLOCK_ID
-                for block_id in current[null_prefix_length:]
-            )
+        if current[allocation_suffix_start : len(original)] != original[
+            allocation_suffix_start:
+        ] or any(
+            block_id == _VLLM_NULL_BLOCK_ID for block_id in current[null_prefix_length:]
         ):
             return False
     return True
@@ -292,9 +285,9 @@ class _DecodeStepMetadata(KVConnectorMetadata):  # type: ignore[misc]
     """
 
     __slots__ = ()
-    _singleton: "_DecodeStepMetadata | None" = None
+    _singleton: _DecodeStepMetadata | None = None
 
-    def __new__(cls) -> "_DecodeStepMetadata":
+    def __new__(cls) -> _DecodeStepMetadata:
         if cls._singleton is None:
             cls._singleton = super().__new__(cls)
         return cls._singleton
@@ -335,7 +328,8 @@ class _ActiveWorkerTransfer:
 
 
 class GptOssCacheBlendConnector(
-    KVConnectorBase_V1, SupportsHMA  # type: ignore[misc]
+    KVConnectorBase_V1,
+    SupportsHMA,  # type: ignore[misc]
 ):
     """vLLM 0.19.1 connector for full-prefill and explicit selective modes.
 
@@ -383,8 +377,7 @@ class GptOssCacheBlendConnector(
         # Pinned source:
         # https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/config/vllm.py#L1227-L1247
         if (
-            vllm_config.scheduler_config.disable_hybrid_kv_cache_manager
-            is not False
+            vllm_config.scheduler_config.disable_hybrid_kv_cache_manager is not False
             and not _prefix_caching_enabled
         ):
             raise RuntimeError(
@@ -402,8 +395,8 @@ class GptOssCacheBlendConnector(
         # adapter.  The configuration validator above reports operator-facing
         # startup issues; this adapter also constructs immutable group/layout
         # descriptors used for every later block-table translation.
-        self._adapted_kv_cache_config: AdaptedKvCacheConfig = (
-            adapt_kv_cache_config(kv_cache_config)
+        self._adapted_kv_cache_config: AdaptedKvCacheConfig = adapt_kv_cache_config(
+            kv_cache_config
         )
         self._transfer_config = transfer_config
         self._allow_prefix_caching = (
@@ -422,21 +415,17 @@ class GptOssCacheBlendConnector(
         if isinstance(self._transfer_config, Transfer100PctConfig):
             require_transfer_100pct_config(
                 vllm_config,
-                staging_token_capacity=(
-                    self._transfer_config.staging_token_capacity
-                ),
-                allow_prefix_caching=(
-                    self._transfer_config.allow_prefix_caching
-                ),
+                staging_token_capacity=(self._transfer_config.staging_token_capacity),
+                allow_prefix_caching=(self._transfer_config.allow_prefix_caching),
             )
             # In unified mode (1 KV cache group, hybrid manager disabled),
             # the pre-computed kv_cache_config_digest was derived from the
             # 2-group hybrid layout and will not match the 1-group layout.
             # CacheBlend transfers are inert under prefix caching, so the
             # digest mismatch is harmless — skip the check entirely.
-            _unified_kv_mode = len(
-                self._adapted_kv_cache_config.gpt_oss_layout.groups
-            ) == 1
+            _unified_kv_mode = (
+                len(self._adapted_kv_cache_config.gpt_oss_layout.groups) == 1
+            )
             if not _unified_kv_mode:
                 require_runtime_compatibility_digests(
                     vllm_config,
@@ -464,9 +453,7 @@ class GptOssCacheBlendConnector(
         self._finished_request_ids: set[str] = set()
         self._registered_kv_caches: dict[str, torch.Tensor] = {}
         self._scheduler_lookup_metadata: dict[str, SchedulerLookupMetadata] = {}
-        self._scheduler_lookup_observations: dict[
-            str, CacheBlendLookupObservation
-        ] = {}
+        self._scheduler_lookup_observations: dict[str, CacheBlendLookupObservation] = {}
         self._stats = GptOssCacheBlendStats()
         self._scheduler_resources: SchedulerRuntimeResources | None = None
         self._worker_resources: WorkerRuntimeResources | None = None
@@ -597,6 +584,7 @@ class GptOssCacheBlendConnector(
             self._decode_step_count += 1
             if self._decode_diag and self._decode_step_count % 500 == 0:
                 import sys
+
                 print(
                     f"CACHEBLEND_DECODE_DIAG decode_steps={self._decode_step_count} "
                     f"prefill_steps={self._prefill_step_count}",
@@ -677,9 +665,7 @@ class GptOssCacheBlendConnector(
                 receipt = self._control_plane.validate_worker(
                     handoff.plan.request_id,
                     loaded_match_indexes=(),
-                    rejected_match_indexes=range(
-                        len(handoff.plan.match_plan.matches)
-                    ),
+                    rejected_match_indexes=range(len(handoff.plan.match_plan.matches)),
                 )
                 self._pending_worker_receipts.append(receipt)
                 if self._selective_enabled:
@@ -820,8 +806,9 @@ class GptOssCacheBlendConnector(
                 )
                 rejected_tokens = sum(
                     len(
-                        active.metadata.verified_candidates[index]
-                        .candidate.target_range
+                        active.metadata.verified_candidates[
+                            index
+                        ].candidate.target_range
                     )
                     for index in active.pre_forward.rejected_candidate_indexes
                 )
@@ -869,13 +856,10 @@ class GptOssCacheBlendConnector(
                 eligible_tokens=post_forward.eligible_store_tokens,
                 stored_tokens=post_forward.stored_tokens,
                 fallback=(
-                    post_forward.state
-                    is TransferAttemptState.FULL_PREFILL_FALLBACK
+                    post_forward.state is TransferAttemptState.FULL_PREFILL_FALLBACK
                 ),
                 latency_seconds=perf_counter() - started_at,
-                store_plan_latency_seconds=(
-                    post_forward.store_plan_latency_seconds
-                ),
+                store_plan_latency_seconds=(post_forward.store_plan_latency_seconds),
                 store_preflight_latency_seconds=(
                     post_forward.store_preflight_latency_seconds
                 ),
@@ -887,6 +871,33 @@ class GptOssCacheBlendConnector(
                 ),
                 store_sidecar_publish_latency_seconds=(
                     post_forward.store_sidecar_publish_latency_seconds
+                ),
+                store_storage_preflight_latency_seconds=(
+                    post_forward.store_storage_preflight_latency_seconds
+                ),
+                store_preflight_prepare_latency_seconds=(
+                    post_forward.store_preflight_data_plane_timing.prepare_latency_seconds
+                ),
+                store_preflight_enqueue_latency_seconds=(
+                    post_forward.store_preflight_data_plane_timing.enqueue_latency_seconds
+                ),
+                store_preflight_synchronize_latency_seconds=(
+                    post_forward.store_preflight_data_plane_timing.synchronize_latency_seconds
+                ),
+                store_preflight_prepared_copy_operations=(
+                    post_forward.store_preflight_data_plane_timing.prepared_copy_operations
+                ),
+                store_gather_prepare_latency_seconds=(
+                    post_forward.store_gather_data_plane_timing.prepare_latency_seconds
+                ),
+                store_gather_enqueue_latency_seconds=(
+                    post_forward.store_gather_data_plane_timing.enqueue_latency_seconds
+                ),
+                store_gather_synchronize_latency_seconds=(
+                    post_forward.store_gather_data_plane_timing.synchronize_latency_seconds
+                ),
+                store_gather_prepared_copy_operations=(
+                    post_forward.store_gather_data_plane_timing.prepared_copy_operations
                 ),
             )
             self._active_worker_transfer = None
@@ -904,6 +915,7 @@ class GptOssCacheBlendConnector(
             )
         if self._decode_diag and finished_req_ids:
             import sys
+
             print(
                 f"CACHEBLEND_DECODE_DIAG finished={len(finished_req_ids)} "
                 f"total_decode_steps={self._decode_step_count} "
@@ -1029,8 +1041,7 @@ class GptOssCacheBlendConnector(
             lookup_latency = perf_counter() - started_at
             if lookup.status.is_fatal:
                 raise RuntimeError(
-                    "CacheBlend scheduler lookup failed closed: "
-                    f"{lookup.status.value}."
+                    f"CacheBlend scheduler lookup failed closed: {lookup.status.value}."
                 )
             plan = lookup.request_plan
             self._control_plane.lookup(
@@ -1042,6 +1053,7 @@ class GptOssCacheBlendConnector(
             self._scheduler_lookup_metadata[request_id] = lookup
             if self._transfer_diag:
                 import sys
+
                 print(
                     f"CACHEBLEND_TRANSFER_DIAG lookup"
                     f" request={request_id}"
@@ -1106,6 +1118,7 @@ class GptOssCacheBlendConnector(
         self._require_role(KVConnectorRole.SCHEDULER, "update_state_after_alloc")
         if self._transfer_diag:
             import sys
+
             print(
                 f"CACHEBLEND_TRANSFER_DIAG alloc"
                 f" request={request.request_id}"
@@ -1187,6 +1200,7 @@ class GptOssCacheBlendConnector(
                 )
                 if self._transfer_diag:
                     import sys
+
                     print(
                         f"CACHEBLEND_TRANSFER_DIAG build_meta"
                         f" request={request_id}"
@@ -1201,9 +1215,7 @@ class GptOssCacheBlendConnector(
                     )
                 if not complete_step or not within_staging:
                     continue
-                prefix_cached = self._prefix_cached_tokens.get(
-                    request_id, 0
-                )
+                prefix_cached = self._prefix_cached_tokens.get(request_id, 0)
                 if (
                     prefix_cached > 0
                     and lookup.verified_candidates
@@ -1235,9 +1247,7 @@ class GptOssCacheBlendConnector(
             transfers=tuple(transfers),
             lookup_observations=(
                 tuple(
-                    self._scheduler_lookup_observations[
-                        handoff.plan.request_id
-                    ]
+                    self._scheduler_lookup_observations[handoff.plan.request_id]
                     for handoff in handoffs
                 )
                 if self._transfer_enabled

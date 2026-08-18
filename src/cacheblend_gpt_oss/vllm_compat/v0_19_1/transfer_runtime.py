@@ -71,6 +71,9 @@ from cacheblend_gpt_oss.storage.lmcache_types import (
     query_digest,
 )
 from cacheblend_gpt_oss.vllm_compat.v0_19_1.adapters import AdaptedKvCacheBlocks
+from cacheblend_gpt_oss.vllm_compat.v0_19_1.stage_timing import (
+    DataPlanePhaseTiming,
+)
 from cacheblend_gpt_oss.vllm_compat.v0_19_1.transfer_config import (
     TransferSelectiveConfig,
 )
@@ -226,8 +229,7 @@ class SchedulerTransferMetadata:
                 candidate.target_range != match.target_segment.token_range
                 or candidate.cache_key != record.cache_key
                 or record.namespace != self.cache_namespace
-                or match.target_segment.token_ids
-                != prompt[target.start : target.end]
+                or match.target_segment.token_ids != prompt[target.start : target.end]
                 or record.token_ids != match.target_segment.token_ids
                 or record.fingerprint
                 != SHA256_FINGERPRINTER.fingerprint(
@@ -259,9 +261,7 @@ class SchedulerTransferMetadata:
     def complete_store_token_count(self) -> int:
         """Return only the complete 256-token prefix of the prompt."""
 
-        return (
-            self.prompt_token_count // LMCACHE_CHUNK_SIZE
-        ) * LMCACHE_CHUNK_SIZE
+        return (self.prompt_token_count // LMCACHE_CHUNK_SIZE) * LMCACHE_CHUNK_SIZE
 
 
 @dataclass(frozen=True, slots=True)
@@ -372,6 +372,14 @@ class WorkerDataPlane(Protocol):
 
     Preflight methods must inspect every span and tensor without mutation.
     """
+
+    @property
+    def store_preflight_data_plane_timing(self) -> DataPlanePhaseTiming:
+        """Return phases from the last read-only gather preflight."""
+
+    @property
+    def store_gather_data_plane_timing(self) -> DataPlanePhaseTiming:
+        """Return phases from the last active gather."""
 
     def preflight_scatter(self, plan: WorkerLoadPlan) -> None:
         """Validate all candidate scatter work without copying KV."""
@@ -495,8 +503,7 @@ class PreForwardOutcome:
         ):
             _fail(TransferRuntimeErrorCode.INVALID_OUTCOME)
         if self.row_plan is None and (
-            self.layer_token_rows_recomputed != 0
-            or self.layer_token_rows_avoided != 0
+            self.layer_token_rows_recomputed != 0 or self.layer_token_rows_avoided != 0
         ):
             _fail(TransferRuntimeErrorCode.INVALID_OUTCOME)
         if (
@@ -530,10 +537,7 @@ class PreForwardOutcome:
             or self.loaded_kv_tokens != 0
             or (
                 self.state is TransferAttemptState.NOT_ELIGIBLE
-                and (
-                    self.metadata.transfer_eligible
-                    or self.failure_code is not None
-                )
+                and (self.metadata.transfer_eligible or self.failure_code is not None)
             )
             or (
                 self.state is TransferAttemptState.FULL_PREFILL_FALLBACK
@@ -546,8 +550,7 @@ class PreForwardOutcome:
                 # scattered.  No other outcome may claim this counter, so a
                 # scatter-disabled run can never be mistaken for a real
                 # SUCCEEDED transfer or an ordinary failure.
-                self.failure_code
-                is TransferFallbackCode.SCATTER_SUPPRESSED_DIAGNOSTIC
+                self.failure_code is TransferFallbackCode.SCATTER_SUPPRESSED_DIAGNOSTIC
                 and self.scatter_suppressed_tokens != expected_rejected_tokens
             )
             or (
@@ -607,6 +610,13 @@ class PostForwardOutcome:
     store_gather_latency_seconds: float = 0.0
     store_lmcache_latency_seconds: float = 0.0
     store_sidecar_publish_latency_seconds: float = 0.0
+    store_storage_preflight_latency_seconds: float = 0.0
+    store_preflight_data_plane_timing: DataPlanePhaseTiming = field(
+        default_factory=DataPlanePhaseTiming
+    )
+    store_gather_data_plane_timing: DataPlanePhaseTiming = field(
+        default_factory=DataPlanePhaseTiming
+    )
 
     def __post_init__(self) -> None:
         if not isinstance(self.completion, FullPrefillCompletion) or not isinstance(
@@ -629,6 +639,7 @@ class PostForwardOutcome:
             self.store_gather_latency_seconds,
             self.store_lmcache_latency_seconds,
             self.store_sidecar_publish_latency_seconds,
+            self.store_storage_preflight_latency_seconds,
         )
         if any(
             isinstance(value, bool)
@@ -637,6 +648,10 @@ class PostForwardOutcome:
             or value < 0
             for value in latencies
         ):
+            _fail(TransferRuntimeErrorCode.INVALID_OUTCOME)
+        if not isinstance(
+            self.store_preflight_data_plane_timing, DataPlanePhaseTiming
+        ) or not isinstance(self.store_gather_data_plane_timing, DataPlanePhaseTiming):
             _fail(TransferRuntimeErrorCode.INVALID_OUTCOME)
         metadata = self.completion.pre_forward.metadata
         expected_eligible = _store_eligible_tokens(metadata)
@@ -882,8 +897,10 @@ class TransferRuntime:
         preflight_started = self._timestamp()
         try:
             self._data_plane.preflight_gather(plan)
-            self._storage.preflight_store(plan)
         except Exception:
+            preflight_data_plane_timing = self._read_data_plane_phase_timing(
+                "store_preflight_data_plane_timing"
+            )
             return self._store_outcome(
                 completion,
                 TransferAttemptState.FULL_PREFILL_FALLBACK,
@@ -891,12 +908,35 @@ class TransferRuntime:
                 eligible_tokens,
                 store_plan_latency_seconds=plan_latency,
                 store_preflight_latency_seconds=self._elapsed(preflight_started),
+                store_preflight_data_plane_timing=(preflight_data_plane_timing),
             )
+        preflight_data_plane_timing = self._read_data_plane_phase_timing(
+            "store_preflight_data_plane_timing"
+        )
+        storage_preflight_started = self._timestamp()
+        try:
+            self._storage.preflight_store(plan)
+        except Exception:
+            storage_preflight_latency = self._elapsed(storage_preflight_started)
+            return self._store_outcome(
+                completion,
+                TransferAttemptState.FULL_PREFILL_FALLBACK,
+                TransferFallbackCode.STORE_PREFLIGHT_FAILED,
+                eligible_tokens,
+                store_plan_latency_seconds=plan_latency,
+                store_preflight_latency_seconds=self._elapsed(preflight_started),
+                store_storage_preflight_latency_seconds=(storage_preflight_latency),
+                store_preflight_data_plane_timing=(preflight_data_plane_timing),
+            )
+        storage_preflight_latency = self._elapsed(storage_preflight_started)
         preflight_latency = self._elapsed(preflight_started)
         gather_started = self._timestamp()
         try:
             self._data_plane.gather_recomputed(plan)
         except Exception:
+            gather_data_plane_timing = self._read_data_plane_phase_timing(
+                "store_gather_data_plane_timing"
+            )
             return self._store_outcome(
                 completion,
                 TransferAttemptState.FULL_PREFILL_FALLBACK,
@@ -905,8 +945,14 @@ class TransferRuntime:
                 store_plan_latency_seconds=plan_latency,
                 store_preflight_latency_seconds=preflight_latency,
                 store_gather_latency_seconds=self._elapsed(gather_started),
+                store_storage_preflight_latency_seconds=(storage_preflight_latency),
+                store_preflight_data_plane_timing=(preflight_data_plane_timing),
+                store_gather_data_plane_timing=gather_data_plane_timing,
             )
         gather_latency = self._elapsed(gather_started)
+        gather_data_plane_timing = self._read_data_plane_phase_timing(
+            "store_gather_data_plane_timing"
+        )
         lmcache_started = self._timestamp()
         try:
             receipt = self._storage.store_precomputed(plan)
@@ -920,6 +966,9 @@ class TransferRuntime:
                 store_preflight_latency_seconds=preflight_latency,
                 store_gather_latency_seconds=gather_latency,
                 store_lmcache_latency_seconds=self._elapsed(lmcache_started),
+                store_storage_preflight_latency_seconds=(storage_preflight_latency),
+                store_preflight_data_plane_timing=(preflight_data_plane_timing),
+                store_gather_data_plane_timing=gather_data_plane_timing,
             )
         lmcache_latency = self._elapsed(lmcache_started)
         if not self._valid_store_receipt(receipt, plan):
@@ -932,6 +981,9 @@ class TransferRuntime:
                 store_preflight_latency_seconds=preflight_latency,
                 store_gather_latency_seconds=gather_latency,
                 store_lmcache_latency_seconds=lmcache_latency,
+                store_storage_preflight_latency_seconds=(storage_preflight_latency),
+                store_preflight_data_plane_timing=(preflight_data_plane_timing),
+                store_gather_data_plane_timing=gather_data_plane_timing,
             )
         publish_started = self._timestamp()
         try:
@@ -948,9 +1000,10 @@ class TransferRuntime:
                 store_preflight_latency_seconds=preflight_latency,
                 store_gather_latency_seconds=gather_latency,
                 store_lmcache_latency_seconds=lmcache_latency,
-                store_sidecar_publish_latency_seconds=self._elapsed(
-                    publish_started
-                ),
+                store_sidecar_publish_latency_seconds=self._elapsed(publish_started),
+                store_storage_preflight_latency_seconds=(storage_preflight_latency),
+                store_preflight_data_plane_timing=(preflight_data_plane_timing),
+                store_gather_data_plane_timing=gather_data_plane_timing,
             )
         publish_latency = self._elapsed(publish_started)
         if (
@@ -968,6 +1021,9 @@ class TransferRuntime:
                 store_gather_latency_seconds=gather_latency,
                 store_lmcache_latency_seconds=lmcache_latency,
                 store_sidecar_publish_latency_seconds=publish_latency,
+                store_storage_preflight_latency_seconds=(storage_preflight_latency),
+                store_preflight_data_plane_timing=(preflight_data_plane_timing),
+                store_gather_data_plane_timing=gather_data_plane_timing,
             )
         return PostForwardOutcome(
             completion=completion,
@@ -983,6 +1039,9 @@ class TransferRuntime:
             store_gather_latency_seconds=gather_latency,
             store_lmcache_latency_seconds=lmcache_latency,
             store_sidecar_publish_latency_seconds=publish_latency,
+            store_storage_preflight_latency_seconds=storage_preflight_latency,
+            store_preflight_data_plane_timing=preflight_data_plane_timing,
+            store_gather_data_plane_timing=gather_data_plane_timing,
         )
 
     def _build_load_plan(
@@ -1061,9 +1120,7 @@ class TransferRuntime:
         """
 
         self._validate_allocation(metadata, adapted_blocks)
-        skip_tokens = (
-            _store_skip_prefix_chunk_count(metadata) * LMCACHE_CHUNK_SIZE
-        )
+        skip_tokens = _store_skip_prefix_chunk_count(metadata) * LMCACHE_CHUNK_SIZE
         chunks: list[StoreChunkWork] = []
         for start in range(
             skip_tokens, metadata.complete_store_token_count, LMCACHE_CHUNK_SIZE
@@ -1098,9 +1155,7 @@ class TransferRuntime:
             _fail(TransferRuntimeErrorCode.INVALID_METADATA)
 
     @staticmethod
-    def _valid_retrieve_receipt(
-        receipt: object, plan: WorkerLoadPlan
-    ) -> bool:
+    def _valid_retrieve_receipt(receipt: object, plan: WorkerLoadPlan) -> bool:
         return (
             isinstance(receipt, LmcacheRetrieveReceipt)
             and _is_int(receipt.retrieved_tokens)
@@ -1120,9 +1175,7 @@ class TransferRuntime:
             or len(receipt.sidecar_records) != plan.expected_chunks
         ):
             return False
-        for chunk, record in zip(
-            plan.chunks, receipt.sidecar_records, strict=True
-        ):
+        for chunk, record in zip(plan.chunks, receipt.sidecar_records, strict=True):
             if not isinstance(record, CacheRecord) or not isinstance(
                 record.cache_key, str
             ):
@@ -1172,6 +1225,19 @@ class TransferRuntime:
             return 0.0
         return float(value)
 
+    def _read_data_plane_phase_timing(
+        self, attribute_name: str
+    ) -> DataPlanePhaseTiming:
+        """Read optional worker phase telemetry without changing store validity."""
+
+        try:
+            value = getattr(self._data_plane, attribute_name)
+        except Exception:
+            return DataPlanePhaseTiming()
+        if not isinstance(value, DataPlanePhaseTiming):
+            return DataPlanePhaseTiming()
+        return value
+
     def _timestamp(self) -> float | None:
         """Read a monotonic diagnostic clock without making it a validity gate."""
 
@@ -1207,6 +1273,9 @@ class TransferRuntime:
         store_gather_latency_seconds: float = 0.0,
         store_lmcache_latency_seconds: float = 0.0,
         store_sidecar_publish_latency_seconds: float = 0.0,
+        store_storage_preflight_latency_seconds: float = 0.0,
+        store_preflight_data_plane_timing: DataPlanePhaseTiming | None = None,
+        store_gather_data_plane_timing: DataPlanePhaseTiming | None = None,
     ) -> PostForwardOutcome:
         return PostForwardOutcome(
             completion=completion,
@@ -1223,6 +1292,15 @@ class TransferRuntime:
             store_lmcache_latency_seconds=store_lmcache_latency_seconds,
             store_sidecar_publish_latency_seconds=(
                 store_sidecar_publish_latency_seconds
+            ),
+            store_storage_preflight_latency_seconds=(
+                store_storage_preflight_latency_seconds
+            ),
+            store_preflight_data_plane_timing=(
+                store_preflight_data_plane_timing or DataPlanePhaseTiming()
+            ),
+            store_gather_data_plane_timing=(
+                store_gather_data_plane_timing or DataPlanePhaseTiming()
             ),
         )
 

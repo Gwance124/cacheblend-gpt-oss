@@ -68,6 +68,9 @@ from cacheblend_gpt_oss.vllm_compat.v0_19_1.data_plane import (
     TensorOps,
     TransferDirection,
 )
+from cacheblend_gpt_oss.vllm_compat.v0_19_1.stage_timing import (
+    DataPlanePhaseTiming,
+)
 from cacheblend_gpt_oss.vllm_compat.v0_19_1.staging import (
     StagingBackend,
     StagingConfig,
@@ -225,6 +228,10 @@ class StagingRuntimeFactory(Protocol):
 
 class DataPlaneOperations(Protocol):
     """Concrete surface shared by real and CPU-fake GPT-OSS data planes."""
+
+    @property
+    def last_gather_timing(self) -> DataPlanePhaseTiming:
+        """Return phases from the last successful gather batch."""
 
     def scatter_retrieved_kv(
         self,
@@ -426,9 +433,7 @@ class GptOssWorkerBridge:
         self._correct_key_positions = correct_key_positions
         self._disable_kv_scatter = disable_kv_scatter
         try:
-            self._staging = staging_factory(
-                staging_config, staging_backend, transport
-            )
+            self._staging = staging_factory(staging_config, staging_backend, transport)
             self._data_plane = data_plane_factory(tensor_ops)
             self._preflight_data_plane = data_plane_factory(
                 _ReadOnlyTensorOps(tensor_ops)
@@ -458,6 +463,8 @@ class GptOssWorkerBridge:
         self._gather_preflight: WorkerStorePlan | None = None
         self._store_preflight: WorkerStorePlan | None = None
         self._gathered_plan: WorkerStorePlan | None = None
+        self._store_preflight_data_plane_timing = DataPlanePhaseTiming()
+        self._store_gather_data_plane_timing = DataPlanePhaseTiming()
 
     @property
     def state(self) -> WorkerBridgeState:
@@ -485,6 +492,18 @@ class GptOssWorkerBridge:
         """
 
         return self._kv_tokens_scatter_suppressed
+
+    @property
+    def store_preflight_data_plane_timing(self) -> DataPlanePhaseTiming:
+        """Return dry-run gather preparation/dispatch/synchronization phases."""
+
+        return self._store_preflight_data_plane_timing
+
+    @property
+    def store_gather_data_plane_timing(self) -> DataPlanePhaseTiming:
+        """Return active gather preparation/enqueue/synchronization phases."""
+
+        return self._store_gather_data_plane_timing
 
     def open(self) -> object:
         """Open transport first, then allocate/register its exact staging tensor."""
@@ -582,8 +601,7 @@ class GptOssWorkerBridge:
                 receipt = self._transport.retrieve_precomputed(
                     plan.metadata.prompt_token_ids,
                     tuple(
-                        candidate.verified_candidate
-                        for candidate in plan.candidates
+                        candidate.verified_candidate for candidate in plan.candidates
                     ),
                     buffer_offset=lease.buffer_offset,
                     event_ipc_handle=lease.event_ipc_handle,
@@ -622,8 +640,7 @@ class GptOssWorkerBridge:
                 staging=staging,
                 paged_caches=self._paged_caches,
                 candidate_layer_spans=tuple(
-                    candidate.scatter_plan.layer_spans
-                    for candidate in plan.candidates
+                    candidate.scatter_plan.layer_spans for candidate in plan.candidates
                 ),
                 retrieval_buffer_offset=self._buffer_config.retrieval_buffer_offset,
                 query_token_count=plan.metadata.prompt_token_count,
@@ -693,6 +710,7 @@ class GptOssWorkerBridge:
             _fail(WorkerBridgeErrorCode.INVALID_STATE)
         self._gather_preflight = None
         self._store_preflight = None
+        self._store_preflight_data_plane_timing = DataPlanePhaseTiming()
         self._validate_store_plan(plan)
         staging = self._staging.tensor
         base_chunk_index = plan.chunks[0].chunk_index
@@ -702,13 +720,14 @@ class GptOssWorkerBridge:
             chunk_layer_spans=tuple(
                 chunk.gather_plan.layer_spans for chunk in plan.chunks
             ),
-            document_target_ranges=tuple(
-                chunk.token_range for chunk in plan.chunks
-            ),
+            document_target_ranges=tuple(chunk.token_range for chunk in plan.chunks),
             store_buffer_offsets=tuple(
                 self._chunk_store_offset(chunk.chunk_index - base_chunk_index)
                 for chunk in plan.chunks
             ),
+        )
+        self._store_preflight_data_plane_timing = self._read_gather_timing(
+            self._preflight_data_plane
         )
         if len(receipts) != len(plan.chunks):
             _fail(WorkerBridgeErrorCode.RECEIPT_MISMATCH)
@@ -734,6 +753,7 @@ class GptOssWorkerBridge:
     def gather_recomputed(self, plan: WorkerStorePlan) -> None:
         """Gather exact post-forward KV into a contiguous staging region."""
 
+        self._store_gather_data_plane_timing = DataPlanePhaseTiming()
         self._require_plan(self._gather_preflight, plan)
         self._require_plan(self._store_preflight, plan)
         staging = self._staging.tensor
@@ -749,11 +769,12 @@ class GptOssWorkerBridge:
                     chunk.token_range for chunk in plan.chunks
                 ),
                 store_buffer_offsets=tuple(
-                    self._chunk_store_offset(
-                        chunk.chunk_index - base_chunk_index
-                    )
+                    self._chunk_store_offset(chunk.chunk_index - base_chunk_index)
                     for chunk in plan.chunks
                 ),
+            )
+            self._store_gather_data_plane_timing = self._read_gather_timing(
+                self._data_plane
             )
             if len(receipts) != len(plan.chunks):
                 _fail(WorkerBridgeErrorCode.RECEIPT_MISMATCH)
@@ -770,6 +791,19 @@ class GptOssWorkerBridge:
         finally:
             self._gather_preflight = None
         self._gathered_plan = plan
+
+    @staticmethod
+    def _read_gather_timing(
+        data_plane: DataPlaneOperations,
+    ) -> DataPlanePhaseTiming:
+        value = getattr(data_plane, "last_gather_timing", None)
+        if value is None:
+            # CPU protocol fakes predating phase telemetry remain valid. The
+            # production GptOssDataPlane always exposes the concrete value.
+            return DataPlanePhaseTiming()
+        if not isinstance(value, DataPlanePhaseTiming):
+            _fail(WorkerBridgeErrorCode.RECEIPT_MISMATCH)
+        return value
 
     def store_precomputed(self, plan: WorkerStorePlan) -> LmcacheStoreReceipt:
         """Store the compact gathered prefix through one synchronous event lease."""
@@ -818,8 +852,7 @@ class GptOssWorkerBridge:
             or not plan.metadata.transfer_eligible
             or not plan.candidates
             or len(plan.candidates) != len(plan.metadata.verified_candidates)
-            or plan.expected_tokens
-            != len(plan.candidates) * LMCACHE_CHUNK_SIZE
+            or plan.expected_tokens != len(plan.candidates) * LMCACHE_CHUNK_SIZE
         ):
             _fail(WorkerBridgeErrorCode.INVALID_PLAN)
         for index, work in enumerate(plan.candidates):
@@ -848,7 +881,8 @@ class GptOssWorkerBridge:
             or plan.expected_tokens != len(plan.chunks) * LMCACHE_CHUNK_SIZE
             or plan.source_range.end > plan.metadata.complete_store_token_count
             or plan.source_range.start % LMCACHE_CHUNK_SIZE != 0
-            or plan.source_range != TokenRange(
+            or plan.source_range
+            != TokenRange(
                 plan.source_range.start,
                 plan.source_range.start + plan.expected_tokens,
             )
@@ -867,8 +901,8 @@ class GptOssWorkerBridge:
             if (
                 chunk.chunk_index != base_chunk_index + index
                 or chunk.token_range != expected_range
-                or expected_range.start != plan.source_range.start
-                + index * LMCACHE_CHUNK_SIZE
+                or expected_range.start
+                != plan.source_range.start + index * LMCACHE_CHUNK_SIZE
                 or chunk.token_ids
                 != plan.metadata.prompt_token_ids[
                     expected_range.start : expected_range.end
@@ -903,11 +937,7 @@ class GptOssWorkerBridge:
     def _validate_staging_range(self, start: int, length: int) -> None:
         self._require_ready()
         capacity = self._staging.config.token_capacity
-        if (
-            not _is_int(capacity)
-            or capacity < 0
-            or start + length > capacity
-        ):
+        if not _is_int(capacity) or capacity < 0 or start + length > capacity:
             _fail(WorkerBridgeErrorCode.STAGING_RANGE_OUT_OF_BOUNDS)
         # Access also proves that registered staging is locally owned now.
         staging_tensor = self._staging.tensor
@@ -923,9 +953,7 @@ class GptOssWorkerBridge:
             _fail(WorkerBridgeErrorCode.INVALID_PLAN)
 
     @staticmethod
-    def _validate_retrieve_receipt(
-        receipt: object, plan: WorkerLoadPlan
-    ) -> None:
+    def _validate_retrieve_receipt(receipt: object, plan: WorkerLoadPlan) -> None:
         if (
             not isinstance(receipt, LmcacheRetrieveReceipt)
             or not _is_int(receipt.retrieved_tokens)
@@ -945,9 +973,7 @@ class GptOssWorkerBridge:
             or len(receipt.sidecar_records) != plan.expected_chunks
         ):
             _fail(WorkerBridgeErrorCode.RECEIPT_MISMATCH)
-        for chunk, record in zip(
-            plan.chunks, receipt.sidecar_records, strict=True
-        ):
+        for chunk, record in zip(plan.chunks, receipt.sidecar_records, strict=True):
             if not GptOssWorkerBridge._valid_record(
                 record,
                 plan.metadata.cache_namespace,
@@ -1000,9 +1026,7 @@ class GptOssWorkerBridge:
         token_ids: tuple[int, ...],
         source_range: TokenRange,
     ) -> bool:
-        if not isinstance(record, CacheRecord) or not isinstance(
-            record.cache_key, str
-        ):
+        if not isinstance(record, CacheRecord) or not isinstance(record.cache_key, str):
             return False
         suffix = record.cache_key.removeprefix(LMCACHE_CACHE_KEY_PREFIX)
         return (
@@ -1065,8 +1089,7 @@ class GptOssWorkerBridge:
 
     def _chunk_store_offset(self, chunk_index: int) -> int:
         return (
-            self._buffer_config.store_buffer_offset
-            + chunk_index * LMCACHE_CHUNK_SIZE
+            self._buffer_config.store_buffer_offset + chunk_index * LMCACHE_CHUNK_SIZE
         )
 
     def _require_ready(self) -> None:

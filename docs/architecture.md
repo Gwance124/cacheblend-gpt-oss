@@ -523,6 +523,15 @@ artifacts. Connector metric labels are limited to vLLM's bounded engine labels:
 | `vllm:cacheblend_store_gather_latency_seconds` | Nested time to gather recomputed paged KV into the contiguous staging tensors |
 | `vllm:cacheblend_store_lmcache_latency_seconds` | Nested time inside the pinned LMCache `store_precomputed` storage boundary |
 | `vllm:cacheblend_store_sidecar_publish_latency_seconds` | Nested time to publish the verified sidecar-record batch atomically |
+| `vllm:cacheblend_store_storage_preflight_latency_seconds` | Storage-only validation time nested inside the enclosing store preflight |
+| `vllm:cacheblend_store_preflight_prepare_latency_seconds` | Read-only gather span/view preparation time |
+| `vllm:cacheblend_store_preflight_enqueue_latency_seconds` | Time traversing the prepared read-only copy batch with mutation suppressed |
+| `vllm:cacheblend_store_preflight_synchronize_latency_seconds` | Read-only gather CUDA synchronization time |
+| `vllm:cacheblend_store_gather_prepare_latency_seconds` | Active gather span/view preparation time |
+| `vllm:cacheblend_store_gather_enqueue_latency_seconds` | Active gather nonblocking copy-enqueue time |
+| `vllm:cacheblend_store_gather_synchronize_latency_seconds` | Active gather CUDA synchronization time |
+| `vllm:cacheblend_store_preflight_prepared_copy_operations_total` | Prepared read-only K/V copy operations across every layer and physical span |
+| `vllm:cacheblend_store_gather_prepared_copy_operations_total` | Prepared active-gather K/V copy operations across every layer and physical span |
 | `vllm:cacheblend_position_correction_latency_seconds` | Measured YaRN position-correction duration for completed 100%-recompute loads; zero on misses/fallbacks |
 | `vllm:cacheblend_selective_recomputation_latency_seconds` | Selective model/backend duration; zero in the current 100% connector hook and required before M7 GPU claims |
 | vLLM TTFT/prefill metrics | Server-measured TTFT and total prefill latency; the non-streaming client cannot infer TTFT |
@@ -537,10 +546,14 @@ warm/cold cache state, and the complete pinned runtime/config identity so a
 copied report cannot lose the conditions under which its confidence intervals
 were measured.
 
-The five `store_*` sub-stage histograms are nested within
+The five broad `store_*` sub-stage histograms are nested within
 `store_latency_seconds`; they are not additional request latency and must not be
 summed with the enclosing histogram. Their sum can be compared with the
 enclosing value to expose uninstrumented validation and Python overhead.
+The worker phase histograms are nested again within their respective preflight
+or gather histogram. Prepared-copy operation counters are counts, not timings;
+the fixed long-context gate reconciles them against the pinned block, layer,
+K/V, width, and dtype geometry before interpreting phase latency.
 
 The Responses contract harness parses the pinned vLLM histogram families
 `vllm:time_to_first_token_seconds`, `vllm:e2e_request_latency_seconds`,

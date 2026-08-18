@@ -51,6 +51,9 @@ from cacheblend_gpt_oss.gpt_oss.layout import (
 )
 from cacheblend_gpt_oss.planner.models import TokenRange
 from cacheblend_gpt_oss.targets import PINNED_TARGET
+from cacheblend_gpt_oss.vllm_compat.v0_19_1.stage_timing import (
+    DataPlanePhaseTiming,
+)
 
 GPT_OSS_NUM_KV_HEADS = 8
 GPT_OSS_HEAD_DIM = 64
@@ -241,6 +244,13 @@ class GptOssDataPlane:
 
     def __init__(self, tensor_ops: TensorOps) -> None:
         self._ops = tensor_ops
+        self._last_gather_timing = DataPlanePhaseTiming()
+
+    @property
+    def last_gather_timing(self) -> DataPlanePhaseTiming:
+        """Return identifier-free phases from the last successful gather batch."""
+
+        return self._last_gather_timing
 
     def scatter_retrieved_kv(
         self,
@@ -379,6 +389,8 @@ class GptOssDataPlane:
         deferred until the document is loaded at a new position.
         """
 
+        self._last_gather_timing = DataPlanePhaseTiming()
+        prepare_started_at = perf_counter()
         groups = tuple(tuple(spans) for spans in chunk_layer_spans)
         ranges = tuple(document_target_ranges)
         offsets = tuple(store_buffer_offsets)
@@ -410,9 +422,7 @@ class GptOssDataPlane:
                 )
 
             for span in validated.spans:
-                relative_start = (
-                    span.target_range.start - document_target_range.start
-                )
+                relative_start = span.target_range.start - document_target_range.start
                 staging_start = store_buffer_offset + relative_start
                 prepared.extend(
                     self._prepare_gather_span(
@@ -435,7 +445,16 @@ class GptOssDataPlane:
                 )
             )
 
-        self._apply(prepared, staging)
+        prepare_latency_seconds = perf_counter() - prepare_started_at
+        enqueue_latency_seconds, synchronize_latency_seconds = self._apply(
+            prepared, staging
+        )
+        self._last_gather_timing = DataPlanePhaseTiming(
+            prepare_latency_seconds=prepare_latency_seconds,
+            enqueue_latency_seconds=enqueue_latency_seconds,
+            synchronize_latency_seconds=synchronize_latency_seconds,
+            prepared_copy_operations=len(prepared),
+        )
         return tuple(receipts)
 
     def _preflight_common(
@@ -655,9 +674,7 @@ class GptOssDataPlane:
                 token_count=token_count,
             )
             flat_key = self._ops.reshape(paged_key, (token_count, GPT_OSS_KV_WIDTH))
-            flat_value = self._ops.reshape(
-                paged_value, (token_count, GPT_OSS_KV_WIDTH)
-            )
+            flat_value = self._ops.reshape(paged_value, (token_count, GPT_OSS_KV_WIDTH))
         except Exception as exc:
             raise DataPlaneError(
                 DataPlaneErrorCode.TENSOR_VIEW_FAILED,
@@ -687,19 +704,26 @@ class GptOssDataPlane:
         if self._safe_device(view) != self._safe_device(owner):
             _fail(DataPlaneErrorCode.DEVICE_MISMATCH, "tensor view device mismatch")
 
-    def _apply(self, prepared: Sequence[_PreparedCopy], sync_tensor: object) -> None:
+    def _apply(
+        self, prepared: Sequence[_PreparedCopy], sync_tensor: object
+    ) -> tuple[float, float]:
         # All shape/range/layer checks and every correction callback completed
         # before this first mutation. A backend copy failure makes the request
         # unusable; the caller must discard/fallback rather than consume partial KV.
         try:
+            enqueue_started_at = perf_counter()
             for operation in prepared:
                 self._ops.copy(operation.destination, operation.source)
+            enqueue_latency_seconds = perf_counter() - enqueue_started_at
+            synchronize_started_at = perf_counter()
             self._ops.synchronize(sync_tensor)
+            synchronize_latency_seconds = perf_counter() - synchronize_started_at
         except Exception as exc:
             raise DataPlaneError(
                 DataPlaneErrorCode.MUTATION_FAILED,
                 "tensor copy or synchronization failed; discard the request KV",
             ) from exc
+        return enqueue_latency_seconds, synchronize_latency_seconds
 
     def _safe_shape(self, tensor: object) -> tuple[int, ...]:
         try:
@@ -893,9 +917,7 @@ def _validate_spans(
         ):
             _fail(DataPlaneErrorCode.INVALID_LAYER)
         expected_kind = (
-            AttentionKind.SLIDING
-            if span.layer_index % 2 == 0
-            else AttentionKind.FULL
+            AttentionKind.SLIDING if span.layer_index % 2 == 0 else AttentionKind.FULL
         )
         if span.attention_kind is not expected_kind:
             _fail(DataPlaneErrorCode.INVALID_ATTENTION_PATTERN)

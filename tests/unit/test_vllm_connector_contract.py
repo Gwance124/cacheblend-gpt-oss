@@ -44,6 +44,9 @@ from cacheblend_gpt_oss.vllm_compat.v0_19_1.scheduler_runtime import (
     SchedulerLookupMetadata,
     SchedulerLookupStatus,
 )
+from cacheblend_gpt_oss.vllm_compat.v0_19_1.stage_timing import (
+    DataPlanePhaseTiming,
+)
 from cacheblend_gpt_oss.vllm_compat.v0_19_1.transfer_runtime import (
     FullPrefillCompletion,
     PostForwardOutcome,
@@ -52,9 +55,7 @@ from cacheblend_gpt_oss.vllm_compat.v0_19_1.transfer_runtime import (
 )
 
 MODULE_NAME = "cacheblend_gpt_oss.vllm_compat.v0_19_1.connector"
-METRICS_MODULE_NAME = (
-    "cacheblend_gpt_oss.vllm_compat.v0_19_1.connector_metrics"
-)
+METRICS_MODULE_NAME = "cacheblend_gpt_oss.vllm_compat.v0_19_1.connector_metrics"
 
 
 def test_import_without_vllm_fails_with_actionable_message(
@@ -241,11 +242,7 @@ def loaded_connector(
 
 class FakeHfConfig(SimpleNamespace):
     def to_dict(self) -> dict[str, object]:
-        return {
-            key: value
-            for key, value in vars(self).items()
-            if not callable(value)
-        }
+        return {key: value for key, value in vars(self).items() if not callable(value)}
 
 
 def _config() -> SimpleNamespace:
@@ -312,9 +309,7 @@ def _config() -> SimpleNamespace:
             enable_prefix_caching=False,
             cache_dtype="auto",
         ),
-        attention_config=SimpleNamespace(
-            backend=SimpleNamespace(name="TRITON_ATTN")
-        ),
+        attention_config=SimpleNamespace(backend=SimpleNamespace(name="TRITON_ATTN")),
         speculative_config=None,
         lora_config=None,
     )
@@ -356,7 +351,7 @@ def _kv_cache_config() -> SimpleNamespace:
                     attention_chunk_size=None,
                 ),
             ),
-        ]
+        ],
     )
 
 
@@ -390,9 +385,7 @@ def test_compatibility_probe_reports_finalized_digests_and_stops_startup(
     }
 
     with pytest.raises(RuntimeError, match="compatibility probe") as caught:
-        module.GptOssCacheBlendConnector(
-            config, fake.role.SCHEDULER, kv_cache_config
-        )
+        module.GptOssCacheBlendConnector(config, fake.role.SCHEDULER, kv_cache_config)
 
     assert expected.model_config_digest in str(caught.value)
     assert expected.kv_cache_config_digest in str(caught.value)
@@ -518,9 +511,10 @@ def test_completion_accepts_long_decode_after_sliding_blocks_are_skipped(
     assert connector.get_num_new_matched_tokens(request, 0) == (0, False)
     connector.update_state_after_alloc(request, blocks, num_external_tokens=0)
 
-    assert connector.request_finished_all_groups(
-        request, completion_block_ids
-    ) == (False, None)
+    assert connector.request_finished_all_groups(request, completion_block_ids) == (
+        False,
+        None,
+    )
 
 
 @pytest.mark.parametrize(
@@ -644,9 +638,7 @@ def test_worker_registers_every_layer_and_rejects_transfer_claims(
     connector = module.GptOssCacheBlendConnector(
         _config(), fake.role.WORKER, _kv_cache_config()
     )
-    caches = {
-        f"model.layers.{index}.attn.attn": object() for index in range(24)
-    }
+    caches = {f"model.layers.{index}.attn.attn": object() for index in range(24)}
     connector.register_kv_caches(caches)
     connector.bind_connector_metadata(metadata)
     connector.start_load_kv(SimpleNamespace())
@@ -721,9 +713,7 @@ def _enable_transfer(
             "transfer_evidence_path"
         ] = transfer_evidence_path
     if disable_kv_store:
-        config.kv_transfer_config.kv_connector_extra_config[
-            "disable_kv_store"
-        ] = True
+        config.kv_transfer_config.kv_connector_extra_config["disable_kv_store"] = True
 
 
 def _verified_transfer_candidate(
@@ -742,9 +732,7 @@ def _verified_transfer_candidate(
         source_range=TokenRange(1024, 1024 + len(prompt)),
         cache_key=LMCACHE_CACHE_KEY_PREFIX + storage_hash.hex(),
     )
-    match = VerifiedMatch(
-        CandidateMatch(target_segment, fingerprint, record)
-    )
+    match = VerifiedMatch(CandidateMatch(target_segment, fingerprint, record))
     raw = LmcacheCandidate(
         source_relative_range=TokenRange(0, len(prompt)),
         target_range=target_range,
@@ -752,9 +740,7 @@ def _verified_transfer_candidate(
         storage_model_name="fake-storage-namespace",
         query_digest=query_digest(prompt),
     )
-    return VerifiedLmcacheCandidate.bind(
-        raw, match, expected_namespace=namespace
-    )
+    return VerifiedLmcacheCandidate.bind(raw, match, expected_namespace=namespace)
 
 
 class FakeSchedulerLookupRuntime:
@@ -880,9 +866,7 @@ class FakeTransferRuntime:
                 sidecar_records_available=0,
                 sidecar_records_inserted=0,
             )
-        complete_tokens = (
-            metadata.prompt_token_count // 256
-        ) * 256
+        complete_tokens = (metadata.prompt_token_count // 256) * 256
         aligned_present = {
             verified.candidate.target_range
             for verified in metadata.verified_candidates
@@ -909,6 +893,13 @@ class FakeTransferRuntime:
             store_gather_latency_seconds=0.03,
             store_lmcache_latency_seconds=0.04,
             store_sidecar_publish_latency_seconds=0.05,
+            store_storage_preflight_latency_seconds=0.006,
+            store_preflight_data_plane_timing=DataPlanePhaseTiming(
+                0.007, 0.008, 0.009, 10
+            ),
+            store_gather_data_plane_timing=DataPlanePhaseTiming(
+                0.011, 0.012, 0.013, 10
+            ),
         )
 
 
@@ -1025,35 +1016,38 @@ def test_transfer_mode_wires_full_recompute_scheduler_and_worker_hooks(
         "kv_tokens_verified": 0,
         "kv_tokens_rejected": 0,
         "kv_tokens_loaded": 0,
-            "kv_tokens_scatter_suppressed": 0,
-            "tokens_recomputed": 256,
-            "layer_token_rows_recomputed": 0,
-            "layer_token_rows_avoided": 0,
-            "prefill_tokens_avoided": 0,
+        "kv_tokens_scatter_suppressed": 0,
+        "tokens_recomputed": 256,
+        "layer_token_rows_recomputed": 0,
+        "layer_token_rows_avoided": 0,
+        "prefill_tokens_avoided": 0,
         "store_tokens_eligible": 256,
         "store_tokens_completed": 256,
+        "store_preflight_prepared_copy_operations": 10,
+        "store_gather_prepared_copy_operations": 10,
         "load_fallbacks": 0,
         "store_fallbacks": 0,
-        "lookup_latency_seconds": pytest.approx(
-            reduced["lookup_latency_seconds"]
-        ),
-        "transfer_latency_seconds": pytest.approx(
-            reduced["transfer_latency_seconds"]
-        ),
+        "lookup_latency_seconds": pytest.approx(reduced["lookup_latency_seconds"]),
+        "transfer_latency_seconds": pytest.approx(reduced["transfer_latency_seconds"]),
         "position_correction_latency_seconds": pytest.approx(
             reduced["position_correction_latency_seconds"]
         ),
         "selective_recomputation_latency_seconds": pytest.approx(
             reduced["selective_recomputation_latency_seconds"]
         ),
-        "store_latency_seconds": pytest.approx(
-            reduced["store_latency_seconds"]
-        ),
+        "store_latency_seconds": pytest.approx(reduced["store_latency_seconds"]),
         "store_plan_latency_seconds": pytest.approx(0.01),
         "store_preflight_latency_seconds": pytest.approx(0.02),
         "store_gather_latency_seconds": pytest.approx(0.03),
         "store_lmcache_latency_seconds": pytest.approx(0.04),
         "store_sidecar_publish_latency_seconds": pytest.approx(0.05),
+        "store_storage_preflight_latency_seconds": pytest.approx(0.006),
+        "store_preflight_prepare_latency_seconds": pytest.approx(0.007),
+        "store_preflight_enqueue_latency_seconds": pytest.approx(0.008),
+        "store_preflight_synchronize_latency_seconds": pytest.approx(0.009),
+        "store_gather_prepare_latency_seconds": pytest.approx(0.011),
+        "store_gather_enqueue_latency_seconds": pytest.approx(0.012),
+        "store_gather_synchronize_latency_seconds": pytest.approx(0.013),
         "document_hit_fraction": 0.0,
         "token_hit_fraction": 0.0,
         "effective_saved_prefill_fraction": 0.0,
@@ -1068,6 +1062,17 @@ def test_transfer_mode_wires_full_recompute_scheduler_and_worker_hooks(
     assert reduced["store_gather_latency_seconds"] == pytest.approx(0.03)
     assert reduced["store_lmcache_latency_seconds"] == pytest.approx(0.04)
     assert reduced["store_sidecar_publish_latency_seconds"] == pytest.approx(0.05)
+    assert reduced["store_storage_preflight_latency_seconds"] == pytest.approx(0.006)
+    assert reduced["store_preflight_prepared_copy_operations"] == 10
+    assert reduced["store_gather_prepared_copy_operations"] == 10
+    assert reduced["store_preflight_prepare_latency_seconds"] == pytest.approx(0.007)
+    assert reduced["store_preflight_enqueue_latency_seconds"] == pytest.approx(0.008)
+    assert reduced["store_preflight_synchronize_latency_seconds"] == pytest.approx(
+        0.009
+    )
+    assert reduced["store_gather_prepare_latency_seconds"] == pytest.approx(0.011)
+    assert reduced["store_gather_enqueue_latency_seconds"] == pytest.approx(0.012)
+    assert reduced["store_gather_synchronize_latency_seconds"] == pytest.approx(0.013)
     assert worker.get_kv_connector_stats() is None
 
 
@@ -1208,9 +1213,7 @@ def test_transfer_mode_loads_verified_moved_candidate_before_full_recompute(
     assert reduced["effective_saved_prefill_fraction"] == 0.0
     assert reduced["position_correction_latency_seconds"] == pytest.approx(0.25)
 
-    rebuilt = module.GptOssCacheBlendConnector.build_kv_connector_stats(
-        stats.data
-    )
+    rebuilt = module.GptOssCacheBlendConnector.build_kv_connector_stats(stats.data)
     assert rebuilt.reduce() == reduced
     prom = module.GptOssCacheBlendConnector.build_prom_metrics(
         worker_config,
@@ -1524,6 +1527,15 @@ def test_connector_metrics_aggregate_hits_fallbacks_and_reject_bad_data(
         store_gather_latency_seconds=0.03,
         store_lmcache_latency_seconds=0.6,
         store_sidecar_publish_latency_seconds=0.04,
+        store_storage_preflight_latency_seconds=0.005,
+        store_preflight_prepare_latency_seconds=0.006,
+        store_preflight_enqueue_latency_seconds=0.007,
+        store_preflight_synchronize_latency_seconds=0.008,
+        store_preflight_prepared_copy_operations=59_904,
+        store_gather_prepare_latency_seconds=0.009,
+        store_gather_enqueue_latency_seconds=0.01,
+        store_gather_synchronize_latency_seconds=0.011,
+        store_gather_prepared_copy_operations=59_904,
     )
 
     other = module.GptOssCacheBlendStats()
@@ -1550,6 +1562,17 @@ def test_connector_metrics_aggregate_hits_fallbacks_and_reject_bad_data(
     assert reduced["store_gather_latency_seconds"] == pytest.approx(0.03)
     assert reduced["store_lmcache_latency_seconds"] == pytest.approx(0.6)
     assert reduced["store_sidecar_publish_latency_seconds"] == pytest.approx(0.04)
+    assert reduced["store_storage_preflight_latency_seconds"] == pytest.approx(0.005)
+    assert reduced["store_preflight_prepare_latency_seconds"] == pytest.approx(0.006)
+    assert reduced["store_preflight_enqueue_latency_seconds"] == pytest.approx(0.007)
+    assert reduced["store_preflight_synchronize_latency_seconds"] == pytest.approx(
+        0.008
+    )
+    assert reduced["store_preflight_prepared_copy_operations"] == 59_904
+    assert reduced["store_gather_prepare_latency_seconds"] == pytest.approx(0.009)
+    assert reduced["store_gather_enqueue_latency_seconds"] == pytest.approx(0.01)
+    assert reduced["store_gather_synchronize_latency_seconds"] == pytest.approx(0.011)
+    assert reduced["store_gather_prepared_copy_operations"] == 59_904
 
     with pytest.raises(ValueError, match="lookup observation"):
         module.CacheBlendLookupObservation(
@@ -1612,11 +1635,11 @@ def test_connector_metrics_aggregate_hits_fallbacks_and_reject_bad_data(
 
 
 def test_source_contains_the_pinned_loader_class_name() -> None:
-    source = Path(
-        "src/cacheblend_gpt_oss/vllm_compat/v0_19_1/connector.py"
-    ).read_text(encoding="utf-8")
+    source = Path("src/cacheblend_gpt_oss/vllm_compat/v0_19_1/connector.py").read_text(
+        encoding="utf-8"
+    )
     assert "class GptOssCacheBlendConnector" in source
-    assert "KVConnectorBase_V1, SupportsHMA" in source
+    assert "KVConnectorBase_V1,SupportsHMA" in "".join(source.split())
     assert "return 0, False" in source
 
 

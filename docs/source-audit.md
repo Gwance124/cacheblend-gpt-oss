@@ -323,6 +323,37 @@ unchanged. `local-m85-g3-connector-presence-equivalence.sh` now writes
 returns nonzero, so writeback attribution cannot be hidden by sampled output
 instability.
 
+That gate ran on `solab-g3` as
+`solab-g3-m8.5-connector-presence-equivalence-20260818-retry20260818-102304`.
+The enclosing synchronous store timer recorded 15.805555 seconds. Paged-KV
+gather accounted for 8.067526 seconds (51.0423%) and preflight accounted for
+7.227013 seconds (45.7245%). Together they account for 15.294538 seconds, or
+96.7669% of enclosing store time. The actual LMCache write boundary took only
+0.295019 seconds (1.8666%), sidecar publication took 0.079406 seconds (0.5024%),
+store-plan construction took 0.099177 seconds (0.6275%), and only 0.037415
+seconds remained unattributed. This kills the hypothesis that LMCache I/O or
+sidecar publication dominates the synchronous writeback penalty; the measured
+bottleneck is inside the worker data-plane preflight and gather boundaries.
+
+The exact pinned geometry explains why those boundaries need a lower-level
+split. The run stored 19,968 tokens. With vLLM block size 16, 24 GPT-OSS layers,
+and separate K/V copies, the current span implementation prepares exactly
+`19,968 / 16 * 24 * 2 = 59,904` copy operations for preflight and another
+59,904 for active gather. Each full-block operation carries 16,384 bytes and
+the active logical payload is 981,467,136 bytes (0.9140625 GiB). The read-only
+preflight traverses the same prepared-copy surface and performs a CUDA
+synchronization while suppressing mutation. Consequently, its 7.227-second
+wall time cannot yet distinguish Python/view validation from waiting for
+outstanding CUDA work, and the active 8.068-second gather cannot yet distinguish
+dispatch overhead from copy/synchronization time.
+
+The next gate therefore records preparation, copy-enqueue, and synchronization
+as separate phases for both read-only preflight and active gather, records the
+storage-only preflight independently, and requires both prepared-copy counters
+to equal 59,904 for this transcript. The same G3 runner writes
+`connector-store-data-plane-breakdown.json`; the analyzer fails closed if the
+phase counts, enclosing timers, or pinned operation geometry do not reconcile.
+
 ### Public out-of-tree extension points beyond the connector
 
 - [`vllm.general_plugins`](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/plugins/__init__.py#L12-L82)

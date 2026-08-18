@@ -40,6 +40,9 @@ from cacheblend_gpt_oss.storage.lmcache_types import (
     query_digest,
 )
 from cacheblend_gpt_oss.vllm_compat.v0_19_1.adapters import AdaptedKvCacheBlocks
+from cacheblend_gpt_oss.vllm_compat.v0_19_1.stage_timing import (
+    DataPlanePhaseTiming,
+)
 from cacheblend_gpt_oss.vllm_compat.v0_19_1.transfer_config import (
     LMCACHE_BLEND_PROTOCOL,
     LMCACHE_HASH_ALGORITHM,
@@ -138,16 +141,12 @@ def _verified_candidate(
     storage_hash = bytes([hash_byte]) * 32
     record = CacheRecord(
         namespace=namespace,
-        fingerprint=SHA256_FINGERPRINTER.fingerprint(
-            namespace, segment.token_ids
-        ),
+        fingerprint=SHA256_FINGERPRINTER.fingerprint(namespace, segment.token_ids),
         token_ids=segment.token_ids,
         source_range=TokenRange(source_start, source_start + length),
         cache_key=LMCACHE_CACHE_KEY_PREFIX + storage_hash.hex(),
     )
-    match = VerifiedMatch(
-        CandidateMatch(segment, record.fingerprint, record)
-    )
+    match = VerifiedMatch(CandidateMatch(segment, record.fingerprint, record))
     raw = LmcacheCandidate(
         source_relative_range=TokenRange(0, length),
         target_range=target,
@@ -155,9 +154,7 @@ def _verified_candidate(
         storage_model_name="pinned-storage-namespace",
         query_digest=query_digest(prompt),
     )
-    return VerifiedLmcacheCandidate.bind(
-        raw, match, expected_namespace=namespace
-    )
+    return VerifiedLmcacheCandidate.bind(raw, match, expected_namespace=namespace)
 
 
 def _metadata(
@@ -292,6 +289,14 @@ class _FakeDataPlane:
     mutations: list[str]
     fail_at: str | None = None
 
+    @property
+    def store_preflight_data_plane_timing(self) -> DataPlanePhaseTiming:
+        return DataPlanePhaseTiming(0.01, 0.02, 0.03, 96)
+
+    @property
+    def store_gather_data_plane_timing(self) -> DataPlanePhaseTiming:
+        return DataPlanePhaseTiming(0.04, 0.05, 0.06, 96)
+
     def preflight_scatter(self, plan: WorkerLoadPlan) -> None:
         self.calls.append("data.preflight_scatter")
         if self.fail_at == "preflight_scatter":
@@ -369,9 +374,7 @@ def _assert_runtime_error(
     assert "opaque-request" not in str(caught.value)
 
 
-def test_moved_candidate_loads_then_full_prompt_recomputes_and_stores_chunks() -> (
-    None
-):
+def test_moved_candidate_loads_then_full_prompt_recomputes_and_stores_chunks() -> None:
     metadata, blocks = _metadata()
     runtime, _storage, data_plane, calls, mutations = _runtime()
     data_plane.position_correction_latency_seconds = 0.25
@@ -396,9 +399,7 @@ def test_moved_candidate_loads_then_full_prompt_recomputes_and_stores_chunks() -
     receipt = loaded.to_worker_validation_receipt()
     assert receipt.loaded_match_indexes == (0,)
 
-    completion = runtime.mark_full_prefill_complete(
-        loaded, recomputed_token_count=600
-    )
+    completion = runtime.mark_full_prefill_complete(loaded, recomputed_token_count=600)
     stored = runtime.after_forward(completion, blocks)
 
     assert stored.state is TransferAttemptState.SUCCEEDED
@@ -424,7 +425,20 @@ def test_store_substage_timings_cover_each_synchronous_boundary() -> None:
     )
     _unused, storage, data_plane, _calls, _mutations = _runtime()
     timestamps = iter(
-        (10.0, 10.1, 20.0, 20.2, 30.0, 30.3, 40.0, 40.4, 50.0, 50.5)
+        (
+            10.0,
+            10.1,
+            20.0,
+            20.15,
+            20.18,
+            20.2,
+            30.0,
+            30.3,
+            40.0,
+            40.4,
+            50.0,
+            50.5,
+        )
     )
     runtime = TransferRuntime(
         _layout(),
@@ -445,6 +459,13 @@ def test_store_substage_timings_cover_each_synchronous_boundary() -> None:
     assert outcome.store_gather_latency_seconds == pytest.approx(0.3)
     assert outcome.store_lmcache_latency_seconds == pytest.approx(0.4)
     assert outcome.store_sidecar_publish_latency_seconds == pytest.approx(0.5)
+    assert outcome.store_storage_preflight_latency_seconds == pytest.approx(0.03)
+    assert outcome.store_preflight_data_plane_timing == DataPlanePhaseTiming(
+        0.01, 0.02, 0.03, 96
+    )
+    assert outcome.store_gather_data_plane_timing == DataPlanePhaseTiming(
+        0.04, 0.05, 0.06, 96
+    )
 
 
 def test_selective_transfer_emits_partial_full_shaped_row_plan() -> None:
@@ -479,9 +500,7 @@ def test_disabled_scatter_runs_worker_scatter_but_reports_fallback_zero_loaded()
     None
 ):
     metadata, blocks = _metadata()
-    runtime, _storage, data_plane, calls, mutations = _runtime(
-        disable_kv_scatter=True
-    )
+    runtime, _storage, data_plane, calls, mutations = _runtime(disable_kv_scatter=True)
     data_plane.position_correction_latency_seconds = 0.25
 
     outcome = runtime.before_forward(metadata, blocks)
@@ -496,10 +515,7 @@ def test_disabled_scatter_runs_worker_scatter_but_reports_fallback_zero_loaded()
     ]
     assert mutations == ["retrieve", "scatter"]
     assert outcome.state is TransferAttemptState.FULL_PREFILL_FALLBACK
-    assert (
-        outcome.failure_code
-        is TransferFallbackCode.SCATTER_SUPPRESSED_DIAGNOSTIC
-    )
+    assert outcome.failure_code is TransferFallbackCode.SCATTER_SUPPRESSED_DIAGNOSTIC
     assert outcome.loaded_candidate_indexes == ()
     assert outcome.rejected_candidate_indexes == (0,)
     assert outcome.loaded_kv_tokens == 0
@@ -568,9 +584,7 @@ def test_scatter_suppressed_tokens_must_be_zero_outside_the_diagnostic_fallback(
 def test_reordered_candidates_preserve_verified_identity_and_scatter_positions() -> (
     None
 ):
-    metadata, blocks = _metadata(
-        candidate_specs=((0, 2048, 4), (256, 1024, 5))
-    )
+    metadata, blocks = _metadata(candidate_specs=((0, 2048, 4), (256, 1024, 5)))
     runtime, storage, data_plane, _calls, _mutations = _runtime()
     captured: list[WorkerLoadPlan] = []
 
@@ -587,12 +601,14 @@ def test_reordered_candidates_preserve_verified_identity_and_scatter_positions()
     assert tuple(work.verified_candidate for work in plan.candidates) == (
         metadata.verified_candidates
     )
-    assert [
-        work.scatter_plan.transfer.source_range for work in plan.candidates
-    ] == [TokenRange(2048, 2304), TokenRange(1024, 1280)]
-    assert [
-        work.scatter_plan.transfer.target_range for work in plan.candidates
-    ] == [TokenRange(0, 256), TokenRange(256, 512)]
+    assert [work.scatter_plan.transfer.source_range for work in plan.candidates] == [
+        TokenRange(2048, 2304),
+        TokenRange(1024, 1280),
+    ]
+    assert [work.scatter_plan.transfer.target_range for work in plan.candidates] == [
+        TokenRange(0, 256),
+        TokenRange(256, 512),
+    ]
 
 
 def test_cache_miss_uses_no_worker_transfer_and_still_marks_full_recompute() -> None:
@@ -609,9 +625,7 @@ def test_cache_miss_uses_no_worker_transfer_and_still_marks_full_recompute() -> 
     assert outcome.prefill_tokens_avoided == 0
     assert calls == []
     assert mutations == []
-    completion = runtime.mark_full_prefill_complete(
-        outcome, recomputed_token_count=600
-    )
+    completion = runtime.mark_full_prefill_complete(outcome, recomputed_token_count=600)
     stored = runtime.after_forward(completion, blocks)
     assert stored.state is TransferAttemptState.NOT_ELIGIBLE
     assert stored.eligible_store_tokens == 0
@@ -676,9 +690,7 @@ def test_outcomes_cannot_be_forged_to_credit_external_or_saved_tokens() -> None:
         ),
     )
 
-    completion = runtime.mark_full_prefill_complete(
-        before, recomputed_token_count=600
-    )
+    completion = runtime.mark_full_prefill_complete(before, recomputed_token_count=600)
     stored = runtime.after_forward(completion, blocks)
     _assert_runtime_error(
         TransferRuntimeErrorCode.INVALID_OUTCOME,
@@ -844,15 +856,11 @@ def test_forward_completion_requires_every_scheduled_prompt_token() -> None:
 
     _assert_runtime_error(
         TransferRuntimeErrorCode.INVALID_FORWARD_COMPLETION,
-        lambda: runtime.mark_full_prefill_complete(
-            before, recomputed_token_count=599
-        ),
+        lambda: runtime.mark_full_prefill_complete(before, recomputed_token_count=599),
     )
     _assert_runtime_error(
         TransferRuntimeErrorCode.INVALID_FORWARD_COMPLETION,
-        lambda: runtime.mark_full_prefill_complete(
-            before, recomputed_token_count=True
-        ),
+        lambda: runtime.mark_full_prefill_complete(before, recomputed_token_count=True),
     )
     assert calls == []
     assert mutations == []
@@ -920,9 +928,7 @@ def test_every_store_failure_falls_back_without_store_or_savings_credit(
     )
     storage.wrong_record_namespace = wrong_namespace
     before = runtime.before_forward(metadata, blocks)
-    completion = runtime.mark_full_prefill_complete(
-        before, recomputed_token_count=600
-    )
+    completion = runtime.mark_full_prefill_complete(before, recomputed_token_count=600)
     calls.clear()
     observed_mutations.clear()
 
@@ -950,9 +956,7 @@ def test_load_failure_does_not_prevent_storing_the_recomputed_prompt() -> None:
     before = runtime.before_forward(metadata, blocks)
     assert before.state is TransferAttemptState.FULL_PREFILL_FALLBACK
     storage.fail_at = None
-    completion = runtime.mark_full_prefill_complete(
-        before, recomputed_token_count=600
-    )
+    completion = runtime.mark_full_prefill_complete(before, recomputed_token_count=600)
 
     stored = runtime.after_forward(completion, blocks)
 
@@ -961,9 +965,7 @@ def test_load_failure_does_not_prevent_storing_the_recomputed_prompt() -> None:
     assert stored.prefill_tokens_avoided == 0
 
 
-def test_first_request_with_no_verified_candidates_stores_the_whole_prefix() -> (
-    None
-):
+def test_first_request_with_no_verified_candidates_stores_the_whole_prefix() -> None:
     """No prior turn means nothing is already stored: store every chunk."""
 
     metadata, blocks = _metadata(
@@ -977,9 +979,7 @@ def test_first_request_with_no_verified_candidates_stores_the_whole_prefix() -> 
 
     storage.preflight_store = capture  # type: ignore[method-assign]
     before = runtime.before_forward(metadata, blocks)
-    completion = runtime.mark_full_prefill_complete(
-        before, recomputed_token_count=600
-    )
+    completion = runtime.mark_full_prefill_complete(before, recomputed_token_count=600)
 
     stored = runtime.after_forward(completion, blocks)
 
@@ -1012,9 +1012,7 @@ def test_follow_up_request_stores_only_the_newly_appended_tail_chunk() -> None:
 
     storage.preflight_store = capture  # type: ignore[method-assign]
     before = runtime.before_forward(metadata, blocks)
-    completion = runtime.mark_full_prefill_complete(
-        before, recomputed_token_count=600
-    )
+    completion = runtime.mark_full_prefill_complete(before, recomputed_token_count=600)
 
     stored = runtime.after_forward(completion, blocks)
 
@@ -1041,9 +1039,7 @@ def test_all_complete_chunks_already_stored_skips_worker_calls_entirely() -> Non
     runtime, _storage, _data_plane, calls, mutations = _runtime()
 
     before = runtime.before_forward(metadata, blocks)
-    completion = runtime.mark_full_prefill_complete(
-        before, recomputed_token_count=600
-    )
+    completion = runtime.mark_full_prefill_complete(before, recomputed_token_count=600)
     calls.clear()
     mutations.clear()
 
@@ -1060,9 +1056,7 @@ def test_all_complete_chunks_already_stored_skips_worker_calls_entirely() -> Non
     assert mutations == []
 
 
-def test_skip_stops_at_first_gap_even_when_a_later_chunk_is_also_verified() -> (
-    None
-):
+def test_skip_stops_at_first_gap_even_when_a_later_chunk_is_also_verified() -> None:
     """A verified candidate does not prove earlier, unverified chunks."""
 
     metadata, blocks = _metadata(
@@ -1079,9 +1073,7 @@ def test_skip_stops_at_first_gap_even_when_a_later_chunk_is_also_verified() -> (
 
     storage.preflight_store = capture  # type: ignore[method-assign]
     before = runtime.before_forward(metadata, blocks)
-    completion = runtime.mark_full_prefill_complete(
-        before, recomputed_token_count=856
-    )
+    completion = runtime.mark_full_prefill_complete(before, recomputed_token_count=856)
 
     stored = runtime.after_forward(completion, blocks)
 
@@ -1097,9 +1089,7 @@ def test_skip_stops_at_first_gap_even_when_a_later_chunk_is_also_verified() -> (
     ]
 
 
-def test_misaligned_verified_candidate_is_never_used_to_skip_a_store_chunk() -> (
-    None
-):
+def test_misaligned_verified_candidate_is_never_used_to_skip_a_store_chunk() -> None:
     """A candidate not aligned to a store-chunk boundary proves nothing here."""
 
     metadata, blocks = _metadata(
@@ -1115,9 +1105,7 @@ def test_misaligned_verified_candidate_is_never_used_to_skip_a_store_chunk() -> 
 
     storage.preflight_store = capture  # type: ignore[method-assign]
     before = runtime.before_forward(metadata, blocks)
-    completion = runtime.mark_full_prefill_complete(
-        before, recomputed_token_count=600
-    )
+    completion = runtime.mark_full_prefill_complete(before, recomputed_token_count=600)
 
     stored = runtime.after_forward(completion, blocks)
 
