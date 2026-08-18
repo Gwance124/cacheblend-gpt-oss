@@ -365,6 +365,10 @@ class GptOssCacheBlendConnector(
         transfer_config = parse_connector_extra_config(
             vllm_config.kv_transfer_config.kv_connector_extra_config
         )
+        _prefix_caching_enabled = (
+            isinstance(transfer_config, Transfer100PctConfig)
+            and transfer_config.allow_prefix_caching
+        )
         require_pinned_config(
             vllm_config,
             kv_cache_config,
@@ -372,15 +376,12 @@ class GptOssCacheBlendConnector(
             allow_custom_attention_backend=isinstance(
                 transfer_config, TransferSelectiveConfig
             ),
+            allow_unified_kv_mode=_prefix_caching_enabled,
         )
 
         # vLLM otherwise defaults to disabling HMA whenever a connector is set.
         # Pinned source:
         # https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/config/vllm.py#L1227-L1247
-        _prefix_caching_enabled = (
-            isinstance(transfer_config, Transfer100PctConfig)
-            and transfer_config.allow_prefix_caching
-        )
         if (
             vllm_config.scheduler_config.disable_hybrid_kv_cache_manager
             is not False

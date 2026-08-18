@@ -72,6 +72,23 @@ def _kv_cache_config(*, num_blocks: int = 100) -> SimpleNamespace:
     )
 
 
+def _unified_kv_cache_config(*, num_blocks: int = 100) -> SimpleNamespace:
+    """Unified mode: one FullAttentionSpec group with all 24 layers.
+
+    vLLM's ``unify_hybrid_kv_cache_specs`` retains the original
+    ``sliding_window=128`` on the promoted FullAttentionSpec.
+    """
+    return SimpleNamespace(
+        num_blocks=num_blocks,
+        kv_cache_groups=[
+            SimpleNamespace(
+                layer_names=[_layer_name(i) for i in range(24)],
+                kv_cache_spec=FullAttentionSpec(sliding_window=128),
+            )
+        ],
+    )
+
+
 def _assert_error(
     expected: VllmAdapterErrorCode,
     operation: Callable[[], object],
@@ -109,6 +126,24 @@ def test_finalized_config_translates_to_both_immutable_layouts() -> None:
     )
     with pytest.raises(FrozenInstanceError):
         adapted.num_blocks = 1  # type: ignore[misc]
+
+
+def test_unified_config_translates_to_single_group_layout() -> None:
+    adapted = adapt_kv_cache_config(_unified_kv_cache_config())
+
+    assert adapted.num_blocks == 100
+    assert len(adapted.gpt_oss_layout.groups) == 1
+    assert adapted.gpt_oss_layout.groups[0].group_id == 0
+    assert adapted.gpt_oss_layout.groups[0].attention_kind is AttentionKind.FULL
+    assert adapted.gpt_oss_layout.groups[0].sliding_window is None
+    assert adapted.gpt_oss_layout.groups[0].block_size == 16
+    assert adapted.gpt_oss_layout.groups[0].layer_names == tuple(
+        _layer_name(i) for i in range(24)
+    )
+    assert [layer.layer_index for layer in adapted.gpt_oss_layout.layers] == list(
+        range(24)
+    )
+    assert adapted.control_plane_layout.group_count == 1
 
 
 @pytest.mark.parametrize(

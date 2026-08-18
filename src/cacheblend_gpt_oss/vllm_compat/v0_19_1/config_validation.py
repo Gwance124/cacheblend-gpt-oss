@@ -154,6 +154,7 @@ def collect_pinned_config_issues(
     *,
     v2_model_runner_enabled: bool,
     allow_custom_attention_backend: bool = False,
+    allow_unified_kv_mode: bool = False,
 ) -> tuple[PinnedConfigIssue, ...]:
     """Return every static incompatibility in deterministic field order.
 
@@ -268,11 +269,12 @@ def collect_pinned_config_issues(
         _get(parallel, "enable_expert_parallel"),
     )
 
-    expect(
-        "scheduler.hybrid_kv_cache_manager_enabled",
-        False,
-        _get(scheduler, "disable_hybrid_kv_cache_manager"),
-    )
+    if not allow_unified_kv_mode:
+        expect(
+            "scheduler.hybrid_kv_cache_manager_enabled",
+            False,
+            _get(scheduler, "disable_hybrid_kv_cache_manager"),
+        )
     expect("runner.v2_enabled", False, v2_model_runner_enabled)
     observed_attention_backend = _display(_get(attention, "backend"))
     allowed_attention_backends = {"TRITON_ATTN"}
@@ -304,7 +306,8 @@ def collect_pinned_config_issues(
     expect("cache.block_size", _DEFAULT_BLOCK_SIZE, _get(cache, "block_size"))
 
     groups = tuple(_get(kv_cache_config, "kv_cache_groups", ()))
-    expect("kv.groups.count", 2, len(groups))
+    expected_group_count = 1 if allow_unified_kv_mode and len(groups) == 1 else 2
+    expect("kv.groups.count", expected_group_count, len(groups))
     seen_layers: set[int] = set()
     seen_kinds: set[str] = set()
     for group_index, group in enumerate(groups):
@@ -338,11 +341,20 @@ def collect_pinned_config_issues(
                 _get(spec, "sliding_window"),
             )
         elif kind == "FullAttentionSpec":
-            expect(
-                f"kv.groups.{group_index}.sliding_window",
-                None,
-                _get(spec, "sliding_window"),
-            )
+            observed_sw = _get(spec, "sliding_window")
+            if allow_unified_kv_mode and len(groups) == 1:
+                if observed_sw is not None:
+                    expect(
+                        f"kv.groups.{group_index}.sliding_window",
+                        _SLIDING_WINDOW,
+                        observed_sw,
+                    )
+            else:
+                expect(
+                    f"kv.groups.{group_index}.sliding_window",
+                    None,
+                    observed_sw,
+                )
 
         for layer_name in tuple(_get(group, "layer_names", ())):
             index = _layer_index(layer_name)
@@ -353,19 +365,22 @@ def collect_pinned_config_issues(
                     layer_name,
                 )
                 continue
-            expected_kind = (
-                "SlidingWindowSpec" if index % 2 == 0 else "FullAttentionSpec"
-            )
+            if allow_unified_kv_mode and len(groups) == 1:
+                expected_kind = "FullAttentionSpec"
+            else:
+                expected_kind = (
+                    "SlidingWindowSpec" if index % 2 == 0 else "FullAttentionSpec"
+                )
             expect(f"kv.layer.{index}.spec_type", expected_kind, kind)
             if index in seen_layers:
                 expect(f"kv.layer.{index}.unique", True, False)
             seen_layers.add(index)
 
-    expect(
-        "kv.groups.spec_types",
-        {"FullAttentionSpec", "SlidingWindowSpec"},
-        seen_kinds,
-    )
+    if allow_unified_kv_mode and len(groups) == 1:
+        expected_spec_types: set[str] = {"FullAttentionSpec"}
+    else:
+        expected_spec_types = {"FullAttentionSpec", "SlidingWindowSpec"}
+    expect("kv.groups.spec_types", expected_spec_types, seen_kinds)
     expect("kv.layers", set(range(_NUM_LAYERS)), seen_layers)
     return tuple(issues)
 
@@ -376,6 +391,7 @@ def require_pinned_config(
     *,
     v2_model_runner_enabled: bool,
     allow_custom_attention_backend: bool = False,
+    allow_unified_kv_mode: bool = False,
 ) -> None:
     """Raise a structured error unless all static target facts match.
 
@@ -388,6 +404,7 @@ def require_pinned_config(
         kv_cache_config,
         v2_model_runner_enabled=v2_model_runner_enabled,
         allow_custom_attention_backend=allow_custom_attention_backend,
+        allow_unified_kv_mode=allow_unified_kv_mode,
     )
     if issues:
         raise UnsupportedPinnedConfigError(issues)

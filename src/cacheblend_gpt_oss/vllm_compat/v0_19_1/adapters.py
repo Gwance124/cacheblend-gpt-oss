@@ -215,7 +215,11 @@ def adapt_kv_cache_config(kv_cache_config: object) -> AdaptedKvCacheConfig:
             )
             if _attribute(spec, "attention_chunk_size") is not None:
                 _fail(VllmAdapterErrorCode.ATTENTION_CHUNKING_UNSUPPORTED)
-        if _attribute(spec, "sliding_window") != expected_window:
+        actual_sw = _attribute(spec, "sliding_window")
+        if attention_kind is AttentionKind.FULL and num_groups == 1:
+            if actual_sw is not None and actual_sw != GPT_OSS_SLIDING_WINDOW:
+                _fail(VllmAdapterErrorCode.SLIDING_WINDOW_MISMATCH)
+        elif actual_sw != expected_window:
             _fail(VllmAdapterErrorCode.SLIDING_WINDOW_MISMATCH)
 
         layer_names = _canonical_layer_names(_attribute(group, "layer_names"))
