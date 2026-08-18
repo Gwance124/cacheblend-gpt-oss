@@ -69,6 +69,19 @@ def spans() -> tuple[LayerTokenScatterSpan, ...]:
     return plan.layer_spans
 
 
+def aligned_spans() -> tuple[LayerTokenScatterSpan, ...]:
+    target = TokenRange(0, 32)
+    plan = plan_token_scatter(
+        layout(),
+        (
+            GroupBlockTable(0, BLOCK_SIZE, (2, 0)),
+            GroupBlockTable(1, BLOCK_SIZE, (4, 1)),
+        ),
+        TokenTransfer(target, target),
+    )
+    return plan.layer_spans
+
+
 @dataclass(slots=True)
 class FakeTensor:
     shape: tuple[int, ...]
@@ -96,24 +109,34 @@ class FakeValue:
     device: str
 
 
+@dataclass(slots=True)
+class FakeBlockIndices:
+    block_ids: tuple[int, ...]
+    shape: tuple[int, ...]
+    dtype: str
+    device: str
+
+
 class FakeTensorOps:
     def __init__(self) -> None:
         self.copy_count = 0
         self.synchronizations: list[FakeTensor] = []
         self.staging_reads: list[tuple[int, int, int, int]] = []
+        self.block_index_preparations = 0
+        self.block_copy_count = 0
 
     def shape(self, tensor: object) -> tuple[int, ...]:
-        assert isinstance(tensor, FakeTensor | FakeView | FakeValue)
+        assert isinstance(tensor, FakeTensor | FakeView | FakeValue | FakeBlockIndices)
         return tensor.shape
 
     def dtype_name(self, tensor: object) -> str:
-        assert isinstance(tensor, FakeTensor | FakeView | FakeValue)
+        assert isinstance(tensor, FakeTensor | FakeView | FakeValue | FakeBlockIndices)
         if isinstance(tensor, FakeView):
             return tensor.owner.dtype
         return tensor.dtype
 
     def device_name(self, tensor: object) -> str:
-        assert isinstance(tensor, FakeTensor | FakeView | FakeValue)
+        assert isinstance(tensor, FakeTensor | FakeView | FakeValue | FakeBlockIndices)
         if isinstance(tensor, FakeView):
             return tensor.owner.device
         return tensor.device
@@ -160,6 +183,21 @@ class FakeTensorOps:
             return FakeView(tensor.owner, tensor.refs, shape)
         return FakeValue(tensor.rows, shape, tensor.dtype, tensor.device)
 
+    def block_indices(
+        self,
+        tensor: object,
+        *,
+        block_ids: tuple[int, ...],
+    ) -> FakeBlockIndices:
+        assert isinstance(tensor, FakeTensor)
+        self.block_index_preparations += 1
+        return FakeBlockIndices(
+            block_ids,
+            (len(block_ids),),
+            "torch.int64",
+            tensor.device,
+        )
+
     def copy(self, destination: object, source: object) -> None:
         assert isinstance(destination, FakeView)
         assert isinstance(source, FakeView | FakeValue)
@@ -170,6 +208,32 @@ class FakeTensorOps:
         for reference, row in zip(destination.refs, source_rows, strict=True):
             destination.owner.rows[reference] = row
         self.copy_count += 1
+
+    def copy_paged_blocks(
+        self,
+        destination: object,
+        paged: object,
+        *,
+        component: int,
+        block_indices: object,
+        block_count: int,
+        block_size: int,
+    ) -> None:
+        assert isinstance(destination, FakeView)
+        assert isinstance(paged, FakeTensor)
+        assert isinstance(block_indices, FakeBlockIndices)
+        assert block_count == len(block_indices.block_ids)
+        assert destination.shape == (block_count * block_size, 512)
+        assert paged.rows is not None
+        rows = tuple(
+            paged.rows.get((block_id, component, offset))
+            for block_id in block_indices.block_ids
+            for offset in range(block_size)
+        )
+        assert destination.owner.rows is not None
+        for reference, row in zip(destination.refs, rows, strict=True):
+            destination.owner.rows[reference] = row
+        self.block_copy_count += 1
 
     def synchronize(self, tensor: object) -> None:
         assert isinstance(tensor, FakeTensor)
@@ -249,8 +313,12 @@ def seed_retrieved_staging(tensor: FakeTensor) -> None:
             )
 
 
-def seed_paged(tensors: dict[str, FakeTensor]) -> None:
-    for span in spans():
+def seed_paged(
+    tensors: dict[str, FakeTensor],
+    layer_spans: tuple[LayerTokenScatterSpan, ...] | None = None,
+) -> None:
+    selected_spans = spans() if layer_spans is None else layer_spans
+    for span in selected_spans:
         tensor = tensors[span.layer_name]
         assert tensor.rows is not None
         for index, target_position in enumerate(
@@ -491,8 +559,10 @@ def test_prepared_gather_batch_is_read_only_and_executes_exactly_once() -> None:
     )
 
     assert batch.prepared_copy_operations == 96
+    assert batch.submitted_copy_operations == 96
     assert len(batch.receipts) == 1
     assert data_plane.last_gather_timing.prepared_copy_operations == 96
+    assert data_plane.last_gather_timing.submitted_copy_operations == 96
     assert data_plane.last_gather_timing.enqueue_latency_seconds == 0.0
     assert data_plane.last_gather_timing.synchronize_latency_seconds == 0.0
     assert ops.copy_count == 0
@@ -506,9 +576,85 @@ def test_prepared_gather_batch_is_read_only_and_executes_exactly_once() -> None:
     assert len(ops.synchronizations) == 1
     assert data_plane.last_gather_timing.prepare_latency_seconds == 0.0
     assert data_plane.last_gather_timing.prepared_copy_operations == 96
+    assert data_plane.last_gather_timing.submitted_copy_operations == 96
     with pytest.raises(DataPlaneError) as caught:
         data_plane.execute_prepared_gather_batch(batch)
     assert caught.value.code is DataPlaneErrorCode.INVALID_PREPARED_BATCH
+
+
+def test_aligned_gather_batches_every_block_per_layer_and_component() -> None:
+    ops = FakeTensorOps()
+    data_plane = GptOssDataPlane(ops)
+    stage = staging()
+    caches = paged_caches()
+    selected_spans = aligned_spans()
+    seed_paged(caches, selected_spans)
+
+    batch = data_plane.prepare_gather_precomputed_kv_batch(
+        paged_caches=caches,
+        staging=stage,
+        chunk_layer_spans=(selected_spans,),
+        document_target_ranges=(TokenRange(0, 32),),
+        store_buffer_offsets=(STORE_OFFSET,),
+    )
+
+    assert batch.prepared_copy_operations == 96
+    assert batch.submitted_copy_operations == 48
+    assert ops.block_index_preparations == 24
+    assert ops.copy_count == 0
+    assert ops.block_copy_count == 0
+    assert stage.rows == {}
+
+    data_plane.execute_prepared_gather_batch(batch)
+
+    assert ops.copy_count == 0
+    assert ops.block_copy_count == 48
+    assert len(ops.synchronizations) == 1
+    assert data_plane.last_gather_timing.prepared_copy_operations == 96
+    assert data_plane.last_gather_timing.submitted_copy_operations == 48
+    for span in selected_spans:
+        for component in (0, 1):
+            source = paged_row(caches, span, component, 0)
+            destination_key = (
+                component,
+                span.layer_index,
+                STORE_OFFSET + span.target_range.start,
+            )
+            assert stage.rows is not None
+            assert stage.rows[destination_key] == source
+
+
+def test_aligned_gather_rejects_invalid_block_index_before_mutation() -> None:
+    class InvalidIndexOps(FakeTensorOps):
+        def block_indices(
+            self,
+            tensor: object,
+            *,
+            block_ids: tuple[int, ...],
+        ) -> FakeBlockIndices:
+            value = super().block_indices(tensor, block_ids=block_ids)
+            value.dtype = "torch.int32"
+            return value
+
+    ops = InvalidIndexOps()
+    data_plane = GptOssDataPlane(ops)
+    stage = staging()
+    selected_spans = aligned_spans()
+
+    with pytest.raises(DataPlaneError) as caught:
+        data_plane.prepare_gather_precomputed_kv_batch(
+            paged_caches=paged_caches(),
+            staging=stage,
+            chunk_layer_spans=(selected_spans,),
+            document_target_ranges=(TokenRange(0, 32),),
+            store_buffer_offsets=(STORE_OFFSET,),
+        )
+
+    assert caught.value.code is DataPlaneErrorCode.TENSOR_VIEW_FAILED
+    assert ops.copy_count == 0
+    assert ops.block_copy_count == 0
+    assert ops.synchronizations == []
+    assert stage.rows == {}
 
 
 def test_prepared_gather_batch_discard_releases_views_without_mutation() -> None:

@@ -195,3 +195,62 @@ def test_cuda_hybrid_gather_scatter_round_trip_preserves_kv() -> None:
             :,
         ]
         assert torch.equal(destination_rows, source_rows)
+
+
+@pytest.mark.gpu
+@pytest.mark.integration
+def test_cuda_block_batched_gather_matches_exact_noncontiguous_blocks() -> None:
+    torch = _torch_cuda()
+    torch.manual_seed(9012)
+    device = "cuda:0"
+    layout = _layout()
+    transfer = TokenTransfer(TokenRange(0, 32), TokenRange(0, 32))
+    plan = plan_token_scatter(
+        layout,
+        (
+            GroupBlockTable(0, 16, (3, 1)),
+            GroupBlockTable(1, 16, (4, 0)),
+        ),
+        transfer,
+    )
+    source = {
+        _layer_name(index): torch.randn(
+            (5, 2, 16, 8, 64), dtype=torch.bfloat16, device=device
+        )
+        for index in range(24)
+    }
+    source_before = {name: tensor.clone() for name, tensor in source.items()}
+    staging = torch.zeros((2, 24, 32, 512), dtype=torch.bfloat16, device=device)
+    data_plane = GptOssDataPlane(load_torch_tensor_ops())
+
+    batch = data_plane.prepare_gather_precomputed_kv_batch(
+        paged_caches=source,
+        staging=staging,
+        chunk_layer_spans=(plan.layer_spans,),
+        document_target_ranges=(transfer.target_range,),
+        store_buffer_offsets=(0,),
+    )
+    assert batch.prepared_copy_operations == 96
+    assert batch.submitted_copy_operations == 48
+    data_plane.execute_prepared_gather_batch(batch)
+
+    assert data_plane.last_gather_timing.prepared_copy_operations == 96
+    assert data_plane.last_gather_timing.submitted_copy_operations == 48
+    for name, before in source_before.items():
+        assert torch.equal(source[name], before)
+    for span in plan.layer_spans:
+        for component in (0, 1):
+            expected = source[span.layer_name][
+                span.group_span.block_id,
+                component,
+                :,
+                :,
+                :,
+            ].reshape(16, 512)
+            observed = staging[
+                component,
+                span.layer_index,
+                span.target_range.start : span.target_range.end,
+                :,
+            ]
+            assert torch.equal(observed, expected)

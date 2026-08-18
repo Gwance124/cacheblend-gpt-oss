@@ -30,6 +30,8 @@ GATHER_PHASE_KEYS = (
 )
 PREFLIGHT_OPERATION_KEY = "store_preflight_prepared_copy_operations"
 GATHER_OPERATION_KEY = "store_gather_prepared_copy_operations"
+PREFLIGHT_SUBMITTED_OPERATION_KEY = "store_preflight_submitted_copy_operations"
+GATHER_SUBMITTED_OPERATION_KEY = "store_gather_submitted_copy_operations"
 
 # Exact pinned GPT-OSS-20B/vLLM 0.19.1 geometry. Each prepared operation moves
 # either K or V for one 16-token physical block span and one model layer.
@@ -153,13 +155,22 @@ def _dominant(phases: dict[str, dict[str, int | float]], keys: tuple[str, ...]) 
     return max(keys, key=lambda key: float(phases[key]["sum_seconds"]))
 
 
-def _next_action(preflight_dominant: str, gather_dominant: str) -> str:
+def _next_action(
+    preflight_dominant: str,
+    gather_dominant: str,
+    submission_reduction_fraction: float,
+) -> str:
     if preflight_dominant.endswith("synchronize_latency_seconds"):
         return (
             "Insert a CUDA event at model-forward completion and compare it with "
             "the read-only preflight synchronize boundary."
         )
     if preflight_dominant.endswith("prepare_latency_seconds"):
+        if submission_reduction_fraction >= 0.99:
+            return (
+                "Split residual preflight preparation into span validation and "
+                "block-index construction before changing the batched copy path."
+            )
         return (
             "Replace duplicate read-only copy preparation with a reusable validated "
             "batch, then rerun the fixed transcript."
@@ -232,6 +243,16 @@ def analyze(run_dir: Path) -> dict[str, object]:
 
     preflight_operations = _counter_delta(before, after, PREFLIGHT_OPERATION_KEY)
     gather_operations = _counter_delta(before, after, GATHER_OPERATION_KEY)
+    preflight_submitted_operations = _counter_delta(
+        before,
+        after,
+        PREFLIGHT_SUBMITTED_OPERATION_KEY,
+    )
+    gather_submitted_operations = _counter_delta(
+        before,
+        after,
+        GATHER_SUBMITTED_OPERATION_KEY,
+    )
     expected_operations = (
         stored_tokens // PINNED_BLOCK_SIZE * PINNED_LAYER_COUNT * KV_COMPONENT_COUNT
     )
@@ -240,6 +261,12 @@ def analyze(run_dir: Path) -> dict[str, object]:
         or gather_operations != expected_operations
     ):
         raise ValueError("prepared-copy operation count does not match pinned geometry")
+    if (
+        preflight_submitted_operations <= 0
+        or gather_submitted_operations != preflight_submitted_operations
+        or preflight_submitted_operations > expected_operations
+    ):
+        raise ValueError("submitted-copy operation count does not reconcile")
 
     payload_bytes = (
         stored_tokens
@@ -249,6 +276,9 @@ def analyze(run_dir: Path) -> dict[str, object]:
         * KV_ELEMENT_BYTES
     )
     payload_gib = payload_bytes / (1024**3)
+    submission_reduction_fraction = (
+        1.0 - preflight_submitted_operations / expected_operations
+    )
     preflight_dominant = _dominant(phases, PREFLIGHT_PHASE_KEYS)
     gather_dominant = _dominant(phases, GATHER_PHASE_KEYS)
 
@@ -280,6 +310,11 @@ def analyze(run_dir: Path) -> dict[str, object]:
             "expected_prepared_copy_operations": expected_operations,
             "preflight_prepared_copy_operations": preflight_operations,
             "gather_prepared_copy_operations": gather_operations,
+            "preflight_submitted_copy_operations": (
+                preflight_submitted_operations
+            ),
+            "gather_submitted_copy_operations": gather_submitted_operations,
+            "submitted_copy_reduction_fraction": submission_reduction_fraction,
             "bytes_per_full_block_copy": (
                 PINNED_BLOCK_SIZE * KV_ROW_WIDTH * KV_ELEMENT_BYTES
             ),
@@ -315,7 +350,11 @@ def analyze(run_dir: Path) -> dict[str, object]:
                 else 0.0
             ),
         },
-        "next_action": _next_action(preflight_dominant, gather_dominant),
+        "next_action": _next_action(
+            preflight_dominant,
+            gather_dominant,
+            submission_reduction_fraction,
+        ),
     }
 
 

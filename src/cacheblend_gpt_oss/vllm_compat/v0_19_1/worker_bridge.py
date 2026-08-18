@@ -387,8 +387,28 @@ class _ReadOnlyTensorOps:
     def reshape(self, tensor: object, shape: tuple[int, ...]) -> object:
         return self._delegate.reshape(tensor, shape)
 
+    def block_indices(
+        self,
+        tensor: object,
+        *,
+        block_ids: tuple[int, ...],
+    ) -> object:
+        return self._delegate.block_indices(tensor, block_ids=block_ids)
+
     def copy(self, destination: object, source: object) -> None:
         """Intentionally suppress the only tensor mutation in the data plane."""
+
+    def copy_paged_blocks(
+        self,
+        destination: object,
+        paged: object,
+        *,
+        component: int,
+        block_indices: object,
+        block_count: int,
+        block_size: int,
+    ) -> None:
+        """Suppress a block-batched staging mutation during a dry run."""
 
     def synchronize(self, tensor: object) -> None:
         # Validation may enqueue out-of-place YaRN arithmetic.  Synchronizing

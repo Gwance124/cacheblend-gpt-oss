@@ -15,6 +15,7 @@ class DataPlanePhaseTiming:
     enqueue_latency_seconds: float = 0.0
     synchronize_latency_seconds: float = 0.0
     prepared_copy_operations: int = 0
+    submitted_copy_operations: int = 0
 
     def __post_init__(self) -> None:
         latencies = (
@@ -30,12 +31,17 @@ class DataPlanePhaseTiming:
             for value in latencies
         ):
             raise ValueError("invalid data-plane phase latency")
-        if (
-            isinstance(self.prepared_copy_operations, bool)
-            or not isinstance(self.prepared_copy_operations, int)
-            or self.prepared_copy_operations < 0
+        operation_counts = (
+            self.prepared_copy_operations,
+            self.submitted_copy_operations,
+        )
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in operation_counts
         ):
             raise ValueError("invalid data-plane prepared-copy count")
+        if self.submitted_copy_operations > self.prepared_copy_operations:
+            raise ValueError("invalid data-plane submitted-copy count")
 
     @property
     def total_latency_seconds(self) -> float:

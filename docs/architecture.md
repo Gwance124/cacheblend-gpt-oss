@@ -313,9 +313,11 @@ The connector follows the pinned vLLM path without mutating scheduler output:
 10. `save_kv_layer` proves that all 24 registered cache tensors were visited.
     After the one-step full prompt completes, `wait_for_save` gathers every
     complete 256-token prompt chunk while its full/sliding blocks are live and
-    atomically publishes verified sidecar records. Gather preflight constructs
-    one validated read-only batch of paged/staging tensor views; active gather
-    executes that exact object once instead of constructing all views again.
+    atomically publishes verified sidecar records. Gather preflight validates
+    the exact logical block-copy geometry once and, for aligned contiguous
+    store chunks, retains one block-index vector per layer plus 48 contiguous
+    staging destinations. Active gather executes that exact one-shot batch;
+    unaligned data-plane inputs retain the validated per-span path.
     Chunked prefill is currently transfer-ineligible rather than being captured
     across steps.
 11. Worker completion, load errors, and connector metrics return in
@@ -535,6 +537,8 @@ artifacts. Connector metric labels are limited to vLLM's bounded engine labels:
 | `vllm:cacheblend_store_gather_synchronize_latency_seconds` | Active gather CUDA synchronization time |
 | `vllm:cacheblend_store_preflight_prepared_copy_operations_total` | Prepared read-only K/V copy operations across every layer and physical span |
 | `vllm:cacheblend_store_gather_prepared_copy_operations_total` | Prepared active-gather K/V copy operations across every layer and physical span |
+| `vllm:cacheblend_store_preflight_submitted_copy_operations_total` | Physical copy submissions retained by preflight after block batching |
+| `vllm:cacheblend_store_gather_submitted_copy_operations_total` | Physical copy submissions executed by active gather after block batching |
 | `vllm:cacheblend_position_correction_latency_seconds` | Measured YaRN position-correction duration for completed 100%-recompute loads; zero on misses/fallbacks |
 | `vllm:cacheblend_selective_recomputation_latency_seconds` | Selective model/backend duration; zero in the current 100% connector hook and required before M7 GPU claims |
 | vLLM TTFT/prefill metrics | Server-measured TTFT and total prefill latency; the non-streaming client cannot infer TTFT |
@@ -554,9 +558,11 @@ The five broad `store_*` sub-stage histograms are nested within
 summed with the enclosing histogram. Their sum can be compared with the
 enclosing value to expose uninstrumented validation and Python overhead.
 The worker phase histograms are nested again within their respective preflight
-or gather histogram. Prepared-copy operation counters are counts, not timings;
-the fixed long-context gate reconciles them against the pinned block, layer,
-K/V, width, and dtype geometry before interpreting phase latency.
+or gather histogram. Prepared-copy operation counters preserve logical
+block/layer/K/V geometry; submitted-copy counters record physical CUDA
+operations after batching. Both are counts, not timings. The fixed long-context
+gate reconciles the logical counts against pinned block, layer, K/V, width, and
+dtype geometry before interpreting either submission reduction or latency.
 
 The Responses contract harness parses the pinned vLLM histogram families
 `vllm:time_to_first_token_seconds`, `vllm:e2e_request_latency_seconds`,

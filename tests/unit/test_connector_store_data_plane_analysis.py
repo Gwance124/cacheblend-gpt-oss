@@ -34,6 +34,7 @@ def _write_run(
     run_dir: Path,
     *,
     gather_operations: int = 59_904,
+    submitted_operations: int = 96,
     gather_sync_seconds: float = 1.5,
 ) -> None:
     connector_dir = run_dir / "connector"
@@ -52,6 +53,8 @@ def _write_run(
     counters = {
         "store_preflight_prepared_copy_operations": 59_904,
         "store_gather_prepared_copy_operations": gather_operations,
+        "store_preflight_submitted_copy_operations": submitted_operations,
+        "store_gather_submitted_copy_operations": submitted_operations,
     }
     (connector_dir / "metrics-startup.prom").write_text(
         _metrics_text(
@@ -94,6 +97,11 @@ def test_phase_breakdown_reconciles_exact_pinned_copy_geometry(
     assert geometry["expected_prepared_copy_operations"] == 59_904
     assert geometry["preflight_prepared_copy_operations"] == 59_904
     assert geometry["gather_prepared_copy_operations"] == 59_904
+    assert geometry["preflight_submitted_copy_operations"] == 96
+    assert geometry["gather_submitted_copy_operations"] == 96
+    assert geometry["submitted_copy_reduction_fraction"] == pytest.approx(
+        1.0 - 96 / 59_904
+    )
     assert geometry["bytes_per_full_block_copy"] == 16_384
     assert geometry["logical_payload_bytes"] == 981_467_136
     assert geometry["logical_payload_gib"] == pytest.approx(0.9140625)
@@ -111,6 +119,15 @@ def test_phase_breakdown_rejects_wrong_copy_operation_count(tmp_path: Path) -> N
     _write_run(tmp_path, gather_operations=59_903)
 
     with pytest.raises(ValueError, match="pinned geometry"):
+        _analysis["analyze"](tmp_path)
+
+
+def test_phase_breakdown_rejects_submitted_operations_above_logical_geometry(
+    tmp_path: Path,
+) -> None:
+    _write_run(tmp_path, submitted_operations=59_905)
+
+    with pytest.raises(ValueError, match="submitted-copy"):
         _analysis["analyze"](tmp_path)
 
 

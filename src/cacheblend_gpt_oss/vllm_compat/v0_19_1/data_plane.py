@@ -148,8 +148,28 @@ class TensorOps(Protocol):
     def reshape(self, tensor: object, shape: tuple[int, ...]) -> object:
         """Return a view with ``shape`` without mutating its storage."""
 
+    def block_indices(
+        self,
+        tensor: object,
+        *,
+        block_ids: tuple[int, ...],
+    ) -> object:
+        """Return validated-device int64 indices for paged-cache blocks."""
+
     def copy(self, destination: object, source: object) -> None:
         """Copy equal-shaped rows into ``destination``."""
+
+    def copy_paged_blocks(
+        self,
+        destination: object,
+        paged: object,
+        *,
+        component: int,
+        block_indices: object,
+        block_count: int,
+        block_size: int,
+    ) -> None:
+        """Gather complete paged blocks directly into contiguous staging."""
 
     def synchronize(self, tensor: object) -> None:
         """Synchronize data-plane work on the destination tensor's device."""
@@ -241,8 +261,18 @@ class _PreparedCopy:
 
 
 @dataclass(frozen=True, slots=True)
+class _PreparedBlockCopy:
+    destination: object
+    paged: object
+    component: int
+    block_indices: object
+    block_count: int
+    block_size: int
+
+
+@dataclass(frozen=True, slots=True)
 class _PreparedGatherPayload:
-    operations: tuple[_PreparedCopy, ...]
+    operations: tuple[_PreparedCopy | _PreparedBlockCopy, ...]
     synchronization_tensor: object
 
 
@@ -252,6 +282,7 @@ class PreparedGatherBatch:
 
     receipts: tuple[DataPlaneReceipt, ...]
     prepared_copy_operations: int
+    submitted_copy_operations: int
     _payload: object = field(repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -266,6 +297,10 @@ class PreparedGatherBatch:
             or isinstance(self.prepared_copy_operations, bool)
             or not isinstance(self.prepared_copy_operations, int)
             or self.prepared_copy_operations <= 0
+            or isinstance(self.submitted_copy_operations, bool)
+            or not isinstance(self.submitted_copy_operations, int)
+            or not 0 < self.submitted_copy_operations
+            <= self.prepared_copy_operations
             or self._payload is None
         ):
             _fail(
@@ -442,6 +477,7 @@ class GptOssDataPlane:
                 execution_timing.synchronize_latency_seconds
             ),
             prepared_copy_operations=batch.prepared_copy_operations,
+            submitted_copy_operations=batch.submitted_copy_operations,
         )
         return receipts
 
@@ -469,12 +505,17 @@ class GptOssDataPlane:
         if not groups or len(groups) != len(ranges) or len(groups) != len(offsets):
             _fail(DataPlaneErrorCode.EMPTY_SPANS)
 
-        prepared: list[_PreparedCopy] = []
+        validated_groups = tuple(_validate_spans(layer_spans) for layer_spans in groups)
+        staging_shape = self._preflight_validated_groups(
+            staging,
+            paged_caches,
+            validated_groups,
+        )
         receipts: list[DataPlaneReceipt] = []
-        for layer_spans, document_target_range, store_buffer_offset in zip(
-            groups, ranges, offsets, strict=True
+        staging_ranges: list[TokenRange] = []
+        for validated, document_target_range, store_buffer_offset in zip(
+            validated_groups, ranges, offsets, strict=True
         ):
-            validated = self._preflight_common(staging, paged_caches, layer_spans)
             if not isinstance(document_target_range, TokenRange):
                 _fail(
                     DataPlaneErrorCode.INVALID_SPAN,
@@ -492,18 +533,16 @@ class GptOssDataPlane:
                     DataPlaneErrorCode.STAGING_RANGE_OUT_OF_BOUNDS,
                     "compact document placement exceeds staging capacity",
                 )
-
-            for span in validated.spans:
-                relative_start = span.target_range.start - document_target_range.start
-                staging_start = store_buffer_offset + relative_start
-                prepared.extend(
-                    self._prepare_gather_span(
-                        paged_caches[span.layer_name],
-                        staging,
-                        span,
-                        staging_start=staging_start,
-                    )
+            staging_range = TokenRange(
+                store_buffer_offset,
+                store_buffer_offset + len(document_target_range),
+            )
+            if any(staging_range.overlaps(existing) for existing in staging_ranges):
+                _fail(
+                    DataPlaneErrorCode.OVERLAPPING_WRITE,
+                    "compact document staging ranges overlap",
                 )
+            staging_ranges.append(staging_range)
 
             receipts.append(
                 DataPlaneReceipt(
@@ -517,17 +556,56 @@ class GptOssDataPlane:
                 )
             )
 
+        logical_copy_operations = sum(
+            len(validated.spans) * KV_COMPONENTS
+            for validated in validated_groups
+        )
+        prepared: tuple[_PreparedCopy | _PreparedBlockCopy, ...] | None
+        prepared = self._prepare_block_batched_gather(
+            paged_caches=paged_caches,
+            staging=staging,
+            validated_groups=validated_groups,
+            document_target_ranges=ranges,
+            store_buffer_offsets=offsets,
+        )
+        if prepared is None:
+            legacy: list[_PreparedCopy | _PreparedBlockCopy] = []
+            for validated, document_target_range, store_buffer_offset in zip(
+                validated_groups, ranges, offsets, strict=True
+            ):
+                for span in validated.spans:
+                    relative_start = (
+                        span.target_range.start - document_target_range.start
+                    )
+                    staging_start = store_buffer_offset + relative_start
+                    legacy.extend(
+                        self._prepare_gather_span(
+                            paged_caches[span.layer_name],
+                            staging,
+                            span,
+                            staging_start=staging_start,
+                        )
+                    )
+            prepared = tuple(legacy)
+
         prepare_latency_seconds = perf_counter() - prepare_started_at
-        payload = _PreparedGatherPayload(tuple(prepared), staging)
+        if not prepared or len(prepared) > logical_copy_operations:
+            _fail(
+                DataPlaneErrorCode.INVALID_PREPARED_BATCH,
+                "prepared gather operation count is invalid",
+            )
+        payload = _PreparedGatherPayload(prepared, staging)
         batch = PreparedGatherBatch(
             receipts=tuple(receipts),
-            prepared_copy_operations=len(prepared),
+            prepared_copy_operations=logical_copy_operations,
+            submitted_copy_operations=len(prepared),
             _payload=payload,
         )
         self._prepared_gather_batch = batch
         self._last_gather_timing = DataPlanePhaseTiming(
             prepare_latency_seconds=prepare_latency_seconds,
-            prepared_copy_operations=len(prepared),
+            prepared_copy_operations=logical_copy_operations,
+            submitted_copy_operations=len(prepared),
         )
         return batch
 
@@ -546,7 +624,7 @@ class GptOssDataPlane:
         payload = batch._payload
         if (
             not isinstance(payload, _PreparedGatherPayload)
-            or len(payload.operations) != batch.prepared_copy_operations
+            or len(payload.operations) != batch.submitted_copy_operations
         ):
             self._prepared_gather_batch = None
             _fail(
@@ -561,6 +639,7 @@ class GptOssDataPlane:
             enqueue_latency_seconds=enqueue_latency_seconds,
             synchronize_latency_seconds=synchronize_latency_seconds,
             prepared_copy_operations=batch.prepared_copy_operations,
+            submitted_copy_operations=batch.submitted_copy_operations,
         )
         return batch.receipts
 
@@ -583,9 +662,25 @@ class GptOssDataPlane:
         layer_spans: Sequence[LayerTokenScatterSpan],
     ) -> _ValidatedSpans:
         validated = _validate_spans(layer_spans)
+        self._preflight_validated_groups(staging, paged_caches, (validated,))
+        return validated
+
+    def _preflight_validated_groups(
+        self,
+        staging: object,
+        paged_caches: Mapping[str, object],
+        validated_groups: Sequence[_ValidatedSpans],
+    ) -> tuple[int, ...]:
+        """Validate shared tensor owners once for a complete gather batch."""
+
+        groups = tuple(validated_groups)
+        if not groups:
+            _fail(DataPlaneErrorCode.EMPTY_SPANS)
         actual_names = set(paged_caches)
-        expected_names = set(validated.layer_names)
-        if actual_names != expected_names:
+        expected_names = set(groups[0].layer_names)
+        if actual_names != expected_names or any(
+            set(validated.layer_names) != expected_names for validated in groups
+        ):
             _fail(
                 DataPlaneErrorCode.PAGED_CACHE_SET_MISMATCH,
                 "paged cache names do not match the 24 validated layers",
@@ -612,9 +707,10 @@ class GptOssDataPlane:
             )
 
         spans_by_layer: dict[str, list[LayerTokenScatterSpan]] = {}
-        for span in validated.spans:
-            spans_by_layer.setdefault(span.layer_name, []).append(span)
-        for layer_name in validated.layer_names:
+        for validated in groups:
+            for span in validated.spans:
+                spans_by_layer.setdefault(span.layer_name, []).append(span)
+        for layer_name in groups[0].layer_names:
             cache = paged_caches[layer_name]
             shape = self._safe_shape(cache)
             layer_spans_for_cache = spans_by_layer[layer_name]
@@ -664,7 +760,116 @@ class GptOssDataPlane:
                         DataPlaneErrorCode.PAGED_RANGE_OUT_OF_BOUNDS,
                         "span exceeds its paged cache block",
                     )
-        return validated
+        return staging_shape
+
+    def _prepare_block_batched_gather(
+        self,
+        *,
+        paged_caches: Mapping[str, object],
+        staging: object,
+        validated_groups: Sequence[_ValidatedSpans],
+        document_target_ranges: Sequence[TokenRange],
+        store_buffer_offsets: Sequence[int],
+    ) -> tuple[_PreparedBlockCopy, ...] | None:
+        """Collapse aligned physical blocks to 24-by-2 indexed CUDA writes."""
+
+        groups = tuple(validated_groups)
+        ranges = tuple(document_target_ranges)
+        offsets = tuple(store_buffer_offsets)
+        if any(
+            offset != offsets[0] + sum(len(item) for item in ranges[:index])
+            for index, offset in enumerate(offsets)
+        ):
+            return None
+        if any(
+            span.group_span.block_offset != 0
+            or span.token_count != span.group_span.block_size
+            for validated in groups
+            for span in validated.spans
+        ):
+            return None
+
+        total_tokens = sum(len(item) for item in ranges)
+        spans_by_layer: dict[int, list[LayerTokenScatterSpan]] = {
+            index: [] for index in range(GPT_OSS_NUM_LAYERS)
+        }
+        for validated in groups:
+            for span in validated.spans:
+                spans_by_layer[span.layer_index].append(span)
+
+        operations: list[_PreparedBlockCopy] = []
+        for layer_index in range(GPT_OSS_NUM_LAYERS):
+            layer_spans = spans_by_layer[layer_index]
+            if not layer_spans:
+                _fail(DataPlaneErrorCode.LAYER_SET_MISMATCH)
+            layer_name = layer_spans[0].layer_name
+            block_size = layer_spans[0].group_span.block_size
+            if (
+                any(
+                    span.layer_name != layer_name
+                    or span.group_span.block_size != block_size
+                    for span in layer_spans
+                )
+                or len(layer_spans) * block_size != total_tokens
+            ):
+                return None
+            block_ids = tuple(span.group_span.block_id for span in layer_spans)
+            paged = paged_caches[layer_name]
+            try:
+                block_indices = self._ops.block_indices(
+                    paged,
+                    block_ids=block_ids,
+                )
+            except Exception as exc:
+                raise DataPlaneError(
+                    DataPlaneErrorCode.TENSOR_VIEW_FAILED,
+                    "failed to prepare paged block indices",
+                ) from exc
+            if self._safe_shape(block_indices) != (len(block_ids),):
+                _fail(
+                    DataPlaneErrorCode.TENSOR_VIEW_FAILED,
+                    "paged block index shape mismatch",
+                )
+            if self._safe_dtype(block_indices) != "torch.int64":
+                _fail(
+                    DataPlaneErrorCode.TENSOR_VIEW_FAILED,
+                    "paged block indices must use torch.int64",
+                )
+            if self._safe_device(block_indices) != self._safe_device(paged):
+                _fail(
+                    DataPlaneErrorCode.DEVICE_MISMATCH,
+                    "paged block indices are on a different device",
+                )
+            for component in (KEY_COMPONENT, VALUE_COMPONENT):
+                try:
+                    destination = self._ops.staging_rows(
+                        staging,
+                        component=component,
+                        layer_index=layer_index,
+                        token_start=offsets[0],
+                        token_count=total_tokens,
+                    )
+                except Exception as exc:
+                    raise DataPlaneError(
+                        DataPlaneErrorCode.TENSOR_VIEW_FAILED,
+                        "failed to prepare block-batched staging view",
+                    ) from exc
+                self._validate_view(
+                    destination,
+                    (total_tokens, GPT_OSS_KV_WIDTH),
+                    staging,
+                )
+                operations.append(
+                    _PreparedBlockCopy(
+                        destination=destination,
+                        paged=paged,
+                        component=component,
+                        block_indices=block_indices,
+                        block_count=len(block_ids),
+                        block_size=block_size,
+                    )
+                )
+        return tuple(operations)
 
     def _prepare_scatter_span(
         self,
@@ -824,7 +1029,9 @@ class GptOssDataPlane:
             _fail(DataPlaneErrorCode.DEVICE_MISMATCH, "tensor view device mismatch")
 
     def _apply(
-        self, prepared: Sequence[_PreparedCopy], sync_tensor: object
+        self,
+        prepared: Sequence[_PreparedCopy | _PreparedBlockCopy],
+        sync_tensor: object,
     ) -> tuple[float, float]:
         # All shape/range/layer checks and every correction callback completed
         # before this first mutation. A backend copy failure makes the request
@@ -832,7 +1039,17 @@ class GptOssDataPlane:
         try:
             enqueue_started_at = perf_counter()
             for operation in prepared:
-                self._ops.copy(operation.destination, operation.source)
+                if isinstance(operation, _PreparedCopy):
+                    self._ops.copy(operation.destination, operation.source)
+                else:
+                    self._ops.copy_paged_blocks(
+                        operation.destination,
+                        operation.paged,
+                        component=operation.component,
+                        block_indices=operation.block_indices,
+                        block_count=operation.block_count,
+                        block_size=operation.block_size,
+                    )
             enqueue_latency_seconds = perf_counter() - enqueue_started_at
             synchronize_started_at = perf_counter()
             self._ops.synchronize(sync_tensor)
@@ -944,6 +1161,19 @@ class TorchTensorOps:
     def reshape(self, tensor: object, shape: tuple[int, ...]) -> object:
         return self._require_tensor(tensor).reshape(shape)
 
+    def block_indices(
+        self,
+        tensor: object,
+        *,
+        block_ids: tuple[int, ...],
+    ) -> object:
+        value = self._require_tensor(tensor)
+        tensor_factory = getattr(self._torch, "tensor", None)
+        int64 = getattr(self._torch, "int64", None)
+        if not callable(tensor_factory) or int64 is None:
+            raise RuntimeError("Torch index construction is unavailable")
+        return tensor_factory(block_ids, dtype=int64, device=value.device)
+
     def copy(self, destination: object, source: object) -> None:
         destination_tensor = self._require_tensor(destination)
         source_tensor = self._require_tensor(source)
@@ -952,6 +1182,35 @@ class TorchTensorOps:
         # to queue so one request does not serialize hundreds of tiny layer /
         # chunk copies on the host.
         destination_tensor.copy_(source_tensor, non_blocking=True)
+
+    def copy_paged_blocks(
+        self,
+        destination: object,
+        paged: object,
+        *,
+        component: int,
+        block_indices: object,
+        block_count: int,
+        block_size: int,
+    ) -> None:
+        destination_tensor = self._require_tensor(destination)
+        paged_tensor = self._require_tensor(paged)
+        index_tensor = self._require_tensor(block_indices)
+        destination_blocks = destination_tensor.reshape(
+            block_count,
+            block_size,
+            GPT_OSS_NUM_KV_HEADS,
+            GPT_OSS_HEAD_DIM,
+        )
+        index_select = getattr(self._torch, "index_select", None)
+        if not callable(index_select):
+            raise RuntimeError("Torch index_select is unavailable")
+        index_select(
+            paged_tensor[:, component, :, :, :],
+            0,
+            index_tensor,
+            out=destination_blocks,
+        )
 
     def synchronize(self, tensor: object) -> None:
         value = self._require_tensor(tensor)

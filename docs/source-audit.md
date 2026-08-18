@@ -385,6 +385,42 @@ unchanged 59,904-operation/981,467,136-byte geometry, the exact cold connector
 signature, and recovery of at least 80% of the prior 6.204637-second duplicate
 gather-preparation cost.
 
+That intervention ran as
+`solab-g3-m8.5-connector-presence-equivalence-20260818-retry20260818-111912`.
+Active-gather preparation and both preflight execution phases were exactly
+zero. Preflight preparation remained 6.175780 seconds, or 95.1709% of the
+prior single-pass value. Cold latency fell from 16.797132 to 10.154467 seconds;
+relative to the contemporaneous controls, the intervention recovered 6.715496
+seconds, or 108.2335% of the removed 6.204637-second duplicate preparation.
+The logical geometry remained exactly 59,904 K/V block copies and 0.9140625
+GiB. The remaining active copy enqueue was 0.976151 seconds and synchronization
+was 0.000095 seconds. This passes the reuse gate and leaves the single
+59,904-view preflight construction as the measured latency target.
+
+The same run also made the sampled-output signal conclusive for that workload:
+the two connector-free controls had identical request, output, and usage
+signatures on all three turns. The connector matched turns one and two, then
+produced a different turn-three output digest for the same request digest and
+the same complete usage counts. The connector still reported zero found,
+loaded, rejected, and avoided KV tokens, so this output-level failure is kept
+independent from the latency intervention. It is not substituted for the
+required full-vocabulary numerical envelope.
+
+The next bounded intervention exploits only geometry already proven by the
+store plan: each stored range is a contiguous 256-token chunk aligned to the
+pinned 16-token vLLM blocks. It retains the exact 59,904 logical operation
+counter, validates every layer, range, block ID, tensor owner, dtype, and
+device before mutation, and prepares one int64 block-index vector per layer.
+Execution submits one `torch.index_select(..., out=...)` write for each of 24
+layers and each K/V component: 48 physical submissions per active store batch.
+Unaligned or noncontiguous public data-plane inputs retain the existing
+per-span path. A CUDA primitive test checks exact noncontiguous block order and
+source immutability before the model server starts. The cross-run
+`connector-block-batched-gather.json` gate binds the `111912` baseline and
+requires at least 99% fewer submissions, at least 80% recovery of both
+preparation time and cold excess, unchanged logical geometry/store counters/cold
+signature, and preservation of the one-shot batch mechanics.
+
 ### Public out-of-tree extension points beyond the connector
 
 - [`vllm.general_plugins`](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/plugins/__init__.py#L12-L82)

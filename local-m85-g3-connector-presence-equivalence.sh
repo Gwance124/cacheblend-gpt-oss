@@ -8,7 +8,7 @@ readonly CACHEBLEND_REPO=/mnt/nvme3n1/mlee/cacheblend-gpt-oss
 readonly CACHEBLEND_BRANCH=cacheblend-scatter-diagnostic-and-checklayer
 readonly CACHEBLEND_POINTER=/mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/solab-g3-m8.5-connector-presence-equivalence-20260818.current
 readonly CACHEBLEND_BASE_DIR=/mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/solab-g3-m8.5-connector-presence-equivalence-20260818
-readonly CACHEBLEND_REUSE_BASELINE_RUN_DIR=/mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/solab-g3-m8.5-connector-presence-equivalence-20260818-retry20260818-105421
+readonly CACHEBLEND_BLOCK_BATCH_BASELINE_RUN_DIR=/mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/solab-g3-m8.5-connector-presence-equivalence-20260818-retry20260818-111912
 
 CACHEBLEND_CURRENT_PID=""
 CACHEBLEND_LMCACHE_PID=""
@@ -275,6 +275,10 @@ main() {
 
   .venv/bin/python -c "import importlib.metadata as m,json,torch; observed={'torch':torch.__version__,'cuda':torch.version.cuda,'vllm':m.version('vllm'),'lmcache':m.version('lmcache'),'gpu':torch.cuda.get_device_name(0)}; expected={'torch':'2.10.0+cu128','cuda':'12.8','vllm':'0.19.1','lmcache':'0.4.3','gpu':'NVIDIA A100-SXM4-80GB'}; assert observed == expected, (observed,expected); print(json.dumps(observed,sort_keys=True))" \
     | tee "$CACHEBLEND_RUN_DIR/runtime.json"
+  .venv/bin/python -m pytest -q \
+    tests/gpu/test_transfer_primitives.py \
+    -k test_cuda_block_batched_gather_matches_exact_noncontiguous_blocks \
+    | tee "$CACHEBLEND_RUN_DIR/block-batched-gather-gpu-test.txt"
 
   export CACHEBLEND_SIDECAR="$CACHEBLEND_RUN_DIR/sidecar.sqlite3"
   export CACHEBLEND_TRANSFER_CONFIG="$CACHEBLEND_RUN_DIR/transfer-config.json"
@@ -332,12 +336,12 @@ main() {
   set -e
 
   set +e
-  .venv/bin/python scripts/analyze_connector_prepared_gather_reuse.py \
-    --baseline-run-dir "$CACHEBLEND_REUSE_BASELINE_RUN_DIR" \
+  .venv/bin/python scripts/analyze_connector_block_batched_gather.py \
+    --baseline-run-dir "$CACHEBLEND_BLOCK_BATCH_BASELINE_RUN_DIR" \
     --candidate-run-dir "$CACHEBLEND_RUN_DIR" \
-    --output "$CACHEBLEND_RUN_DIR/connector-prepared-gather-reuse.json" \
-    | tee "$CACHEBLEND_RUN_DIR/connector-prepared-gather-reuse.txt"
-  local prepared_gather_reuse_status=${PIPESTATUS[0]}
+    --output "$CACHEBLEND_RUN_DIR/connector-block-batched-gather.json" \
+    | tee "$CACHEBLEND_RUN_DIR/connector-block-batched-gather.txt"
+  local block_batched_gather_status=${PIPESTATUS[0]}
   set -e
 
   stop_all_servers
@@ -345,7 +349,7 @@ main() {
   echo "VERDICT_STATUS=$verdict_status"
   echo "STORE_STAGE_STATUS=$store_stage_status"
   echo "STORE_DATA_PLANE_STATUS=$store_data_plane_status"
-  echo "PREPARED_GATHER_REUSE_STATUS=$prepared_gather_reuse_status"
+  echo "BLOCK_BATCHED_GATHER_STATUS=$block_batched_gather_status"
   echo "RUN_DIR=$CACHEBLEND_RUN_DIR"
   if test "$store_stage_status" -ne 0; then
     return "$store_stage_status"
@@ -353,8 +357,8 @@ main() {
   if test "$store_data_plane_status" -ne 0; then
     return "$store_data_plane_status"
   fi
-  if test "$prepared_gather_reuse_status" -ne 0; then
-    return "$prepared_gather_reuse_status"
+  if test "$block_batched_gather_status" -ne 0; then
+    return "$block_batched_gather_status"
   fi
   return "$verdict_status"
 }

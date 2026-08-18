@@ -887,6 +887,9 @@ class GptOssCacheBlendConnector(
                 store_preflight_prepared_copy_operations=(
                     post_forward.store_preflight_data_plane_timing.prepared_copy_operations
                 ),
+                store_preflight_submitted_copy_operations=(
+                    post_forward.store_preflight_data_plane_timing.submitted_copy_operations
+                ),
                 store_gather_prepare_latency_seconds=(
                     post_forward.store_gather_data_plane_timing.prepare_latency_seconds
                 ),
@@ -898,6 +901,9 @@ class GptOssCacheBlendConnector(
                 ),
                 store_gather_prepared_copy_operations=(
                     post_forward.store_gather_data_plane_timing.prepared_copy_operations
+                ),
+                store_gather_submitted_copy_operations=(
+                    post_forward.store_gather_data_plane_timing.submitted_copy_operations
                 ),
             )
             self._active_worker_transfer = None

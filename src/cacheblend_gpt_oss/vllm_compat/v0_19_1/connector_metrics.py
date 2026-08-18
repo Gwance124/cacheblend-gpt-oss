@@ -45,7 +45,9 @@ _COUNTER_KEYS = (
     "store_tokens_eligible",
     "store_tokens_completed",
     "store_preflight_prepared_copy_operations",
+    "store_preflight_submitted_copy_operations",
     "store_gather_prepared_copy_operations",
+    "store_gather_submitted_copy_operations",
     "load_fallbacks",
     "store_fallbacks",
 )
@@ -278,10 +280,12 @@ class GptOssCacheBlendStats(KVConnectorStats):  # type: ignore[misc]
         store_preflight_enqueue_latency_seconds: float = 0.0,
         store_preflight_synchronize_latency_seconds: float = 0.0,
         store_preflight_prepared_copy_operations: int = 0,
+        store_preflight_submitted_copy_operations: int = 0,
         store_gather_prepare_latency_seconds: float = 0.0,
         store_gather_enqueue_latency_seconds: float = 0.0,
         store_gather_synchronize_latency_seconds: float = 0.0,
         store_gather_prepared_copy_operations: int = 0,
+        store_gather_submitted_copy_operations: int = 0,
     ) -> None:
         if any(
             isinstance(value, bool) or not isinstance(value, int) or value < 0
@@ -289,7 +293,9 @@ class GptOssCacheBlendStats(KVConnectorStats):  # type: ignore[misc]
                 eligible_tokens,
                 stored_tokens,
                 store_preflight_prepared_copy_operations,
+                store_preflight_submitted_copy_operations,
                 store_gather_prepared_copy_operations,
+                store_gather_submitted_copy_operations,
             )
         ):
             raise ValueError("CacheBlend store counters require non-negative integers")
@@ -297,6 +303,15 @@ class GptOssCacheBlendStats(KVConnectorStats):  # type: ignore[misc]
             raise ValueError("CacheBlend store fallback requires a boolean")
         if stored_tokens > eligible_tokens:
             raise ValueError("stored KV tokens cannot exceed eligible tokens")
+        if (
+            store_preflight_submitted_copy_operations
+            > store_preflight_prepared_copy_operations
+            or store_gather_submitted_copy_operations
+            > store_gather_prepared_copy_operations
+        ):
+            raise ValueError(
+                "submitted copy operations cannot exceed prepared operations"
+            )
         self._append("store_tokens_eligible", eligible_tokens)
         self._append("store_tokens_completed", stored_tokens)
         self._append(
@@ -304,8 +319,16 @@ class GptOssCacheBlendStats(KVConnectorStats):  # type: ignore[misc]
             store_preflight_prepared_copy_operations,
         )
         self._append(
+            "store_preflight_submitted_copy_operations",
+            store_preflight_submitted_copy_operations,
+        )
+        self._append(
             "store_gather_prepared_copy_operations",
             store_gather_prepared_copy_operations,
+        )
+        self._append(
+            "store_gather_submitted_copy_operations",
+            store_gather_submitted_copy_operations,
         )
         self._append("store_fallbacks", int(fallback))
         self._append("store_latency_seconds", latency_seconds)

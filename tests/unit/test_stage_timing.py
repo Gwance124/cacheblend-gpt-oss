@@ -12,9 +12,10 @@ from cacheblend_gpt_oss.vllm_compat.v0_19_1.stage_timing import (
 
 
 def test_data_plane_phase_timing_is_bounded_and_immutable() -> None:
-    timing = DataPlanePhaseTiming(0.1, 0.2, 0.3, 59_904)
+    timing = DataPlanePhaseTiming(0.1, 0.2, 0.3, 59_904, 96)
 
     assert timing.total_latency_seconds == pytest.approx(0.6)
+    assert timing.submitted_copy_operations == 96
     with pytest.raises(FrozenInstanceError):
         timing.prepared_copy_operations = 0  # type: ignore[misc]
 
@@ -27,6 +28,12 @@ def test_data_plane_phase_timing_is_bounded_and_immutable() -> None:
         {"synchronize_latency_seconds": True},
         {"prepared_copy_operations": -1},
         {"prepared_copy_operations": True},
+        {"submitted_copy_operations": -1},
+        {"submitted_copy_operations": True},
+        {
+            "prepared_copy_operations": 1,
+            "submitted_copy_operations": 2,
+        },
     ),
 )
 def test_data_plane_phase_timing_rejects_invalid_values(

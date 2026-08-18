@@ -699,6 +699,7 @@ class _FakeDataPlane:
                 self.last_gather_timing.synchronize_latency_seconds
             ),
             prepared_copy_operations=batch.prepared_copy_operations,
+            submitted_copy_operations=batch.submitted_copy_operations,
         )
         return receipts
 
@@ -746,12 +747,16 @@ class _FakeDataPlane:
             execution_offsets.append(store_buffer_offset)
             operations += len(layer_spans) * 2
         batch = PreparedGatherBatch(
-            tuple(receipts), operations, tuple(execution_offsets)
+            tuple(receipts),
+            operations,
+            operations,
+            tuple(execution_offsets),
         )
         self.prepared_gather_batch = batch
         self.last_gather_timing = DataPlanePhaseTiming(
             prepare_latency_seconds=0.1,
             prepared_copy_operations=operations,
+            submitted_copy_operations=operations,
         )
         return batch
 
@@ -769,6 +774,7 @@ class _FakeDataPlane:
             enqueue_latency_seconds=0.2,
             synchronize_latency_seconds=0.3,
             prepared_copy_operations=batch.prepared_copy_operations,
+            submitted_copy_operations=batch.submitted_copy_operations,
         )
         return batch.receipts
 
@@ -940,6 +946,10 @@ def test_same_staging_region_is_reused_sequentially_for_load_then_store() -> Non
         fixture.bridge.store_preflight_data_plane_timing.prepared_copy_operations
         == 1_536
     )
+    assert (
+        fixture.bridge.store_preflight_data_plane_timing.submitted_copy_operations
+        == 1_536
+    )
     assert fixture.bridge.store_preflight_data_plane_timing.enqueue_latency_seconds == 0
     fixture.bridge.gather_recomputed(store)
     assert "active.execute_gather:0" in fixture.trace
@@ -947,6 +957,10 @@ def test_same_staging_region_is_reused_sequentially_for_load_then_store() -> Non
     assert fixture.bridge.store_gather_data_plane_timing.prepare_latency_seconds == 0
     assert (
         fixture.bridge.store_gather_data_plane_timing.prepared_copy_operations
+        == 1_536
+    )
+    assert (
+        fixture.bridge.store_gather_data_plane_timing.submitted_copy_operations
         == 1_536
     )
     receipt = fixture.bridge.store_precomputed(store)
