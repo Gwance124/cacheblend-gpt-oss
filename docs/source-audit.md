@@ -261,6 +261,26 @@ signatures, per-turn latency ratios, prefix-cache evidence, and bounded
 connector/store counter deltas. `rag-system` remains read-only until a separate
 change is explicitly authorized.
 
+That connector-presence gate returned `FAIL_CONNECTOR_OUTPUT_DIVERGED` on
+`solab-g3` in run
+`solab-g3-m8.5-connector-presence-equivalence-20260818-retry20260818-085515`.
+The two connector-free controls were exact and had a 1.0007 total-latency
+spread. The connector cold turn had the same request digest, output digest,
+usage, and zero cached tokens as both controls, but took 16.709 seconds versus
+a 4.175-second control mean (4.0019x). It found, loaded, rejected, and credited
+zero KV tokens while successfully storing 19,968 prompt tokens. The first
+output divergence occurred on turn two with the same request digest and the
+same 48 cached tokens; turn three's request then necessarily differed because
+it replayed the divergent turn-two output. Total connector latency was 40.776
+seconds versus a 26.961-second control mean (1.5124x).
+
+This disproves the stronger claim that a zero-load/zero-scatter connector is
+operationally inert: the cold writeback path still stored KV. The read-only
+`local-m85-analyze-connector-presence.sh` gate measures the existing run's
+bounded Prometheus lookup, transfer, correction, and store histograms and tests
+whether recorded synchronous store time accounts for at least 80% of the cold
+turn excess before any no-store diagnostic changes are introduced.
+
 ### Public out-of-tree extension points beyond the connector
 
 - [`vllm.general_plugins`](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/plugins/__init__.py#L12-L82)
