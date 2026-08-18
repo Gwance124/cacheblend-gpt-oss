@@ -474,6 +474,38 @@ artifact and its verdict/data-plane/metric digest chain, requires the exact
 19,968-token, 59,904-logical-operation, 48-submission geometry, and reports the
 expected 24 index-tensor and 48 staging-view constructions per store batch.
 
+That split ran as
+`solab-g3-m8.5-connector-presence-equivalence-20260818-retry20260818-140016`.
+Block-index construction accounted for 1.094406 of the 1.096825-second
+index/view envelope, or 99.7795%. Index validation took 0.000395 seconds; all
+48 staging-view constructions and validations together took 0.001752 seconds;
+only 0.000272 seconds remained unattributed. The enclosing preflight
+preparation was 1.962241 seconds, including 0.748465 seconds of canonical span
+validation. Store geometry remained exactly 19,968 tokens, 59,904 logical K/V
+operations, and 48 physical submissions.
+
+The serving-level timing remains within the existing limit: the connector cold
+turn took 4.806044 seconds versus its 4.154684-second control mean (1.1568x),
+and its 28.698458-second total was 1.0488x the 27.362502-second control mean.
+The connector still found, loaded, rejected, and avoided zero KV tokens while
+recomputing the complete prompt. Output equivalence remains inconclusive
+because the connector-free controls diverged before a matched full trajectory;
+that sampled-output status is not used as numerical correctness evidence.
+
+The next bounded intervention replaces the 24 per-layer CUDA index-tensor
+allocations with one int64 `[24, blocks]` owner and 24 read-only row views.
+Every matrix and row shape, dtype, and device check remains fail-closed before
+the first destination mutation; the exact 48 `torch.index_select` writes,
+59,904 logical-operation accounting, block order, and source immutability are
+unchanged. New bounded counters require exactly one owner, 24 row views, and 48
+staging views per store batch. The SHA-bound
+`connector-batched-block-indices.json` gate uses `140016` as its frozen
+baseline and requires at least 80% recovery of both measured index-construction
+time and enclosing preflight time relative to that 1.094406-second cost, an
+unchanged cold signature/store geometry, and a cold-turn ratio no greater than
+2.0. The historical `111912` block-batching gate remains unchanged and runs
+after this intervention-specific gate.
+
 ### Public out-of-tree extension points beyond the connector
 
 - [`vllm.general_plugins`](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/plugins/__init__.py#L12-L82)

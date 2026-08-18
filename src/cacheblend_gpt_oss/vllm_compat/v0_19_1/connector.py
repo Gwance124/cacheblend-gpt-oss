@@ -923,6 +923,15 @@ class GptOssCacheBlendConnector(
                 store_preflight_submitted_copy_operations=(
                     post_forward.store_preflight_data_plane_timing.submitted_copy_operations
                 ),
+                store_preflight_block_index_owner_constructions=(
+                    post_forward.store_preflight_data_plane_timing.block_index_owner_constructions
+                ),
+                store_preflight_block_index_row_views=(
+                    post_forward.store_preflight_data_plane_timing.block_index_row_views
+                ),
+                store_preflight_staging_view_constructions=(
+                    post_forward.store_preflight_data_plane_timing.staging_view_constructions
+                ),
                 store_gather_prepare_latency_seconds=(
                     post_forward.store_gather_data_plane_timing.prepare_latency_seconds
                 ),

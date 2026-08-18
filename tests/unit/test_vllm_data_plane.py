@@ -110,6 +110,14 @@ class FakeValue:
 
 
 @dataclass(slots=True)
+class FakeBlockIndexMatrix:
+    block_ids_by_layer: tuple[tuple[int, ...], ...]
+    shape: tuple[int, ...]
+    dtype: str
+    device: str
+
+
+@dataclass(slots=True)
 class FakeBlockIndices:
     block_ids: tuple[int, ...]
     shape: tuple[int, ...]
@@ -123,20 +131,30 @@ class FakeTensorOps:
         self.synchronizations: list[FakeTensor] = []
         self.staging_reads: list[tuple[int, int, int, int]] = []
         self.block_index_preparations = 0
+        self.block_index_row_views = 0
         self.block_copy_count = 0
 
     def shape(self, tensor: object) -> tuple[int, ...]:
-        assert isinstance(tensor, FakeTensor | FakeView | FakeValue | FakeBlockIndices)
+        assert isinstance(
+            tensor,
+            FakeTensor | FakeView | FakeValue | FakeBlockIndexMatrix | FakeBlockIndices,
+        )
         return tensor.shape
 
     def dtype_name(self, tensor: object) -> str:
-        assert isinstance(tensor, FakeTensor | FakeView | FakeValue | FakeBlockIndices)
+        assert isinstance(
+            tensor,
+            FakeTensor | FakeView | FakeValue | FakeBlockIndexMatrix | FakeBlockIndices,
+        )
         if isinstance(tensor, FakeView):
             return tensor.owner.dtype
         return tensor.dtype
 
     def device_name(self, tensor: object) -> str:
-        assert isinstance(tensor, FakeTensor | FakeView | FakeValue | FakeBlockIndices)
+        assert isinstance(
+            tensor,
+            FakeTensor | FakeView | FakeValue | FakeBlockIndexMatrix | FakeBlockIndices,
+        )
         if isinstance(tensor, FakeView):
             return tensor.owner.device
         return tensor.device
@@ -183,14 +201,30 @@ class FakeTensorOps:
             return FakeView(tensor.owner, tensor.refs, shape)
         return FakeValue(tensor.rows, shape, tensor.dtype, tensor.device)
 
-    def block_indices(
+    def block_index_matrix(
         self,
         tensor: object,
         *,
-        block_ids: tuple[int, ...],
-    ) -> FakeBlockIndices:
+        block_ids_by_layer: tuple[tuple[int, ...], ...],
+    ) -> FakeBlockIndexMatrix:
         assert isinstance(tensor, FakeTensor)
         self.block_index_preparations += 1
+        return FakeBlockIndexMatrix(
+            block_ids_by_layer,
+            (len(block_ids_by_layer), len(block_ids_by_layer[0])),
+            "torch.int64",
+            tensor.device,
+        )
+
+    def block_index_row(
+        self,
+        tensor: object,
+        *,
+        layer_index: int,
+    ) -> FakeBlockIndices:
+        assert isinstance(tensor, FakeBlockIndexMatrix)
+        self.block_index_row_views += 1
+        block_ids = tensor.block_ids_by_layer[layer_index]
         return FakeBlockIndices(
             block_ids,
             (len(block_ids),),
@@ -621,7 +655,11 @@ def test_aligned_gather_batches_every_block_per_layer_and_component() -> None:
         <= prepare_timing.block_index_view_latency_seconds
     )
     assert prepare_timing.legacy_view_latency_seconds == 0.0
-    assert ops.block_index_preparations == 24
+    assert ops.block_index_preparations == 1
+    assert ops.block_index_row_views == 24
+    assert prepare_timing.block_index_owner_constructions == 1
+    assert prepare_timing.block_index_row_views == 24
+    assert prepare_timing.staging_view_constructions == 48
     assert ops.copy_count == 0
     assert ops.block_copy_count == 0
     assert stage.rows == {}
@@ -647,13 +685,16 @@ def test_aligned_gather_batches_every_block_per_layer_and_component() -> None:
 
 def test_aligned_gather_rejects_invalid_block_index_before_mutation() -> None:
     class InvalidIndexOps(FakeTensorOps):
-        def block_indices(
+        def block_index_matrix(
             self,
             tensor: object,
             *,
-            block_ids: tuple[int, ...],
-        ) -> FakeBlockIndices:
-            value = super().block_indices(tensor, block_ids=block_ids)
+            block_ids_by_layer: tuple[tuple[int, ...], ...],
+        ) -> FakeBlockIndexMatrix:
+            value = super().block_index_matrix(
+                tensor,
+                block_ids_by_layer=block_ids_by_layer,
+            )
             value.dtype = "torch.int32"
             return value
 

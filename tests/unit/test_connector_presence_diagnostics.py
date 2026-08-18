@@ -163,6 +163,10 @@ def test_gpu_runner_uses_valid_connector_request_timeout() -> None:
     assert "scripts/analyze_connector_block_index_view.py" in runner
     assert "connector-block-index-view-breakdown.json" in runner
     assert "BLOCK_INDEX_VIEW_STATUS" in runner
+    assert "scripts/analyze_connector_batched_block_indices.py" in runner
+    assert "connector-batched-block-indices.json" in runner
+    assert "BATCHED_BLOCK_INDICES_STATUS" in runner
+    assert "retry20260818-140016" in runner
     assert "scripts/analyze_connector_block_batched_gather.py" in runner
     assert "connector-block-batched-gather.json" in runner
     assert "BLOCK_BATCHED_GATHER_STATUS" in runner

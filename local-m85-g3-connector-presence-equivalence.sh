@@ -9,6 +9,7 @@ readonly CACHEBLEND_BRANCH=cacheblend-scatter-diagnostic-and-checklayer
 readonly CACHEBLEND_POINTER=/mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/solab-g3-m8.5-connector-presence-equivalence-20260818.current
 readonly CACHEBLEND_BASE_DIR=/mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/solab-g3-m8.5-connector-presence-equivalence-20260818
 readonly CACHEBLEND_BLOCK_BATCH_BASELINE_RUN_DIR=/mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/solab-g3-m8.5-connector-presence-equivalence-20260818-retry20260818-111912
+readonly CACHEBLEND_BATCHED_INDEX_BASELINE_RUN_DIR=/mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/solab-g3-m8.5-connector-presence-equivalence-20260818-retry20260818-140016
 
 CACHEBLEND_CURRENT_PID=""
 CACHEBLEND_LMCACHE_PID=""
@@ -352,6 +353,15 @@ main() {
   set -e
 
   set +e
+  .venv/bin/python scripts/analyze_connector_batched_block_indices.py \
+    --baseline-run-dir "$CACHEBLEND_BATCHED_INDEX_BASELINE_RUN_DIR" \
+    --candidate-run-dir "$CACHEBLEND_RUN_DIR" \
+    --output "$CACHEBLEND_RUN_DIR/connector-batched-block-indices.json" \
+    | tee "$CACHEBLEND_RUN_DIR/connector-batched-block-indices.txt"
+  local batched_block_indices_status=${PIPESTATUS[0]}
+  set -e
+
+  set +e
   .venv/bin/python scripts/analyze_connector_block_batched_gather.py \
     --baseline-run-dir "$CACHEBLEND_BLOCK_BATCH_BASELINE_RUN_DIR" \
     --candidate-run-dir "$CACHEBLEND_RUN_DIR" \
@@ -367,6 +377,7 @@ main() {
   echo "STORE_DATA_PLANE_STATUS=$store_data_plane_status"
   echo "STORE_PREFLIGHT_STATUS=$store_preflight_status"
   echo "BLOCK_INDEX_VIEW_STATUS=$block_index_view_status"
+  echo "BATCHED_BLOCK_INDICES_STATUS=$batched_block_indices_status"
   echo "BLOCK_BATCHED_GATHER_STATUS=$block_batched_gather_status"
   echo "RUN_DIR=$CACHEBLEND_RUN_DIR"
   if test "$store_stage_status" -ne 0; then
@@ -380,6 +391,9 @@ main() {
   fi
   if test "$block_index_view_status" -ne 0; then
     return "$block_index_view_status"
+  fi
+  if test "$batched_block_indices_status" -ne 0; then
+    return "$batched_block_indices_status"
   fi
   if test "$block_batched_gather_status" -ne 0; then
     return "$block_batched_gather_status"

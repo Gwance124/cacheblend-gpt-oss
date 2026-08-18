@@ -900,6 +900,9 @@ class FakeTransferRuntime:
                 0.009,
                 10,
                 10,
+                block_index_owner_constructions=1,
+                block_index_row_views=24,
+                staging_view_constructions=48,
                 input_materialization_latency_seconds=0.0001,
                 span_validation_latency_seconds=0.001,
                 tensor_validation_latency_seconds=0.0015,
@@ -1039,6 +1042,9 @@ def test_transfer_mode_wires_full_recompute_scheduler_and_worker_hooks(
         "store_tokens_completed": 256,
         "store_preflight_prepared_copy_operations": 10,
         "store_preflight_submitted_copy_operations": 10,
+        "store_preflight_block_index_owner_constructions": 1,
+        "store_preflight_block_index_row_views": 24,
+        "store_preflight_staging_view_constructions": 48,
         "store_gather_prepared_copy_operations": 10,
         "store_gather_submitted_copy_operations": 10,
         "load_fallbacks": 0,
@@ -1098,6 +1104,9 @@ def test_transfer_mode_wires_full_recompute_scheduler_and_worker_hooks(
     assert reduced["store_storage_preflight_latency_seconds"] == pytest.approx(0.006)
     assert reduced["store_preflight_prepared_copy_operations"] == 10
     assert reduced["store_preflight_submitted_copy_operations"] == 10
+    assert reduced["store_preflight_block_index_owner_constructions"] == 1
+    assert reduced["store_preflight_block_index_row_views"] == 24
+    assert reduced["store_preflight_staging_view_constructions"] == 48
     assert reduced["store_gather_prepared_copy_operations"] == 10
     assert reduced["store_gather_submitted_copy_operations"] == 10
     assert reduced["store_preflight_prepare_latency_seconds"] == pytest.approx(0.007)
@@ -1608,6 +1617,9 @@ def test_connector_metrics_aggregate_hits_fallbacks_and_reject_bad_data(
         store_preflight_synchronize_latency_seconds=0.008,
         store_preflight_prepared_copy_operations=59_904,
         store_preflight_submitted_copy_operations=96,
+        store_preflight_block_index_owner_constructions=1,
+        store_preflight_block_index_row_views=24,
+        store_preflight_staging_view_constructions=48,
         store_gather_prepare_latency_seconds=0.009,
         store_gather_enqueue_latency_seconds=0.01,
         store_gather_synchronize_latency_seconds=0.011,
@@ -1678,6 +1690,9 @@ def test_connector_metrics_aggregate_hits_fallbacks_and_reject_bad_data(
     )
     assert reduced["store_preflight_prepared_copy_operations"] == 59_904
     assert reduced["store_preflight_submitted_copy_operations"] == 96
+    assert reduced["store_preflight_block_index_owner_constructions"] == 1
+    assert reduced["store_preflight_block_index_row_views"] == 24
+    assert reduced["store_preflight_staging_view_constructions"] == 48
     assert reduced["store_gather_prepare_latency_seconds"] == pytest.approx(0.009)
     assert reduced["store_gather_enqueue_latency_seconds"] == pytest.approx(0.01)
     assert reduced["store_gather_synchronize_latency_seconds"] == pytest.approx(0.011)
@@ -1746,6 +1761,14 @@ def test_connector_metrics_aggregate_hits_fallbacks_and_reject_bad_data(
             latency_seconds=0.0,
             store_preflight_prepared_copy_operations=48,
             store_preflight_submitted_copy_operations=49,
+        )
+    with pytest.raises(ValueError, match="store counters"):
+        stats.record_store(
+            eligible_tokens=256,
+            stored_tokens=256,
+            fallback=False,
+            latency_seconds=0.0,
+            store_preflight_block_index_owner_constructions=True,  # type: ignore[arg-type]
         )
     malformed = {key: list(values) for key, values in stats.data.items()}
     malformed["requests"] = [1.5]

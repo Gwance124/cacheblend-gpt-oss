@@ -18,6 +18,9 @@ def test_data_plane_phase_timing_is_bounded_and_immutable() -> None:
         0.3,
         59_904,
         96,
+        block_index_owner_constructions=1,
+        block_index_row_views=24,
+        staging_view_constructions=48,
         input_materialization_latency_seconds=0.001,
         span_validation_latency_seconds=0.02,
         tensor_validation_latency_seconds=0.03,
@@ -35,6 +38,9 @@ def test_data_plane_phase_timing_is_bounded_and_immutable() -> None:
     assert timing.preparation_subphase_latency_seconds == pytest.approx(0.085)
     assert timing.block_index_view_subphase_latency_seconds == pytest.approx(0.019)
     assert timing.submitted_copy_operations == 96
+    assert timing.block_index_owner_constructions == 1
+    assert timing.block_index_row_views == 24
+    assert timing.staging_view_constructions == 48
     with pytest.raises(FrozenInstanceError):
         timing.prepared_copy_operations = 0  # type: ignore[misc]
 
@@ -51,6 +57,9 @@ def test_data_plane_phase_timing_is_bounded_and_immutable() -> None:
         {"prepared_copy_operations": True},
         {"submitted_copy_operations": -1},
         {"submitted_copy_operations": True},
+        {"block_index_owner_constructions": -1},
+        {"block_index_row_views": True},
+        {"staging_view_constructions": -1},
         {
             "prepared_copy_operations": 1,
             "submitted_copy_operations": 2,

@@ -129,12 +129,8 @@ def test_cuda_hybrid_gather_scatter_round_trip_preserves_kv() -> None:
         )
         for index in range(24)
     }
-    destination = {
-        name: torch.zeros_like(tensor) for name, tensor in source.items()
-    }
-    compact_staging = torch.zeros(
-        (2, 24, 64, 512), dtype=torch.bfloat16, device=device
-    )
+    destination = {name: torch.zeros_like(tensor) for name, tensor in source.items()}
+    compact_staging = torch.zeros((2, 24, 64, 512), dtype=torch.bfloat16, device=device)
     retrieval_staging = torch.zeros_like(compact_staging)
     data_plane = GptOssDataPlane(load_torch_tensor_ops())
 
@@ -232,6 +228,10 @@ def test_cuda_block_batched_gather_matches_exact_noncontiguous_blocks() -> None:
     )
     assert batch.prepared_copy_operations == 96
     assert batch.submitted_copy_operations == 48
+    prepare_timing = data_plane.last_gather_timing
+    assert prepare_timing.block_index_owner_constructions == 1
+    assert prepare_timing.block_index_row_views == 24
+    assert prepare_timing.staging_view_constructions == 48
     data_plane.execute_prepared_gather_batch(batch)
 
     assert data_plane.last_gather_timing.prepared_copy_operations == 96

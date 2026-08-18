@@ -31,6 +31,18 @@ def _metrics(histograms: dict[str, float], *, count: int) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _counters(*, batches: int) -> str:
+    values = {
+        "store_preflight_block_index_owner_constructions": batches,
+        "store_preflight_block_index_row_views": batches * 24,
+        "store_preflight_staging_view_constructions": batches * 48,
+    }
+    return "".join(
+        f'vllm:cacheblend_{key}{{engine="0"}} {value}\n'
+        for key, value in values.items()
+    )
+
+
 def _write_run(
     run_dir: Path,
     *,
@@ -48,10 +60,13 @@ def _write_run(
     startup_path = connector_dir / "metrics-startup.prom"
     after_path = connector_dir / "metrics-after.prom"
     startup_path.write_text(
-        _metrics({key: 0.0 for key in histograms}, count=0),
+        _metrics({key: 0.0 for key in histograms}, count=0) + _counters(batches=0),
         encoding="utf-8",
     )
-    after_path.write_text(_metrics(histograms, count=2), encoding="utf-8")
+    after_path.write_text(
+        _metrics(histograms, count=2) + _counters(batches=2),
+        encoding="utf-8",
+    )
 
     verdict_path = run_dir / "connector-presence-verdict.json"
     verdict = {
@@ -120,8 +135,12 @@ def test_block_index_view_breakdown_reconciles_and_selects_index_construction(
 
     assert report["status"] == "CAPTURED_BLOCK_INDEX_VIEW_BREAKDOWN"
     geometry = report["operation_geometry"]
-    assert geometry["expected_index_tensor_constructions_per_store_batch"] == 24
+    assert geometry["expected_block_index_owner_constructions_per_store_batch"] == 1
+    assert geometry["expected_block_index_row_views_per_store_batch"] == 24
     assert geometry["expected_staging_view_constructions_per_store_batch"] == 48
+    assert geometry["observed_block_index_owner_constructions_per_store_batch"] == 1
+    assert geometry["observed_block_index_row_views_per_store_batch"] == 24
+    assert geometry["observed_staging_view_constructions_per_store_batch"] == 48
     breakdown = report["block_index_view"]
     assert breakdown["subphase_sum_seconds"] == pytest.approx(1.05)
     assert breakdown["unattributed_enclosing_seconds"] == pytest.approx(0.05)

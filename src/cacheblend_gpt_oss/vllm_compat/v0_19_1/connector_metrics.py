@@ -46,6 +46,9 @@ _COUNTER_KEYS = (
     "store_tokens_completed",
     "store_preflight_prepared_copy_operations",
     "store_preflight_submitted_copy_operations",
+    "store_preflight_block_index_owner_constructions",
+    "store_preflight_block_index_row_views",
+    "store_preflight_staging_view_constructions",
     "store_gather_prepared_copy_operations",
     "store_gather_submitted_copy_operations",
     "load_fallbacks",
@@ -303,6 +306,9 @@ class GptOssCacheBlendStats(KVConnectorStats):  # type: ignore[misc]
         store_preflight_synchronize_latency_seconds: float = 0.0,
         store_preflight_prepared_copy_operations: int = 0,
         store_preflight_submitted_copy_operations: int = 0,
+        store_preflight_block_index_owner_constructions: int = 0,
+        store_preflight_block_index_row_views: int = 0,
+        store_preflight_staging_view_constructions: int = 0,
         store_gather_prepare_latency_seconds: float = 0.0,
         store_gather_enqueue_latency_seconds: float = 0.0,
         store_gather_synchronize_latency_seconds: float = 0.0,
@@ -316,6 +322,9 @@ class GptOssCacheBlendStats(KVConnectorStats):  # type: ignore[misc]
                 stored_tokens,
                 store_preflight_prepared_copy_operations,
                 store_preflight_submitted_copy_operations,
+                store_preflight_block_index_owner_constructions,
+                store_preflight_block_index_row_views,
+                store_preflight_staging_view_constructions,
                 store_gather_prepared_copy_operations,
                 store_gather_submitted_copy_operations,
             )
@@ -343,6 +352,18 @@ class GptOssCacheBlendStats(KVConnectorStats):  # type: ignore[misc]
         self._append(
             "store_preflight_submitted_copy_operations",
             store_preflight_submitted_copy_operations,
+        )
+        self._append(
+            "store_preflight_block_index_owner_constructions",
+            store_preflight_block_index_owner_constructions,
+        )
+        self._append(
+            "store_preflight_block_index_row_views",
+            store_preflight_block_index_row_views,
+        )
+        self._append(
+            "store_preflight_staging_view_constructions",
+            store_preflight_staging_view_constructions,
         )
         self._append(
             "store_gather_prepared_copy_operations",

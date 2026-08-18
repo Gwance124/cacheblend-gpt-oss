@@ -16,6 +16,9 @@ class DataPlanePhaseTiming:
     synchronize_latency_seconds: float = 0.0
     prepared_copy_operations: int = 0
     submitted_copy_operations: int = 0
+    block_index_owner_constructions: int = 0
+    block_index_row_views: int = 0
+    staging_view_constructions: int = 0
     input_materialization_latency_seconds: float = 0.0
     span_validation_latency_seconds: float = 0.0
     tensor_validation_latency_seconds: float = 0.0
@@ -56,12 +59,15 @@ class DataPlanePhaseTiming:
         operation_counts = (
             self.prepared_copy_operations,
             self.submitted_copy_operations,
+            self.block_index_owner_constructions,
+            self.block_index_row_views,
+            self.staging_view_constructions,
         )
         if any(
             isinstance(value, bool) or not isinstance(value, int) or value < 0
             for value in operation_counts
         ):
-            raise ValueError("invalid data-plane prepared-copy count")
+            raise ValueError("invalid data-plane mechanics count")
         if self.submitted_copy_operations > self.prepared_copy_operations:
             raise ValueError("invalid data-plane submitted-copy count")
         tolerance = max(1e-9, self.prepare_latency_seconds * 1e-6)

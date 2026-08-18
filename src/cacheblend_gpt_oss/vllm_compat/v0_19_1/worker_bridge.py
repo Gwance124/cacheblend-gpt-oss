@@ -387,13 +387,19 @@ class _ReadOnlyTensorOps:
     def reshape(self, tensor: object, shape: tuple[int, ...]) -> object:
         return self._delegate.reshape(tensor, shape)
 
-    def block_indices(
+    def block_index_matrix(
         self,
         tensor: object,
         *,
-        block_ids: tuple[int, ...],
+        block_ids_by_layer: tuple[tuple[int, ...], ...],
     ) -> object:
-        return self._delegate.block_indices(tensor, block_ids=block_ids)
+        return self._delegate.block_index_matrix(
+            tensor,
+            block_ids_by_layer=block_ids_by_layer,
+        )
+
+    def block_index_row(self, tensor: object, *, layer_index: int) -> object:
+        return self._delegate.block_index_row(tensor, layer_index=layer_index)
 
     def copy(self, destination: object, source: object) -> None:
         """Intentionally suppress the only tensor mutation in the data plane."""

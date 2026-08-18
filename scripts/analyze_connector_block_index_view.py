@@ -29,6 +29,9 @@ PINNED_PREPARED_COPY_OPERATIONS = 59_904
 PINNED_SUBMITTED_COPY_OPERATIONS = 48
 PINNED_LAYER_COUNT = 24
 PINNED_KV_COMPONENTS = 2
+OWNER_COUNTER_KEY = "store_preflight_block_index_owner_constructions"
+ROW_VIEW_COUNTER_KEY = "store_preflight_block_index_row_views"
+STAGING_VIEW_COUNTER_KEY = "store_preflight_staging_view_constructions"
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -132,6 +135,16 @@ def _histogram_delta(before: str, after: str, key: str) -> dict[str, int | float
     }
 
 
+def _counter_delta(before: str, after: str, key: str) -> int:
+    metric = f"vllm:cacheblend_{key}"
+    before_total = _metric_total(before, metric, allow_missing=True)
+    after_total = _metric_total(after, metric)
+    delta = after_total - before_total
+    if delta < 0 or not delta.is_integer():
+        raise ValueError(f"connector counter moved backwards: {key}")
+    return int(delta)
+
+
 def _validate_identity(
     *,
     verdict: dict[str, Any],
@@ -210,8 +223,8 @@ def _recorded_enclosing(preflight: dict[str, Any]) -> dict[str, int | float]:
 def _next_action(dominant: str) -> str:
     actions = {
         "store_preflight_block_index_construction_latency_seconds": (
-            "Replace 24 per-layer CUDA index-tensor constructions with one validated "
-            "batched index owner, then rerun the fixed transcript."
+            "Inspect the remaining single CUDA index-owner construction without "
+            "weakening exact row-view validation."
         ),
         "store_preflight_block_index_validation_latency_seconds": (
             "Separate invariant index metadata from per-layer validation before "
@@ -262,6 +275,27 @@ def analyze(run_dir: Path) -> dict[str, object]:
     if observation_count <= 0:
         raise ValueError("block-index/view envelope has no observations")
 
+    mechanics = {
+        "observed_block_index_owner_constructions": _counter_delta(
+            before, after, OWNER_COUNTER_KEY
+        ),
+        "observed_block_index_row_views": _counter_delta(
+            before, after, ROW_VIEW_COUNTER_KEY
+        ),
+        "observed_staging_view_constructions": _counter_delta(
+            before, after, STAGING_VIEW_COUNTER_KEY
+        ),
+    }
+    expected_mechanics = {
+        "observed_block_index_owner_constructions": observation_count,
+        "observed_block_index_row_views": observation_count * PINNED_LAYER_COUNT,
+        "observed_staging_view_constructions": (
+            observation_count * PINNED_LAYER_COUNT * PINNED_KV_COMPONENTS
+        ),
+    }
+    if mechanics != expected_mechanics:
+        raise ValueError("block-index/view mechanics do not match batched owner path")
+
     subphases = {key: _histogram_delta(before, after, key) for key in SUBPHASE_KEYS}
     if any(int(value["count"]) != observation_count for value in subphases.values()):
         raise ValueError("block-index/view observation counts do not reconcile")
@@ -303,9 +337,20 @@ def analyze(run_dir: Path) -> dict[str, object]:
         },
         "operation_geometry": {
             **geometry,
-            "expected_index_tensor_constructions_per_store_batch": PINNED_LAYER_COUNT,
+            "expected_block_index_owner_constructions_per_store_batch": 1,
+            "expected_block_index_row_views_per_store_batch": PINNED_LAYER_COUNT,
             "expected_staging_view_constructions_per_store_batch": (
                 PINNED_LAYER_COUNT * PINNED_KV_COMPONENTS
+            ),
+            "observed_block_index_owner_constructions_per_store_batch": (
+                mechanics["observed_block_index_owner_constructions"]
+                // observation_count
+            ),
+            "observed_block_index_row_views_per_store_batch": (
+                mechanics["observed_block_index_row_views"] // observation_count
+            ),
+            "observed_staging_view_constructions_per_store_batch": (
+                mechanics["observed_staging_view_constructions"] // observation_count
             ),
         },
         "block_index_view": {

@@ -148,13 +148,16 @@ class TensorOps(Protocol):
     def reshape(self, tensor: object, shape: tuple[int, ...]) -> object:
         """Return a view with ``shape`` without mutating its storage."""
 
-    def block_indices(
+    def block_index_matrix(
         self,
         tensor: object,
         *,
-        block_ids: tuple[int, ...],
+        block_ids_by_layer: tuple[tuple[int, ...], ...],
     ) -> object:
-        """Return validated-device int64 indices for paged-cache blocks."""
+        """Return one device int64 ``[layers, blocks]`` index owner."""
+
+    def block_index_row(self, tensor: object, *, layer_index: int) -> object:
+        """Return one read-only ``[blocks]`` row view from an index owner."""
 
     def copy(self, destination: object, source: object) -> None:
         """Copy equal-shaped rows into ``destination``."""
@@ -287,6 +290,9 @@ class _PreparedBlockGather:
     index_validation_latency_seconds: float = 0.0
     staging_view_construction_latency_seconds: float = 0.0
     staging_view_validation_latency_seconds: float = 0.0
+    block_index_owner_constructions: int = 0
+    block_index_row_views: int = 0
+    staging_view_constructions: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -494,6 +500,11 @@ class GptOssDataPlane:
             synchronize_latency_seconds=(execution_timing.synchronize_latency_seconds),
             prepared_copy_operations=batch.prepared_copy_operations,
             submitted_copy_operations=batch.submitted_copy_operations,
+            block_index_owner_constructions=(
+                prepare_timing.block_index_owner_constructions
+            ),
+            block_index_row_views=prepare_timing.block_index_row_views,
+            staging_view_constructions=prepare_timing.staging_view_constructions,
             input_materialization_latency_seconds=(
                 prepare_timing.input_materialization_latency_seconds
             ),
@@ -667,6 +678,11 @@ class GptOssDataPlane:
             prepare_latency_seconds=prepare_latency_seconds,
             prepared_copy_operations=logical_copy_operations,
             submitted_copy_operations=len(prepared),
+            block_index_owner_constructions=(
+                block_preparation.block_index_owner_constructions
+            ),
+            block_index_row_views=block_preparation.block_index_row_views,
+            staging_view_constructions=(block_preparation.staging_view_constructions),
             input_materialization_latency_seconds=(
                 input_materialization_latency_seconds
             ),
@@ -927,27 +943,68 @@ class GptOssDataPlane:
         index_validation_latency_seconds = 0.0
         staging_view_construction_latency_seconds = 0.0
         staging_view_validation_latency_seconds = 0.0
+        block_counts = {len(layer_plan.block_ids) for layer_plan in layer_plans}
+        if len(block_counts) != 1:
+            return _PreparedBlockGather(
+                None,
+                plan_latency_seconds,
+                perf_counter() - index_view_started_at,
+            )
+        block_count = block_counts.pop()
+        block_ids_by_layer = tuple(layer_plan.block_ids for layer_plan in layer_plans)
+        index_construction_started_at = perf_counter()
+        try:
+            block_index_owner = self._ops.block_index_matrix(
+                layer_plans[0].paged,
+                block_ids_by_layer=block_ids_by_layer,
+            )
+        except Exception as exc:
+            raise DataPlaneError(
+                DataPlaneErrorCode.TENSOR_VIEW_FAILED,
+                "failed to prepare batched paged block indices",
+            ) from exc
+        index_construction_latency_seconds = (
+            perf_counter() - index_construction_started_at
+        )
+        index_validation_started_at = perf_counter()
+        if self._safe_shape(block_index_owner) != (
+            GPT_OSS_NUM_LAYERS,
+            block_count,
+        ):
+            _fail(
+                DataPlaneErrorCode.TENSOR_VIEW_FAILED,
+                "batched paged block index shape mismatch",
+            )
+        if self._safe_dtype(block_index_owner) != "torch.int64":
+            _fail(
+                DataPlaneErrorCode.TENSOR_VIEW_FAILED,
+                "batched paged block indices must use torch.int64",
+            )
+        if self._safe_device(block_index_owner) != self._safe_device(
+            layer_plans[0].paged
+        ):
+            _fail(
+                DataPlaneErrorCode.DEVICE_MISMATCH,
+                "batched paged block indices are on a different device",
+            )
+        index_validation_latency_seconds += perf_counter() - index_validation_started_at
         operations: list[_PreparedBlockCopy] = []
         for layer_plan in layer_plans:
             layer_index = layer_plan.layer_index
             paged = layer_plan.paged
             block_size = layer_plan.block_size
             block_ids = layer_plan.block_ids
-            index_construction_started_at = perf_counter()
+            index_validation_started_at = perf_counter()
             try:
-                block_indices = self._ops.block_indices(
-                    paged,
-                    block_ids=block_ids,
+                block_indices = self._ops.block_index_row(
+                    block_index_owner,
+                    layer_index=layer_index,
                 )
             except Exception as exc:
                 raise DataPlaneError(
                     DataPlaneErrorCode.TENSOR_VIEW_FAILED,
-                    "failed to prepare paged block indices",
+                    "failed to prepare paged block index row",
                 ) from exc
-            index_construction_latency_seconds += (
-                perf_counter() - index_construction_started_at
-            )
-            index_validation_started_at = perf_counter()
             if self._safe_shape(block_indices) != (len(block_ids),):
                 _fail(
                     DataPlaneErrorCode.TENSOR_VIEW_FAILED,
@@ -1004,13 +1061,20 @@ class GptOssDataPlane:
                     )
                 )
         return _PreparedBlockGather(
-            tuple(operations),
-            plan_latency_seconds,
-            perf_counter() - index_view_started_at,
-            index_construction_latency_seconds,
-            index_validation_latency_seconds,
-            staging_view_construction_latency_seconds,
-            staging_view_validation_latency_seconds,
+            operations=tuple(operations),
+            plan_latency_seconds=plan_latency_seconds,
+            index_view_latency_seconds=perf_counter() - index_view_started_at,
+            index_construction_latency_seconds=(index_construction_latency_seconds),
+            index_validation_latency_seconds=index_validation_latency_seconds,
+            staging_view_construction_latency_seconds=(
+                staging_view_construction_latency_seconds
+            ),
+            staging_view_validation_latency_seconds=(
+                staging_view_validation_latency_seconds
+            ),
+            block_index_owner_constructions=1,
+            block_index_row_views=len(layer_plans),
+            staging_view_constructions=len(layer_plans) * KV_COMPONENTS,
         )
 
     def _prepare_scatter_span(
@@ -1303,18 +1367,26 @@ class TorchTensorOps:
     def reshape(self, tensor: object, shape: tuple[int, ...]) -> object:
         return self._require_tensor(tensor).reshape(shape)
 
-    def block_indices(
+    def block_index_matrix(
         self,
         tensor: object,
         *,
-        block_ids: tuple[int, ...],
+        block_ids_by_layer: tuple[tuple[int, ...], ...],
     ) -> object:
         value = self._require_tensor(tensor)
         tensor_factory = getattr(self._torch, "tensor", None)
         int64 = getattr(self._torch, "int64", None)
         if not callable(tensor_factory) or int64 is None:
             raise RuntimeError("Torch index construction is unavailable")
-        return tensor_factory(block_ids, dtype=int64, device=value.device)
+        return tensor_factory(
+            block_ids_by_layer,
+            dtype=int64,
+            device=value.device,
+        )
+
+    def block_index_row(self, tensor: object, *, layer_index: int) -> object:
+        value = self._require_tensor(tensor)
+        return value[layer_index, :]
 
     def copy(self, destination: object, source: object) -> None:
         destination_tensor = self._require_tensor(destination)
