@@ -454,6 +454,7 @@ class GptOssCacheBlendConnector(
         self._worker_resources: WorkerRuntimeResources | None = None
         self._active_worker_transfer: _ActiveWorkerTransfer | None = None
         self._active_forward_plan_token: object | None = None
+        self._prefix_cached_tokens: dict[str, int] = {}
         self._decode_step_count: int = 0
         self._prefill_step_count: int = 0
         self._decode_diag: bool = os.environ.get("CACHEBLEND_DECODE_DIAG") == "1"
@@ -1060,6 +1061,8 @@ class GptOssCacheBlendConnector(
             raise RuntimeError(
                 "The 100%-recompute milestone must report zero external tokens."
             )
+        if self._allow_prefix_caching and num_external_tokens > 0:
+            self._prefix_cached_tokens[request.request_id] = num_external_tokens
         adapted_blocks = adapt_kv_cache_blocks(
             blocks,
             self._adapted_kv_cache_config,
@@ -1127,6 +1130,18 @@ class GptOssCacheBlendConnector(
                     <= self._transfer_config.staging_token_capacity
                 )
                 if not complete_step or not within_staging:
+                    continue
+                prefix_cached = self._prefix_cached_tokens.get(
+                    request_id, 0
+                )
+                if (
+                    prefix_cached > 0
+                    and lookup.verified_candidates
+                    and all(
+                        candidate.candidate.target_range.end <= prefix_cached
+                        for candidate in lookup.verified_candidates
+                    )
+                ):
                     continue
                 transfers.append(
                     SchedulerTransferMetadata(
@@ -1218,6 +1233,7 @@ class GptOssCacheBlendConnector(
             self._scheduler_resources.runtime.discard(request_id)
         self._scheduler_lookup_metadata.pop(request_id, None)
         self._scheduler_lookup_observations.pop(request_id, None)
+        self._prefix_cached_tokens.pop(request_id, None)
         # The pinned scheduler can invoke this completion hook before it
         # applies the worker's validation receipt (see
         # ``Scheduler._update_from_kv_xfer_finished``).  Discarding here would
@@ -1271,6 +1287,7 @@ class GptOssCacheBlendConnector(
         self._finished_request_ids.clear()
         self._scheduler_lookup_metadata.clear()
         self._scheduler_lookup_observations.clear()
+        self._prefix_cached_tokens.clear()
         self._active_worker_transfer = None
         self._registered_kv_caches.clear()
         if close_error is not None:
