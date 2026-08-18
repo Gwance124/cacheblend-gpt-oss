@@ -5,6 +5,10 @@
 The tri-state scheduler input is finalized during ``VllmConfig`` validation:
 https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/config/vllm.py#L1190-L1258
 
+``SchedulerConfig.max_model_len`` is an initialization-only value retained by
+``ModelConfig``, not a runtime scheduler attribute:
+https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/config/scheduler.py#L29-L34
+
 The diagnostic constructs the exact pinned ``EngineArgs`` and resolves them
 through its pinned engine-config builder:
 https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/engine/arg_utils.py#L373-L604
@@ -49,7 +53,6 @@ def resolved_snapshot(config: Any) -> dict[str, object]:
             ),
             "max_num_batched_tokens": scheduler.max_num_batched_tokens,
             "max_num_seqs": scheduler.max_num_seqs,
-            "max_model_len": scheduler.max_model_len,
             "enable_chunked_prefill": scheduler.enable_chunked_prefill,
             "long_prefill_token_threshold": (scheduler.long_prefill_token_threshold),
             "async_scheduling": scheduler.async_scheduling,

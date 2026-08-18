@@ -189,7 +189,6 @@ def test_resolution_snapshot_captures_final_scheduler_value() -> None:
             disable_hybrid_kv_cache_manager=False,
             max_num_batched_tokens=131_072,
             max_num_seqs=1,
-            max_model_len=131_072,
             enable_chunked_prefill=True,
             long_prefill_token_threshold=0,
             async_scheduling=False,
@@ -217,6 +216,8 @@ def test_resolution_snapshot_captures_final_scheduler_value() -> None:
     snapshot = _resolution["resolved_snapshot"](config)
 
     assert snapshot["scheduler"]["disable_hybrid_kv_cache_manager"] is False
+    assert "max_model_len" not in snapshot["scheduler"]
+    assert snapshot["model"]["max_model_len"] == 131_072
     assert snapshot["kv_transfer_config_present"] is False
 
 
