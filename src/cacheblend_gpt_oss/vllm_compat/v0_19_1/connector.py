@@ -26,7 +26,6 @@ The API references below are pinned to vLLM 0.19.1 commit
 
 from __future__ import annotations
 
-import logging
 import os
 from dataclasses import dataclass
 from time import perf_counter
@@ -128,8 +127,6 @@ if TYPE_CHECKING:
     )
     from vllm.v1.outputs import KVConnectorOutput  # type: ignore[import-not-found]
     from vllm.v1.request import Request  # type: ignore[import-not-found]
-
-logger = logging.getLogger(__name__)
 
 _SUPPORTED_VLLM_VERSION = "0.19.1"
 _METADATA_SCHEMA_VERSION = METADATA_SCHEMA_VERSION
@@ -1011,20 +1008,17 @@ class GptOssCacheBlendConnector(
             )
             self._scheduler_lookup_metadata[request_id] = lookup
             if self._transfer_diag:
-                logger.info(
-                    "CACHEBLEND_TRANSFER_DIAG lookup"
-                    " request=%s"
-                    " prompt_tokens=%d"
-                    " prefix_cached_tokens=%d"
-                    " lookup_status=%s"
-                    " should_transfer=%s"
-                    " verified_candidates=%d",
-                    request_id,
-                    len(prompt_token_ids),
-                    num_computed_tokens,
-                    lookup.status.value,
-                    lookup.should_transfer,
-                    len(lookup.verified_candidates),
+                import sys
+                print(
+                    f"CACHEBLEND_TRANSFER_DIAG lookup"
+                    f" request={request_id}"
+                    f" prompt_tokens={len(prompt_token_ids)}"
+                    f" prefix_cached_tokens={num_computed_tokens}"
+                    f" lookup_status={lookup.status.value}"
+                    f" should_transfer={lookup.should_transfer}"
+                    f" verified_candidates={len(lookup.verified_candidates)}",
+                    file=sys.stderr,
+                    flush=True,
                 )
             counters = lookup.lookup_plan.counters
             self._scheduler_lookup_observations[request_id] = (
@@ -1078,11 +1072,13 @@ class GptOssCacheBlendConnector(
     ) -> None:
         self._require_role(KVConnectorRole.SCHEDULER, "update_state_after_alloc")
         if self._transfer_diag:
-            logger.info(
-                "CACHEBLEND_TRANSFER_DIAG alloc"
-                " request=%s num_external_tokens=%d",
-                request.request_id,
-                num_external_tokens,
+            import sys
+            print(
+                f"CACHEBLEND_TRANSFER_DIAG alloc"
+                f" request={request.request_id}"
+                f" num_external_tokens={num_external_tokens}",
+                file=sys.stderr,
+                flush=True,
             )
         if num_external_tokens != 0 and not self._allow_prefix_caching:
             raise RuntimeError(
@@ -1157,22 +1153,18 @@ class GptOssCacheBlendConnector(
                     <= self._transfer_config.staging_token_capacity
                 )
                 if self._transfer_diag:
-                    logger.info(
-                        "CACHEBLEND_TRANSFER_DIAG build_meta"
-                        " request=%s"
-                        " scheduled_tokens=%d"
-                        " prompt_tokens=%d"
-                        " complete_step=%s"
-                        " within_staging=%s"
-                        " should_transfer=%s"
-                        " verified_candidates=%d",
-                        request_id,
-                        scheduled_tokens,
-                        len(lookup.prompt_token_ids),
-                        complete_step,
-                        within_staging,
-                        lookup.should_transfer,
-                        len(lookup.verified_candidates),
+                    import sys
+                    print(
+                        f"CACHEBLEND_TRANSFER_DIAG build_meta"
+                        f" request={request_id}"
+                        f" scheduled_tokens={scheduled_tokens}"
+                        f" prompt_tokens={len(lookup.prompt_token_ids)}"
+                        f" complete_step={complete_step}"
+                        f" within_staging={within_staging}"
+                        f" should_transfer={lookup.should_transfer}"
+                        f" verified_candidates={len(lookup.verified_candidates)}",
+                        file=sys.stderr,
+                        flush=True,
                     )
                 if not complete_step or not within_staging:
                     continue
