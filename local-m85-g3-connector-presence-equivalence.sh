@@ -291,7 +291,7 @@ main() {
     --adapter-revision "$CACHEBLEND_PLUGIN_COMMIT" \
     --transfer-evidence-path "$CACHEBLEND_TRANSFER_EVIDENCE" \
     --staging-token-capacity 131072 \
-    --request-timeout-seconds 1800 \
+    --request-timeout-seconds 300 \
     --allow-prefix-caching \
     --disable-kv-scatter \
     > "$CACHEBLEND_TRANSFER_CONFIG"

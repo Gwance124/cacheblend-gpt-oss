@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import json
+import re
 import runpy
 from pathlib import Path
 
 import pytest
+
+from cacheblend_gpt_oss.vllm_compat.v0_19_1.transfer_config import (
+    MAX_REQUEST_TIMEOUT_SECONDS,
+)
 
 _capture = runpy.run_path(
     "scripts/capture_hybrid_flag_responses.py",
@@ -134,6 +139,16 @@ def test_long_context_filler_is_bounded_and_deterministic() -> None:
         build(" gamma", 20_001)
     with pytest.raises(ValueError, match="fixed workload"):
         build(" evidence", 3)
+
+
+def test_gpu_runner_uses_valid_connector_request_timeout() -> None:
+    runner = Path("local-m85-g3-connector-presence-equivalence.sh").read_text(
+        encoding="utf-8"
+    )
+    matches = re.findall(r"--request-timeout-seconds ([0-9.]+)", runner)
+
+    assert matches == [str(int(MAX_REQUEST_TIMEOUT_SECONDS))]
+    assert "--timeout-seconds 1800" in runner
 
 
 def test_connector_artifact_reader_validates_inert_counters(tmp_path: Path) -> None:
