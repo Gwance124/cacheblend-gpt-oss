@@ -35,7 +35,7 @@ tests use an injected ``TensorOps`` implementation and ordinary Python fakes.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from importlib import import_module
 from math import isfinite
@@ -85,6 +85,7 @@ class DataPlaneErrorCode(str, Enum):
     POSITION_CORRECTION_FAILED = "position_correction_failed"
     INVALID_CORRECTED_KEY = "invalid_corrected_key"
     TENSOR_VIEW_FAILED = "tensor_view_failed"
+    INVALID_PREPARED_BATCH = "invalid_prepared_batch"
     MUTATION_FAILED = "mutation_failed"
     TORCH_DEPENDENCY_MISSING = "torch_dependency_missing"
     TORCH_VERSION_MISMATCH = "torch_version_mismatch"
@@ -239,12 +240,47 @@ class _PreparedCopy:
     source: object
 
 
+@dataclass(frozen=True, slots=True)
+class _PreparedGatherPayload:
+    operations: tuple[_PreparedCopy, ...]
+    synchronization_tensor: object
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedGatherBatch:
+    """One validated, read-only gather batch awaiting a single execution."""
+
+    receipts: tuple[DataPlaneReceipt, ...]
+    prepared_copy_operations: int
+    _payload: object = field(repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "receipts", tuple(self.receipts))
+        if (
+            not self.receipts
+            or any(
+                not isinstance(receipt, DataPlaneReceipt)
+                or receipt.direction is not TransferDirection.STORE_TO_STAGING
+                for receipt in self.receipts
+            )
+            or isinstance(self.prepared_copy_operations, bool)
+            or not isinstance(self.prepared_copy_operations, int)
+            or self.prepared_copy_operations <= 0
+            or self._payload is None
+        ):
+            _fail(
+                DataPlaneErrorCode.INVALID_PREPARED_BATCH,
+                "invalid prepared gather batch",
+            )
+
+
 class GptOssDataPlane:
     """Synchronous gather/scatter implementation for the single pinned target."""
 
     def __init__(self, tensor_ops: TensorOps) -> None:
         self._ops = tensor_ops
         self._last_gather_timing = DataPlanePhaseTiming()
+        self._prepared_gather_batch: PreparedGatherBatch | None = None
 
     @property
     def last_gather_timing(self) -> DataPlanePhaseTiming:
@@ -389,7 +425,43 @@ class GptOssDataPlane:
         deferred until the document is loaded at a new position.
         """
 
+        batch = self.prepare_gather_precomputed_kv_batch(
+            paged_caches=paged_caches,
+            staging=staging,
+            chunk_layer_spans=chunk_layer_spans,
+            document_target_ranges=document_target_ranges,
+            store_buffer_offsets=store_buffer_offsets,
+        )
+        prepare_timing = self._last_gather_timing
+        receipts = self.execute_prepared_gather_batch(batch)
+        execution_timing = self._last_gather_timing
+        self._last_gather_timing = DataPlanePhaseTiming(
+            prepare_latency_seconds=prepare_timing.prepare_latency_seconds,
+            enqueue_latency_seconds=execution_timing.enqueue_latency_seconds,
+            synchronize_latency_seconds=(
+                execution_timing.synchronize_latency_seconds
+            ),
+            prepared_copy_operations=batch.prepared_copy_operations,
+        )
+        return receipts
+
+    def prepare_gather_precomputed_kv_batch(
+        self,
+        *,
+        paged_caches: Mapping[str, object],
+        staging: object,
+        chunk_layer_spans: Sequence[Sequence[LayerTokenScatterSpan]],
+        document_target_ranges: Sequence[TokenRange],
+        store_buffer_offsets: Sequence[int],
+    ) -> PreparedGatherBatch:
+        """Validate and retain all gather views without mutating either tensor."""
+
         self._last_gather_timing = DataPlanePhaseTiming()
+        if self._prepared_gather_batch is not None:
+            _fail(
+                DataPlaneErrorCode.INVALID_PREPARED_BATCH,
+                "a prepared gather batch is already pending",
+            )
         prepare_started_at = perf_counter()
         groups = tuple(tuple(spans) for spans in chunk_layer_spans)
         ranges = tuple(document_target_ranges)
@@ -446,16 +518,63 @@ class GptOssDataPlane:
             )
 
         prepare_latency_seconds = perf_counter() - prepare_started_at
-        enqueue_latency_seconds, synchronize_latency_seconds = self._apply(
-            prepared, staging
+        payload = _PreparedGatherPayload(tuple(prepared), staging)
+        batch = PreparedGatherBatch(
+            receipts=tuple(receipts),
+            prepared_copy_operations=len(prepared),
+            _payload=payload,
         )
+        self._prepared_gather_batch = batch
         self._last_gather_timing = DataPlanePhaseTiming(
             prepare_latency_seconds=prepare_latency_seconds,
-            enqueue_latency_seconds=enqueue_latency_seconds,
-            synchronize_latency_seconds=synchronize_latency_seconds,
             prepared_copy_operations=len(prepared),
         )
-        return tuple(receipts)
+        return batch
+
+    def execute_prepared_gather_batch(
+        self, batch: PreparedGatherBatch
+    ) -> tuple[DataPlaneReceipt, ...]:
+        """Execute one exact prepared batch once, then release all tensor views."""
+
+        if batch is not self._prepared_gather_batch or not isinstance(
+            batch, PreparedGatherBatch
+        ):
+            _fail(
+                DataPlaneErrorCode.INVALID_PREPARED_BATCH,
+                "prepared gather batch ownership mismatch",
+            )
+        payload = batch._payload
+        if (
+            not isinstance(payload, _PreparedGatherPayload)
+            or len(payload.operations) != batch.prepared_copy_operations
+        ):
+            self._prepared_gather_batch = None
+            _fail(
+                DataPlaneErrorCode.INVALID_PREPARED_BATCH,
+                "prepared gather batch payload mismatch",
+            )
+        self._prepared_gather_batch = None
+        enqueue_latency_seconds, synchronize_latency_seconds = self._apply(
+            payload.operations, payload.synchronization_tensor
+        )
+        self._last_gather_timing = DataPlanePhaseTiming(
+            enqueue_latency_seconds=enqueue_latency_seconds,
+            synchronize_latency_seconds=synchronize_latency_seconds,
+            prepared_copy_operations=batch.prepared_copy_operations,
+        )
+        return batch.receipts
+
+    def discard_prepared_gather_batch(self, batch: PreparedGatherBatch) -> None:
+        """Release one pending batch after a later preflight boundary fails."""
+
+        if batch is not self._prepared_gather_batch or not isinstance(
+            batch, PreparedGatherBatch
+        ):
+            _fail(
+                DataPlaneErrorCode.INVALID_PREPARED_BATCH,
+                "prepared gather discard ownership mismatch",
+            )
+        self._prepared_gather_batch = None
 
     def _preflight_common(
         self,
@@ -1011,6 +1130,7 @@ __all__ = [
     "DataPlaneReceipt",
     "GptOssDataPlane",
     "KeyPositionCorrector",
+    "PreparedGatherBatch",
     "TensorOps",
     "TorchTensorOps",
     "TransferDirection",

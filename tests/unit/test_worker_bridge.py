@@ -53,8 +53,12 @@ from cacheblend_gpt_oss.vllm_compat.v0_19_1.adapters import AdaptedKvCacheBlocks
 from cacheblend_gpt_oss.vllm_compat.v0_19_1.data_plane import (
     DataPlaneReceipt,
     KeyPositionCorrector,
+    PreparedGatherBatch,
     TensorOps,
     TransferDirection,
+)
+from cacheblend_gpt_oss.vllm_compat.v0_19_1.stage_timing import (
+    DataPlanePhaseTiming,
 )
 from cacheblend_gpt_oss.vllm_compat.v0_19_1.staging import (
     StagingBackend,
@@ -533,6 +537,8 @@ class _FakeDataPlane:
         self.position_correction_latency_seconds = (
             0.25 if self.label == "active" else 0.0
         )
+        self.last_gather_timing = DataPlanePhaseTiming()
+        self.prepared_gather_batch: PreparedGatherBatch | None = None
 
     @staticmethod
     def _ranges(
@@ -677,21 +683,98 @@ class _FakeDataPlane:
         document_target_ranges: Sequence[TokenRange],
         store_buffer_offsets: Sequence[int],
     ) -> tuple[DataPlaneReceipt, ...]:
-        return tuple(
-            self.gather_precomputed_kv(
-                paged_caches=paged_caches,
-                staging=staging,
-                layer_spans=layer_spans,
-                document_target_range=document_target_range,
-                store_buffer_offset=store_buffer_offset,
-            )
-            for layer_spans, document_target_range, store_buffer_offset in zip(
-                chunk_layer_spans,
-                document_target_ranges,
-                store_buffer_offsets,
-                strict=True,
-            )
+        batch = self.prepare_gather_precomputed_kv_batch(
+            paged_caches=paged_caches,
+            staging=staging,
+            chunk_layer_spans=chunk_layer_spans,
+            document_target_ranges=document_target_ranges,
+            store_buffer_offsets=store_buffer_offsets,
         )
+        prepare_timing = self.last_gather_timing
+        receipts = self.execute_prepared_gather_batch(batch)
+        self.last_gather_timing = DataPlanePhaseTiming(
+            prepare_latency_seconds=prepare_timing.prepare_latency_seconds,
+            enqueue_latency_seconds=self.last_gather_timing.enqueue_latency_seconds,
+            synchronize_latency_seconds=(
+                self.last_gather_timing.synchronize_latency_seconds
+            ),
+            prepared_copy_operations=batch.prepared_copy_operations,
+        )
+        return receipts
+
+    def prepare_gather_precomputed_kv_batch(
+        self,
+        *,
+        paged_caches: Mapping[str, object],
+        staging: object,
+        chunk_layer_spans: Sequence[Sequence[LayerTokenScatterSpan]],
+        document_target_ranges: Sequence[TokenRange],
+        store_buffer_offsets: Sequence[int],
+    ) -> PreparedGatherBatch:
+        assert self.prepared_gather_batch is None
+        receipts: list[DataPlaneReceipt] = []
+        execution_offsets: list[int] = []
+        operations = 0
+        for layer_spans, document_target_range, store_buffer_offset in zip(
+            chunk_layer_spans,
+            document_target_ranges,
+            store_buffer_offsets,
+            strict=True,
+        ):
+            _source, target, logical = self._ranges(layer_spans)
+            assert document_target_range == TokenRange(target[0], target[-1] + 1)
+            self.trace.append(f"{self.label}.prepare_gather:{store_buffer_offset}")
+            self.ops.staging_rows(
+                staging,
+                component=0,
+                layer_index=0,
+                token_start=store_buffer_offset,
+                token_count=logical,
+            )
+            rows = logical * 24
+            receipts.append(
+                DataPlaneReceipt(
+                    TransferDirection.STORE_TO_STAGING,
+                    logical,
+                    rows,
+                    len(layer_spans),
+                    0,
+                    rows,
+                    rows,
+                )
+            )
+            execution_offsets.append(store_buffer_offset)
+            operations += len(layer_spans) * 2
+        batch = PreparedGatherBatch(
+            tuple(receipts), operations, tuple(execution_offsets)
+        )
+        self.prepared_gather_batch = batch
+        self.last_gather_timing = DataPlanePhaseTiming(
+            prepare_latency_seconds=0.1,
+            prepared_copy_operations=operations,
+        )
+        return batch
+
+    def execute_prepared_gather_batch(
+        self, batch: PreparedGatherBatch
+    ) -> tuple[DataPlaneReceipt, ...]:
+        assert batch is self.prepared_gather_batch
+        self.prepared_gather_batch = None
+        assert isinstance(batch._payload, tuple)
+        for store_buffer_offset in batch._payload:
+            self.trace.append(f"{self.label}.execute_gather:{store_buffer_offset}")
+            self.ops.copy("staging", "paged")
+            self.ops.synchronize("staging")
+        self.last_gather_timing = DataPlanePhaseTiming(
+            enqueue_latency_seconds=0.2,
+            synchronize_latency_seconds=0.3,
+            prepared_copy_operations=batch.prepared_copy_operations,
+        )
+        return batch.receipts
+
+    def discard_prepared_gather_batch(self, batch: PreparedGatherBatch) -> None:
+        assert batch is self.prepared_gather_batch
+        self.prepared_gather_batch = None
 
 
 class _DataPlaneFactory:
@@ -848,9 +931,24 @@ def test_same_staging_region_is_reused_sequentially_for_load_then_store() -> Non
     fixture.bridge.preflight_store(store)
 
     assert fixture.trace.count("tensor.copy") == 1
-    assert "preflight.gather:0" in fixture.trace
-    assert "preflight.gather:256" in fixture.trace
+    assert "active.prepare_gather:0" in fixture.trace
+    assert "active.prepare_gather:256" in fixture.trace
+    assert not any(
+        entry.startswith("preflight.prepare_gather") for entry in fixture.trace
+    )
+    assert (
+        fixture.bridge.store_preflight_data_plane_timing.prepared_copy_operations
+        == 1_536
+    )
+    assert fixture.bridge.store_preflight_data_plane_timing.enqueue_latency_seconds == 0
     fixture.bridge.gather_recomputed(store)
+    assert "active.execute_gather:0" in fixture.trace
+    assert "active.execute_gather:256" in fixture.trace
+    assert fixture.bridge.store_gather_data_plane_timing.prepare_latency_seconds == 0
+    assert (
+        fixture.bridge.store_gather_data_plane_timing.prepared_copy_operations
+        == 1_536
+    )
     receipt = fixture.bridge.store_precomputed(store)
     inserted = fixture.bridge.publish_sidecar_records_atomically(
         receipt.sidecar_records
@@ -893,6 +991,25 @@ def test_call_order_and_capacity_fail_before_worker_mutation() -> None:
         lambda: offset_fixture.bridge.preflight_retrieve(offset_load),
     )
     assert "tensor.copy" not in offset_fixture.trace
+
+
+def test_failed_store_preflight_discards_the_unexecuted_gather_batch() -> None:
+    fixture = _fixture()
+    _load, store = _plans(fixture.transport.config)
+    fixture.bridge.open()
+    fixture.trace.clear()
+    fixture.bridge.preflight_gather(store)
+
+    _assert_error(
+        WorkerBridgeErrorCode.PLAN_ORDER_MISMATCH,
+        lambda: fixture.bridge.preflight_store(cast(WorkerStorePlan, object())),
+    )
+
+    assert "tensor.copy" not in fixture.trace
+    # A second preparation succeeds only if both the bridge and concrete data
+    # plane released the first batch after the later storage boundary failed.
+    fixture.bridge.preflight_gather(store)
+    assert fixture.trace.count("active.prepare_gather:0") == 2
 
 
 def test_store_receipt_records_are_independently_reverified_before_return() -> None:
@@ -940,13 +1057,13 @@ def test_delta_store_plan_uses_relative_staging_offsets_within_a_small_buffer() 
 
     assert store.expected_tokens == 512
     assert store.source_range == TokenRange(1280, 1792)
-    assert "preflight.gather:0" in fixture.trace
-    assert "preflight.gather:256" in fixture.trace
-    assert "active.gather:0" in fixture.trace
-    assert "active.gather:256" in fixture.trace
+    assert "active.prepare_gather:0" in fixture.trace
+    assert "active.prepare_gather:256" in fixture.trace
+    assert "active.execute_gather:0" in fixture.trace
+    assert "active.execute_gather:256" in fixture.trace
     assert not any(
-        entry.startswith("preflight.gather:1280")
-        or entry.startswith("active.gather:1280")
+        entry.startswith("active.prepare_gather:1280")
+        or entry.startswith("active.execute_gather:1280")
         for entry in fixture.trace
     )
     assert "lease:store:0:512" in fixture.trace

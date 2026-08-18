@@ -354,6 +354,37 @@ to equal 59,904 for this transcript. The same G3 runner writes
 `connector-store-data-plane-breakdown.json`; the analyzer fails closed if the
 phase counts, enclosing timers, or pinned operation geometry do not reconcile.
 
+The phase gate ran as
+`solab-g3-m8.5-connector-presence-equivalence-20260818-retry20260818-105421`
+and reconciled both operation counters at exactly 59,904. Read-only preflight
+preparation took 6.489146 seconds and active gather preparation took 6.204637
+seconds. Their 12.693783-second sum is 100.6401% of the independently measured
+12.613048-second cold-turn excess (16.797132 seconds versus a 4.184083-second
+control mean). By contrast, preflight plus gather enqueue took 1.033428 seconds,
+both synchronization phases together took only 0.000977 seconds, and the
+storage-only preflight took 0.000232 seconds. The two connector-free controls
+remained timing-stable with a 1.0157 total spread ratio.
+
+This kills the outstanding-CUDA-work hypothesis: neither synchronization
+boundary accounts for the slowdown. It also kills LMCache, sidecar, and copy
+execution as primary explanations. Constructing and validating 59,904 pairs of
+PyTorch paged/staging views twice accounts for the measured cold penalty within
+0.64%. Output equivalence remains independently inconclusive because the two
+connector-free controls diverged only on their third sampled output despite an
+identical request digest and token counts.
+
+The next intervention preserves every validation and copy operation but makes
+the prepared gather batch one-shot state. Post-forward preflight constructs all
+views once without mutation; storage preflight runs against that retained
+batch; active gather can execute that exact object once and then releases all
+tensor references. Wrong-owner, repeated-execution, stale, and discard paths
+fail closed. The cross-run
+`connector-prepared-gather-reuse.json` gate binds this `105421` baseline by
+SHA-256 and requires zero second-preparation time, zero preflight enqueue/sync,
+unchanged 59,904-operation/981,467,136-byte geometry, the exact cold connector
+signature, and recovery of at least 80% of the prior 6.204637-second duplicate
+gather-preparation cost.
+
 ### Public out-of-tree extension points beyond the connector
 
 - [`vllm.general_plugins`](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/plugins/__init__.py#L12-L82)

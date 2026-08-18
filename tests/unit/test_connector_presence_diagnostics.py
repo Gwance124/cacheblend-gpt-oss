@@ -157,6 +157,10 @@ def test_gpu_runner_uses_valid_connector_request_timeout() -> None:
     assert "scripts/analyze_connector_store_data_plane.py" in runner
     assert "connector-store-data-plane-breakdown.json" in runner
     assert "STORE_DATA_PLANE_STATUS" in runner
+    assert "scripts/analyze_connector_prepared_gather_reuse.py" in runner
+    assert "connector-prepared-gather-reuse.json" in runner
+    assert "PREPARED_GATHER_REUSE_STATUS" in runner
+    assert "retry20260818-105421" in runner
 
 
 def test_no_store_gpu_runner_is_an_exact_gated_diagnostic() -> None:

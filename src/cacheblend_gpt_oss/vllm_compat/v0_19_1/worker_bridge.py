@@ -65,6 +65,7 @@ from cacheblend_gpt_oss.vllm_compat.v0_19_1.data_plane import (
     DataPlaneReceipt,
     GptOssDataPlane,
     KeyPositionCorrector,
+    PreparedGatherBatch,
     TensorOps,
     TransferDirection,
 )
@@ -286,6 +287,25 @@ class DataPlaneOperations(Protocol):
     ) -> tuple[DataPlaneReceipt, ...]:
         """Gather one request's store chunks with one final device barrier."""
 
+    def prepare_gather_precomputed_kv_batch(
+        self,
+        *,
+        paged_caches: Mapping[str, object],
+        staging: object,
+        chunk_layer_spans: Sequence[Sequence[LayerTokenScatterSpan]],
+        document_target_ranges: Sequence[TokenRange],
+        store_buffer_offsets: Sequence[int],
+    ) -> PreparedGatherBatch:
+        """Prepare one read-only gather batch for later exact execution."""
+
+    def execute_prepared_gather_batch(
+        self, batch: PreparedGatherBatch
+    ) -> tuple[DataPlaneReceipt, ...]:
+        """Execute one prepared batch exactly once."""
+
+    def discard_prepared_gather_batch(self, batch: PreparedGatherBatch) -> None:
+        """Release one unexecuted prepared batch."""
+
 
 class DataPlaneFactory(Protocol):
     """Factory for the active and no-copy validation data planes."""
@@ -463,6 +483,7 @@ class GptOssWorkerBridge:
         self._gather_preflight: WorkerStorePlan | None = None
         self._store_preflight: WorkerStorePlan | None = None
         self._gathered_plan: WorkerStorePlan | None = None
+        self._prepared_gather_batch: PreparedGatherBatch | None = None
         self._store_preflight_data_plane_timing = DataPlanePhaseTiming()
         self._store_gather_data_plane_timing = DataPlanePhaseTiming()
 
@@ -703,10 +724,10 @@ class GptOssWorkerBridge:
             probe.abort()
 
     def preflight_gather(self, plan: WorkerStorePlan) -> None:
-        """Dry-run every complete-chunk gather before staging mutation."""
+        """Prepare and validate every gather view without staging mutation."""
 
         self._require_ready()
-        if self._gathered_plan is not None:
+        if self._gathered_plan is not None or self._prepared_gather_batch is not None:
             _fail(WorkerBridgeErrorCode.INVALID_STATE)
         self._gather_preflight = None
         self._store_preflight = None
@@ -714,52 +735,8 @@ class GptOssWorkerBridge:
         self._validate_store_plan(plan)
         staging = self._staging.tensor
         base_chunk_index = plan.chunks[0].chunk_index
-        receipts = self._preflight_data_plane.gather_precomputed_kv_batch(
-            paged_caches=self._paged_caches,
-            staging=staging,
-            chunk_layer_spans=tuple(
-                chunk.gather_plan.layer_spans for chunk in plan.chunks
-            ),
-            document_target_ranges=tuple(chunk.token_range for chunk in plan.chunks),
-            store_buffer_offsets=tuple(
-                self._chunk_store_offset(chunk.chunk_index - base_chunk_index)
-                for chunk in plan.chunks
-            ),
-        )
-        self._store_preflight_data_plane_timing = self._read_gather_timing(
-            self._preflight_data_plane
-        )
-        if len(receipts) != len(plan.chunks):
-            _fail(WorkerBridgeErrorCode.RECEIPT_MISMATCH)
-        for chunk, receipt in zip(plan.chunks, receipts, strict=True):
-            self._validate_data_receipt(
-                receipt,
-                TransferDirection.STORE_TO_STAGING,
-                LMCACHE_CHUNK_SIZE,
-                len(chunk.gather_plan.layer_spans),
-            )
-        self._gather_preflight = plan
-
-    def preflight_store(self, plan: WorkerStorePlan) -> None:
-        """Validate transport/staging store inputs after all gather dry-runs."""
-
-        self._require_plan(self._gather_preflight, plan)
-        self._validate_transport(plan)
-        self._validate_staging_range(
-            self._buffer_config.store_buffer_offset, plan.expected_tokens
-        )
-        self._store_preflight = plan
-
-    def gather_recomputed(self, plan: WorkerStorePlan) -> None:
-        """Gather exact post-forward KV into a contiguous staging region."""
-
-        self._store_gather_data_plane_timing = DataPlanePhaseTiming()
-        self._require_plan(self._gather_preflight, plan)
-        self._require_plan(self._store_preflight, plan)
-        staging = self._staging.tensor
-        base_chunk_index = plan.chunks[0].chunk_index
         try:
-            receipts = self._data_plane.gather_precomputed_kv_batch(
+            batch = self._data_plane.prepare_gather_precomputed_kv_batch(
                 paged_caches=self._paged_caches,
                 staging=staging,
                 chunk_layer_spans=tuple(
@@ -773,6 +750,51 @@ class GptOssWorkerBridge:
                     for chunk in plan.chunks
                 ),
             )
+            self._prepared_gather_batch = batch
+            self._store_preflight_data_plane_timing = self._read_gather_timing(
+                self._data_plane
+            )
+            if len(batch.receipts) != len(plan.chunks):
+                _fail(WorkerBridgeErrorCode.RECEIPT_MISMATCH)
+            for chunk, receipt in zip(plan.chunks, batch.receipts, strict=True):
+                self._validate_data_receipt(
+                    receipt,
+                    TransferDirection.STORE_TO_STAGING,
+                    LMCACHE_CHUNK_SIZE,
+                    len(chunk.gather_plan.layer_spans),
+                )
+        except Exception:
+            self._discard_prepared_gather_batch()
+            raise
+        self._gather_preflight = plan
+
+    def preflight_store(self, plan: WorkerStorePlan) -> None:
+        """Validate transport/staging store inputs after all gather dry-runs."""
+
+        try:
+            self._require_plan(self._gather_preflight, plan)
+            self._validate_transport(plan)
+            self._validate_staging_range(
+                self._buffer_config.store_buffer_offset, plan.expected_tokens
+            )
+        except Exception:
+            self._discard_prepared_gather_batch()
+            self._gather_preflight = None
+            raise
+        self._store_preflight = plan
+
+    def gather_recomputed(self, plan: WorkerStorePlan) -> None:
+        """Gather exact post-forward KV into a contiguous staging region."""
+
+        self._store_gather_data_plane_timing = DataPlanePhaseTiming()
+        try:
+            self._require_plan(self._gather_preflight, plan)
+            self._require_plan(self._store_preflight, plan)
+            batch = self._prepared_gather_batch
+            if not isinstance(batch, PreparedGatherBatch):
+                _fail(WorkerBridgeErrorCode.INVALID_STATE)
+            self._prepared_gather_batch = None
+            receipts = self._data_plane.execute_prepared_gather_batch(batch)
             self._store_gather_data_plane_timing = self._read_gather_timing(
                 self._data_plane
             )
@@ -786,6 +808,7 @@ class GptOssWorkerBridge:
                     len(chunk.gather_plan.layer_spans),
                 )
         except Exception:
+            self._discard_prepared_gather_batch()
             self._gathered_plan = None
             raise
         finally:
@@ -804,6 +827,13 @@ class GptOssWorkerBridge:
         if not isinstance(value, DataPlanePhaseTiming):
             _fail(WorkerBridgeErrorCode.RECEIPT_MISMATCH)
         return value
+
+    def _discard_prepared_gather_batch(self) -> None:
+        batch = self._prepared_gather_batch
+        if batch is None:
+            return
+        self._prepared_gather_batch = None
+        self._data_plane.discard_prepared_gather_batch(batch)
 
     def store_precomputed(self, plan: WorkerStorePlan) -> LmcacheStoreReceipt:
         """Store the compact gathered prefix through one synchronous event lease."""
@@ -1107,6 +1137,7 @@ class GptOssWorkerBridge:
             _fail(WorkerBridgeErrorCode.PLAN_ORDER_MISMATCH)
 
     def _clear_plans(self) -> None:
+        self._discard_prepared_gather_batch()
         self._load_storage_preflight = None
         self._load_data_preflight = None
         self._retrieved_plan = None

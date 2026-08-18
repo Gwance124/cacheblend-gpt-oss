@@ -313,8 +313,11 @@ The connector follows the pinned vLLM path without mutating scheduler output:
 10. `save_kv_layer` proves that all 24 registered cache tensors were visited.
     After the one-step full prompt completes, `wait_for_save` gathers every
     complete 256-token prompt chunk while its full/sliding blocks are live and
-    atomically publishes verified sidecar records. Chunked prefill is currently
-    transfer-ineligible rather than being captured across steps.
+    atomically publishes verified sidecar records. Gather preflight constructs
+    one validated read-only batch of paged/staging tensor views; active gather
+    executes that exact object once instead of constructing all views again.
+    Chunked prefill is currently transfer-ineligible rather than being captured
+    across steps.
 11. Worker completion, load errors, and connector metrics return in
     `KVConnectorOutput`; scheduler state is advanced normally.
 12. On completion, `request_finished_all_groups` receives every hybrid block
@@ -525,9 +528,9 @@ artifacts. Connector metric labels are limited to vLLM's bounded engine labels:
 | `vllm:cacheblend_store_sidecar_publish_latency_seconds` | Nested time to publish the verified sidecar-record batch atomically |
 | `vllm:cacheblend_store_storage_preflight_latency_seconds` | Storage-only validation time nested inside the enclosing store preflight |
 | `vllm:cacheblend_store_preflight_prepare_latency_seconds` | Read-only gather span/view preparation time |
-| `vllm:cacheblend_store_preflight_enqueue_latency_seconds` | Time traversing the prepared read-only copy batch with mutation suppressed |
-| `vllm:cacheblend_store_preflight_synchronize_latency_seconds` | Read-only gather CUDA synchronization time |
-| `vllm:cacheblend_store_gather_prepare_latency_seconds` | Active gather span/view preparation time |
+| `vllm:cacheblend_store_preflight_enqueue_latency_seconds` | Read-only preflight copy traversal time; zero when a retained prepared batch is used |
+| `vllm:cacheblend_store_preflight_synchronize_latency_seconds` | Read-only preflight synchronization time; zero when a retained prepared batch is used |
+| `vllm:cacheblend_store_gather_prepare_latency_seconds` | Preparation charged inside active gather; zero when executing the retained preflight batch |
 | `vllm:cacheblend_store_gather_enqueue_latency_seconds` | Active gather nonblocking copy-enqueue time |
 | `vllm:cacheblend_store_gather_synchronize_latency_seconds` | Active gather CUDA synchronization time |
 | `vllm:cacheblend_store_preflight_prepared_copy_operations_total` | Prepared read-only K/V copy operations across every layer and physical span |

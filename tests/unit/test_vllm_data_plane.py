@@ -475,6 +475,64 @@ def test_gather_compacts_target_rows_without_position_correction() -> None:
     assert (0, 0, STORE_OFFSET + len(TARGET)) not in stage.rows
 
 
+def test_prepared_gather_batch_is_read_only_and_executes_exactly_once() -> None:
+    ops = FakeTensorOps()
+    data_plane = GptOssDataPlane(ops)
+    stage = staging()
+    caches = paged_caches()
+    seed_paged(caches)
+
+    batch = data_plane.prepare_gather_precomputed_kv_batch(
+        paged_caches=caches,
+        staging=stage,
+        chunk_layer_spans=(spans(),),
+        document_target_ranges=(TARGET,),
+        store_buffer_offsets=(STORE_OFFSET,),
+    )
+
+    assert batch.prepared_copy_operations == 96
+    assert len(batch.receipts) == 1
+    assert data_plane.last_gather_timing.prepared_copy_operations == 96
+    assert data_plane.last_gather_timing.enqueue_latency_seconds == 0.0
+    assert data_plane.last_gather_timing.synchronize_latency_seconds == 0.0
+    assert ops.copy_count == 0
+    assert ops.synchronizations == []
+    assert stage.rows == {}
+
+    receipts = data_plane.execute_prepared_gather_batch(batch)
+
+    assert receipts == batch.receipts
+    assert ops.copy_count == 96
+    assert len(ops.synchronizations) == 1
+    assert data_plane.last_gather_timing.prepare_latency_seconds == 0.0
+    assert data_plane.last_gather_timing.prepared_copy_operations == 96
+    with pytest.raises(DataPlaneError) as caught:
+        data_plane.execute_prepared_gather_batch(batch)
+    assert caught.value.code is DataPlaneErrorCode.INVALID_PREPARED_BATCH
+
+
+def test_prepared_gather_batch_discard_releases_views_without_mutation() -> None:
+    ops = FakeTensorOps()
+    data_plane = GptOssDataPlane(ops)
+    stage = staging()
+    batch = data_plane.prepare_gather_precomputed_kv_batch(
+        paged_caches=paged_caches(),
+        staging=stage,
+        chunk_layer_spans=(spans(),),
+        document_target_ranges=(TARGET,),
+        store_buffer_offsets=(STORE_OFFSET,),
+    )
+
+    data_plane.discard_prepared_gather_batch(batch)
+
+    assert ops.copy_count == 0
+    assert ops.synchronizations == []
+    assert stage.rows == {}
+    with pytest.raises(DataPlaneError) as caught:
+        data_plane.execute_prepared_gather_batch(batch)
+    assert caught.value.code is DataPlaneErrorCode.INVALID_PREPARED_BATCH
+
+
 def test_late_shape_failure_preflights_before_any_mutation() -> None:
     ops = FakeTensorOps()
     data_plane = GptOssDataPlane(ops)

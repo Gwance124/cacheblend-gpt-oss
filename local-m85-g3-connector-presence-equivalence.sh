@@ -8,6 +8,7 @@ readonly CACHEBLEND_REPO=/mnt/nvme3n1/mlee/cacheblend-gpt-oss
 readonly CACHEBLEND_BRANCH=cacheblend-scatter-diagnostic-and-checklayer
 readonly CACHEBLEND_POINTER=/mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/solab-g3-m8.5-connector-presence-equivalence-20260818.current
 readonly CACHEBLEND_BASE_DIR=/mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/solab-g3-m8.5-connector-presence-equivalence-20260818
+readonly CACHEBLEND_REUSE_BASELINE_RUN_DIR=/mnt/nvme3n1/mlee/cacheblend-gpt-oss/artifacts/solab-g3-m8.5-connector-presence-equivalence-20260818-retry20260818-105421
 
 CACHEBLEND_CURRENT_PID=""
 CACHEBLEND_LMCACHE_PID=""
@@ -330,17 +331,30 @@ main() {
   local store_data_plane_status=${PIPESTATUS[0]}
   set -e
 
+  set +e
+  .venv/bin/python scripts/analyze_connector_prepared_gather_reuse.py \
+    --baseline-run-dir "$CACHEBLEND_REUSE_BASELINE_RUN_DIR" \
+    --candidate-run-dir "$CACHEBLEND_RUN_DIR" \
+    --output "$CACHEBLEND_RUN_DIR/connector-prepared-gather-reuse.json" \
+    | tee "$CACHEBLEND_RUN_DIR/connector-prepared-gather-reuse.txt"
+  local prepared_gather_reuse_status=${PIPESTATUS[0]}
+  set -e
+
   stop_all_servers
   trap - EXIT
   echo "VERDICT_STATUS=$verdict_status"
   echo "STORE_STAGE_STATUS=$store_stage_status"
   echo "STORE_DATA_PLANE_STATUS=$store_data_plane_status"
+  echo "PREPARED_GATHER_REUSE_STATUS=$prepared_gather_reuse_status"
   echo "RUN_DIR=$CACHEBLEND_RUN_DIR"
   if test "$store_stage_status" -ne 0; then
     return "$store_stage_status"
   fi
   if test "$store_data_plane_status" -ne 0; then
     return "$store_data_plane_status"
+  fi
+  if test "$prepared_gather_reuse_status" -ne 0; then
+    return "$prepared_gather_reuse_status"
   fi
   return "$verdict_status"
 }
