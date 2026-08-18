@@ -336,6 +336,14 @@ main() {
   set -e
 
   set +e
+  .venv/bin/python scripts/analyze_connector_store_preflight.py \
+    --run-dir "$CACHEBLEND_RUN_DIR" \
+    --output "$CACHEBLEND_RUN_DIR/connector-store-preflight-breakdown.json" \
+    | tee "$CACHEBLEND_RUN_DIR/connector-store-preflight-breakdown.txt"
+  local store_preflight_status=${PIPESTATUS[0]}
+  set -e
+
+  set +e
   .venv/bin/python scripts/analyze_connector_block_batched_gather.py \
     --baseline-run-dir "$CACHEBLEND_BLOCK_BATCH_BASELINE_RUN_DIR" \
     --candidate-run-dir "$CACHEBLEND_RUN_DIR" \
@@ -349,6 +357,7 @@ main() {
   echo "VERDICT_STATUS=$verdict_status"
   echo "STORE_STAGE_STATUS=$store_stage_status"
   echo "STORE_DATA_PLANE_STATUS=$store_data_plane_status"
+  echo "STORE_PREFLIGHT_STATUS=$store_preflight_status"
   echo "BLOCK_BATCHED_GATHER_STATUS=$block_batched_gather_status"
   echo "RUN_DIR=$CACHEBLEND_RUN_DIR"
   if test "$store_stage_status" -ne 0; then
@@ -356,6 +365,9 @@ main() {
   fi
   if test "$store_data_plane_status" -ne 0; then
     return "$store_data_plane_status"
+  fi
+  if test "$store_preflight_status" -ne 0; then
+    return "$store_preflight_status"
   fi
   if test "$block_batched_gather_status" -ne 0; then
     return "$block_batched_gather_status"

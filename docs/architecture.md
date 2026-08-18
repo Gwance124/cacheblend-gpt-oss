@@ -530,6 +530,13 @@ artifacts. Connector metric labels are limited to vLLM's bounded engine labels:
 | `vllm:cacheblend_store_sidecar_publish_latency_seconds` | Nested time to publish the verified sidecar-record batch atomically |
 | `vllm:cacheblend_store_storage_preflight_latency_seconds` | Storage-only validation time nested inside the enclosing store preflight |
 | `vllm:cacheblend_store_preflight_prepare_latency_seconds` | Read-only gather span/view preparation time |
+| `vllm:cacheblend_store_preflight_input_materialization_latency_seconds` | Tuple materialization and batch-arity validation nested inside read-only gather preparation |
+| `vllm:cacheblend_store_preflight_span_validation_latency_seconds` | Canonical all-layer span validation nested inside read-only gather preparation |
+| `vllm:cacheblend_store_preflight_tensor_validation_latency_seconds` | Shared staging/paged tensor-owner and per-span bounds validation nested inside read-only gather preparation |
+| `vllm:cacheblend_store_preflight_range_validation_latency_seconds` | Document/staging range, overlap, and receipt validation nested inside read-only gather preparation |
+| `vllm:cacheblend_store_preflight_block_plan_latency_seconds` | Full-block eligibility and per-layer block-ID planning nested inside read-only gather preparation |
+| `vllm:cacheblend_store_preflight_block_index_view_latency_seconds` | CUDA block-index tensor and contiguous staging-view construction nested inside read-only gather preparation |
+| `vllm:cacheblend_store_preflight_legacy_view_latency_seconds` | Per-span fallback view construction nested inside read-only gather preparation; zero on the aligned block-batched path |
 | `vllm:cacheblend_store_preflight_enqueue_latency_seconds` | Read-only preflight copy traversal time; zero when a retained prepared batch is used |
 | `vllm:cacheblend_store_preflight_synchronize_latency_seconds` | Read-only preflight synchronization time; zero when a retained prepared batch is used |
 | `vllm:cacheblend_store_gather_prepare_latency_seconds` | Preparation charged inside active gather; zero when executing the retained preflight batch |

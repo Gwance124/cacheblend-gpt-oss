@@ -64,6 +64,13 @@ _LATENCY_KEYS = (
     "store_sidecar_publish_latency_seconds",
     "store_storage_preflight_latency_seconds",
     "store_preflight_prepare_latency_seconds",
+    "store_preflight_input_materialization_latency_seconds",
+    "store_preflight_span_validation_latency_seconds",
+    "store_preflight_tensor_validation_latency_seconds",
+    "store_preflight_range_validation_latency_seconds",
+    "store_preflight_block_plan_latency_seconds",
+    "store_preflight_block_index_view_latency_seconds",
+    "store_preflight_legacy_view_latency_seconds",
     "store_preflight_enqueue_latency_seconds",
     "store_preflight_synchronize_latency_seconds",
     "store_gather_prepare_latency_seconds",
@@ -277,6 +284,13 @@ class GptOssCacheBlendStats(KVConnectorStats):  # type: ignore[misc]
         store_sidecar_publish_latency_seconds: float = 0.0,
         store_storage_preflight_latency_seconds: float = 0.0,
         store_preflight_prepare_latency_seconds: float = 0.0,
+        store_preflight_input_materialization_latency_seconds: float = 0.0,
+        store_preflight_span_validation_latency_seconds: float = 0.0,
+        store_preflight_tensor_validation_latency_seconds: float = 0.0,
+        store_preflight_range_validation_latency_seconds: float = 0.0,
+        store_preflight_block_plan_latency_seconds: float = 0.0,
+        store_preflight_block_index_view_latency_seconds: float = 0.0,
+        store_preflight_legacy_view_latency_seconds: float = 0.0,
         store_preflight_enqueue_latency_seconds: float = 0.0,
         store_preflight_synchronize_latency_seconds: float = 0.0,
         store_preflight_prepared_copy_operations: int = 0,
@@ -347,6 +361,34 @@ class GptOssCacheBlendStats(KVConnectorStats):  # type: ignore[misc]
         self._append(
             "store_preflight_prepare_latency_seconds",
             store_preflight_prepare_latency_seconds,
+        )
+        self._append(
+            "store_preflight_input_materialization_latency_seconds",
+            store_preflight_input_materialization_latency_seconds,
+        )
+        self._append(
+            "store_preflight_span_validation_latency_seconds",
+            store_preflight_span_validation_latency_seconds,
+        )
+        self._append(
+            "store_preflight_tensor_validation_latency_seconds",
+            store_preflight_tensor_validation_latency_seconds,
+        )
+        self._append(
+            "store_preflight_range_validation_latency_seconds",
+            store_preflight_range_validation_latency_seconds,
+        )
+        self._append(
+            "store_preflight_block_plan_latency_seconds",
+            store_preflight_block_plan_latency_seconds,
+        )
+        self._append(
+            "store_preflight_block_index_view_latency_seconds",
+            store_preflight_block_index_view_latency_seconds,
+        )
+        self._append(
+            "store_preflight_legacy_view_latency_seconds",
+            store_preflight_legacy_view_latency_seconds,
         )
         self._append(
             "store_preflight_enqueue_latency_seconds",

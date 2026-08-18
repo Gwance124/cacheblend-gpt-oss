@@ -16,12 +16,26 @@ class DataPlanePhaseTiming:
     synchronize_latency_seconds: float = 0.0
     prepared_copy_operations: int = 0
     submitted_copy_operations: int = 0
+    input_materialization_latency_seconds: float = 0.0
+    span_validation_latency_seconds: float = 0.0
+    tensor_validation_latency_seconds: float = 0.0
+    range_validation_latency_seconds: float = 0.0
+    block_plan_latency_seconds: float = 0.0
+    block_index_view_latency_seconds: float = 0.0
+    legacy_view_latency_seconds: float = 0.0
 
     def __post_init__(self) -> None:
         latencies = (
             self.prepare_latency_seconds,
             self.enqueue_latency_seconds,
             self.synchronize_latency_seconds,
+            self.input_materialization_latency_seconds,
+            self.span_validation_latency_seconds,
+            self.tensor_validation_latency_seconds,
+            self.range_validation_latency_seconds,
+            self.block_plan_latency_seconds,
+            self.block_index_view_latency_seconds,
+            self.legacy_view_latency_seconds,
         )
         if any(
             isinstance(value, bool)
@@ -42,6 +56,12 @@ class DataPlanePhaseTiming:
             raise ValueError("invalid data-plane prepared-copy count")
         if self.submitted_copy_operations > self.prepared_copy_operations:
             raise ValueError("invalid data-plane submitted-copy count")
+        tolerance = max(1e-9, self.prepare_latency_seconds * 1e-6)
+        if (
+            self.preparation_subphase_latency_seconds
+            > self.prepare_latency_seconds + tolerance
+        ):
+            raise ValueError("data-plane preparation subphases exceed preparation")
 
     @property
     def total_latency_seconds(self) -> float:
@@ -49,6 +69,20 @@ class DataPlanePhaseTiming:
             self.prepare_latency_seconds
             + self.enqueue_latency_seconds
             + self.synchronize_latency_seconds
+        )
+
+    @property
+    def preparation_subphase_latency_seconds(self) -> float:
+        """Return nested preparation time without double-counting the envelope."""
+
+        return (
+            self.input_materialization_latency_seconds
+            + self.span_validation_latency_seconds
+            + self.tensor_validation_latency_seconds
+            + self.range_validation_latency_seconds
+            + self.block_plan_latency_seconds
+            + self.block_index_view_latency_seconds
+            + self.legacy_view_latency_seconds
         )
 
 

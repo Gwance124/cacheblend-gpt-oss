@@ -421,6 +421,33 @@ requires at least 99% fewer submissions, at least 80% recovery of both
 preparation time and cold excess, unchanged logical geometry/store counters/cold
 signature, and preservation of the one-shot batch mechanics.
 
+That intervention ran as
+`solab-g3-m8.5-connector-presence-equivalence-20260818-retry20260818-132457`.
+The physical submission count fell from 59,904 to 48 while the logical
+59,904-operation and 981,467,136-byte geometry remained exact. Gather fell from
+1.054028 to 0.003274 seconds. Cold connector latency fell from 10.154467 seconds
+(2.3854 times its control) to 4.994692 seconds (1.1924 times its control), and
+total connector latency was 28.328607 seconds versus a 27.163580-second control
+mean (1.0429 times). The intervention recovered 86.3336% of prior cold excess
+and put every turn below the 2.0 latency limit.
+
+The frozen cross-run gate nevertheless failed, correctly, because retained
+preflight preparation fell from 6.175780 to 1.973888 seconds: a 68.0382%
+recovery against the predeclared 80% minimum. The threshold is not relaxed
+after observing the result. The two connector-free controls also differed only
+on their third sampled output, so the output verdict is inconclusive and is not
+used as numerical-correctness evidence.
+
+The next run records seven nested, identifier-free preparation phases: input
+materialization, canonical span validation, tensor-owner/bounds validation,
+document/staging range validation, aligned block-plan construction, CUDA block
+index/staging-view construction, and legacy-view fallback. The fail-closed
+`connector-store-preflight-breakdown.json` analyzer binds the presence verdict,
+data-plane report, and raw metric snapshots by SHA-256; requires the exact
+19,968-token, 59,904-logical-operation, 48-submission fast-path geometry; and
+rejects nonzero legacy-view preparation. This isolates the remaining measured
+1.973888-second boundary without changing the failed block-batching gate.
+
 ### Public out-of-tree extension points beyond the connector
 
 - [`vllm.general_plugins`](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/plugins/__init__.py#L12-L82)

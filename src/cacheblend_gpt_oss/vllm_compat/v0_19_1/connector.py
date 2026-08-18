@@ -878,6 +878,27 @@ class GptOssCacheBlendConnector(
                 store_preflight_prepare_latency_seconds=(
                     post_forward.store_preflight_data_plane_timing.prepare_latency_seconds
                 ),
+                store_preflight_input_materialization_latency_seconds=(
+                    post_forward.store_preflight_data_plane_timing.input_materialization_latency_seconds
+                ),
+                store_preflight_span_validation_latency_seconds=(
+                    post_forward.store_preflight_data_plane_timing.span_validation_latency_seconds
+                ),
+                store_preflight_tensor_validation_latency_seconds=(
+                    post_forward.store_preflight_data_plane_timing.tensor_validation_latency_seconds
+                ),
+                store_preflight_range_validation_latency_seconds=(
+                    post_forward.store_preflight_data_plane_timing.range_validation_latency_seconds
+                ),
+                store_preflight_block_plan_latency_seconds=(
+                    post_forward.store_preflight_data_plane_timing.block_plan_latency_seconds
+                ),
+                store_preflight_block_index_view_latency_seconds=(
+                    post_forward.store_preflight_data_plane_timing.block_index_view_latency_seconds
+                ),
+                store_preflight_legacy_view_latency_seconds=(
+                    post_forward.store_preflight_data_plane_timing.legacy_view_latency_seconds
+                ),
                 store_preflight_enqueue_latency_seconds=(
                     post_forward.store_preflight_data_plane_timing.enqueue_latency_seconds
                 ),

@@ -271,6 +271,21 @@ class _PreparedBlockCopy:
 
 
 @dataclass(frozen=True, slots=True)
+class _PreparedBlockLayer:
+    layer_index: int
+    paged: object
+    block_size: int
+    block_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedBlockGather:
+    operations: tuple[_PreparedBlockCopy, ...] | None
+    plan_latency_seconds: float
+    index_view_latency_seconds: float
+
+
+@dataclass(frozen=True, slots=True)
 class _PreparedGatherPayload:
     operations: tuple[_PreparedCopy | _PreparedBlockCopy, ...]
     synchronization_tensor: object
@@ -299,8 +314,7 @@ class PreparedGatherBatch:
             or self.prepared_copy_operations <= 0
             or isinstance(self.submitted_copy_operations, bool)
             or not isinstance(self.submitted_copy_operations, int)
-            or not 0 < self.submitted_copy_operations
-            <= self.prepared_copy_operations
+            or not 0 < self.submitted_copy_operations <= self.prepared_copy_operations
             or self._payload is None
         ):
             _fail(
@@ -473,11 +487,26 @@ class GptOssDataPlane:
         self._last_gather_timing = DataPlanePhaseTiming(
             prepare_latency_seconds=prepare_timing.prepare_latency_seconds,
             enqueue_latency_seconds=execution_timing.enqueue_latency_seconds,
-            synchronize_latency_seconds=(
-                execution_timing.synchronize_latency_seconds
-            ),
+            synchronize_latency_seconds=(execution_timing.synchronize_latency_seconds),
             prepared_copy_operations=batch.prepared_copy_operations,
             submitted_copy_operations=batch.submitted_copy_operations,
+            input_materialization_latency_seconds=(
+                prepare_timing.input_materialization_latency_seconds
+            ),
+            span_validation_latency_seconds=(
+                prepare_timing.span_validation_latency_seconds
+            ),
+            tensor_validation_latency_seconds=(
+                prepare_timing.tensor_validation_latency_seconds
+            ),
+            range_validation_latency_seconds=(
+                prepare_timing.range_validation_latency_seconds
+            ),
+            block_plan_latency_seconds=prepare_timing.block_plan_latency_seconds,
+            block_index_view_latency_seconds=(
+                prepare_timing.block_index_view_latency_seconds
+            ),
+            legacy_view_latency_seconds=prepare_timing.legacy_view_latency_seconds,
         )
         return receipts
 
@@ -499,18 +528,29 @@ class GptOssDataPlane:
                 "a prepared gather batch is already pending",
             )
         prepare_started_at = perf_counter()
+        input_materialization_started_at = perf_counter()
         groups = tuple(tuple(spans) for spans in chunk_layer_spans)
         ranges = tuple(document_target_ranges)
         offsets = tuple(store_buffer_offsets)
         if not groups or len(groups) != len(ranges) or len(groups) != len(offsets):
             _fail(DataPlaneErrorCode.EMPTY_SPANS)
+        input_materialization_latency_seconds = (
+            perf_counter() - input_materialization_started_at
+        )
 
+        span_validation_started_at = perf_counter()
         validated_groups = tuple(_validate_spans(layer_spans) for layer_spans in groups)
+        span_validation_latency_seconds = perf_counter() - span_validation_started_at
+        tensor_validation_started_at = perf_counter()
         staging_shape = self._preflight_validated_groups(
             staging,
             paged_caches,
             validated_groups,
         )
+        tensor_validation_latency_seconds = (
+            perf_counter() - tensor_validation_started_at
+        )
+        range_validation_started_at = perf_counter()
         receipts: list[DataPlaneReceipt] = []
         staging_ranges: list[TokenRange] = []
         for validated, document_target_range, store_buffer_offset in zip(
@@ -555,20 +595,24 @@ class GptOssDataPlane:
                     copied_value_rows=validated.layer_token_rows,
                 )
             )
+        range_validation_latency_seconds = perf_counter() - range_validation_started_at
 
         logical_copy_operations = sum(
-            len(validated.spans) * KV_COMPONENTS
-            for validated in validated_groups
+            len(validated.spans) * KV_COMPONENTS for validated in validated_groups
         )
-        prepared: tuple[_PreparedCopy | _PreparedBlockCopy, ...] | None
-        prepared = self._prepare_block_batched_gather(
+        block_preparation = self._prepare_block_batched_gather(
             paged_caches=paged_caches,
             staging=staging,
             validated_groups=validated_groups,
             document_target_ranges=ranges,
             store_buffer_offsets=offsets,
         )
+        prepared: tuple[_PreparedCopy | _PreparedBlockCopy, ...] | None = (
+            block_preparation.operations
+        )
+        legacy_view_latency_seconds = 0.0
         if prepared is None:
+            legacy_view_started_at = perf_counter()
             legacy: list[_PreparedCopy | _PreparedBlockCopy] = []
             for validated, document_target_range, store_buffer_offset in zip(
                 validated_groups, ranges, offsets, strict=True
@@ -587,6 +631,7 @@ class GptOssDataPlane:
                         )
                     )
             prepared = tuple(legacy)
+            legacy_view_latency_seconds = perf_counter() - legacy_view_started_at
 
         prepare_latency_seconds = perf_counter() - prepare_started_at
         if not prepared or len(prepared) > logical_copy_operations:
@@ -606,6 +651,17 @@ class GptOssDataPlane:
             prepare_latency_seconds=prepare_latency_seconds,
             prepared_copy_operations=logical_copy_operations,
             submitted_copy_operations=len(prepared),
+            input_materialization_latency_seconds=(
+                input_materialization_latency_seconds
+            ),
+            span_validation_latency_seconds=span_validation_latency_seconds,
+            tensor_validation_latency_seconds=tensor_validation_latency_seconds,
+            range_validation_latency_seconds=range_validation_latency_seconds,
+            block_plan_latency_seconds=block_preparation.plan_latency_seconds,
+            block_index_view_latency_seconds=(
+                block_preparation.index_view_latency_seconds
+            ),
+            legacy_view_latency_seconds=legacy_view_latency_seconds,
         )
         return batch
 
@@ -770,9 +826,10 @@ class GptOssDataPlane:
         validated_groups: Sequence[_ValidatedSpans],
         document_target_ranges: Sequence[TokenRange],
         store_buffer_offsets: Sequence[int],
-    ) -> tuple[_PreparedBlockCopy, ...] | None:
+    ) -> _PreparedBlockGather:
         """Collapse aligned physical blocks to 24-by-2 indexed CUDA writes."""
 
+        plan_started_at = perf_counter()
         groups = tuple(validated_groups)
         ranges = tuple(document_target_ranges)
         offsets = tuple(store_buffer_offsets)
@@ -780,14 +837,22 @@ class GptOssDataPlane:
             offset != offsets[0] + sum(len(item) for item in ranges[:index])
             for index, offset in enumerate(offsets)
         ):
-            return None
+            return _PreparedBlockGather(
+                None,
+                perf_counter() - plan_started_at,
+                0.0,
+            )
         if any(
             span.group_span.block_offset != 0
             or span.token_count != span.group_span.block_size
             for validated in groups
             for span in validated.spans
         ):
-            return None
+            return _PreparedBlockGather(
+                None,
+                perf_counter() - plan_started_at,
+                0.0,
+            )
 
         total_tokens = sum(len(item) for item in ranges)
         spans_by_layer: dict[int, list[LayerTokenScatterSpan]] = {
@@ -797,7 +862,7 @@ class GptOssDataPlane:
             for span in validated.spans:
                 spans_by_layer[span.layer_index].append(span)
 
-        operations: list[_PreparedBlockCopy] = []
+        layer_plans: list[_PreparedBlockLayer] = []
         for layer_index in range(GPT_OSS_NUM_LAYERS):
             layer_spans = spans_by_layer[layer_index]
             if not layer_spans:
@@ -812,9 +877,30 @@ class GptOssDataPlane:
                 )
                 or len(layer_spans) * block_size != total_tokens
             ):
-                return None
+                return _PreparedBlockGather(
+                    None,
+                    perf_counter() - plan_started_at,
+                    0.0,
+                )
             block_ids = tuple(span.group_span.block_id for span in layer_spans)
             paged = paged_caches[layer_name]
+            layer_plans.append(
+                _PreparedBlockLayer(
+                    layer_index=layer_index,
+                    paged=paged,
+                    block_size=block_size,
+                    block_ids=block_ids,
+                )
+            )
+        plan_latency_seconds = perf_counter() - plan_started_at
+
+        index_view_started_at = perf_counter()
+        operations: list[_PreparedBlockCopy] = []
+        for layer_plan in layer_plans:
+            layer_index = layer_plan.layer_index
+            paged = layer_plan.paged
+            block_size = layer_plan.block_size
+            block_ids = layer_plan.block_ids
             try:
                 block_indices = self._ops.block_indices(
                     paged,
@@ -869,7 +955,11 @@ class GptOssDataPlane:
                         block_size=block_size,
                     )
                 )
-        return tuple(operations)
+        return _PreparedBlockGather(
+            tuple(operations),
+            plan_latency_seconds,
+            perf_counter() - index_view_started_at,
+        )
 
     def _prepare_scatter_span(
         self,
