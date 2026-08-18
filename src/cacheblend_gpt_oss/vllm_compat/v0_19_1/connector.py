@@ -283,6 +283,23 @@ class GptOssCacheBlendMetadata(KVConnectorMetadata):  # type: ignore[misc]
     transfer_enabled: bool = False
 
 
+class _DecodeStepMetadata(KVConnectorMetadata):  # type: ignore[misc]
+    """Minimal no-op metadata for decode steps with no pending handoffs.
+
+    Kept intentionally tiny so the pickle+ZMQ IPC between the scheduler
+    process and the GPU worker serialises a handful of bytes instead of
+    the full ``GptOssCacheBlendMetadata`` with 24 layer-name strings.
+    """
+
+    __slots__ = ()
+    _singleton: "_DecodeStepMetadata | None" = None
+
+    def __new__(cls) -> "_DecodeStepMetadata":
+        if cls._singleton is None:
+            cls._singleton = super().__new__(cls)
+        return cls._singleton
+
+
 @dataclass(frozen=True, slots=True)
 class GptOssCacheBlendWorkerMetadata(KVConnectorWorkerMetadata):  # type: ignore[misc]
     """Worker dispositions returned to the scheduler after one model step."""
@@ -437,6 +454,9 @@ class GptOssCacheBlendConnector(
         self._worker_resources: WorkerRuntimeResources | None = None
         self._active_worker_transfer: _ActiveWorkerTransfer | None = None
         self._active_forward_plan_token: object | None = None
+        self._decode_step_count: int = 0
+        self._prefill_step_count: int = 0
+        self._decode_diag: bool = os.environ.get("CACHEBLEND_DECODE_DIAG") == "1"
         if (
             isinstance(self._transfer_config, Transfer100PctConfig)
             and role is KVConnectorRole.SCHEDULER
@@ -553,6 +573,18 @@ class GptOssCacheBlendConnector(
         self._require_role(KVConnectorRole.WORKER, "start_load_kv")
         del forward_context, kwargs
         metadata = self._get_connector_metadata()
+        if isinstance(metadata, _DecodeStepMetadata):
+            self._decode_step_count += 1
+            if self._decode_diag and self._decode_step_count % 500 == 0:
+                import sys
+                print(
+                    f"CACHEBLEND_DECODE_DIAG decode_steps={self._decode_step_count} "
+                    f"prefill_steps={self._prefill_step_count}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            return
+        self._prefill_step_count += 1
         if not isinstance(metadata, GptOssCacheBlendMetadata):
             raise RuntimeError("Received metadata from an incompatible connector.")
         if (
@@ -705,6 +737,8 @@ class GptOssCacheBlendConnector(
             raise RuntimeError("Transfer metadata has no matching request handoff.")
 
     def wait_for_layer_load(self, layer_name: str) -> None:
+        if self._active_worker_transfer is None:
+            return
         self._require_role(KVConnectorRole.WORKER, "wait_for_layer_load")
         if layer_name not in self._registered_kv_caches:
             raise RuntimeError(f"KV cache for layer {layer_name!r} was not registered.")
@@ -716,13 +750,15 @@ class GptOssCacheBlendConnector(
         attn_metadata: AttentionMetadata,
         **kwargs: Any,
     ) -> None:
+        active = self._active_worker_transfer
+        if active is None:
+            return
         self._require_role(KVConnectorRole.WORKER, "save_kv_layer")
         del attn_metadata, kwargs
         if layer_name not in self._registered_kv_caches:
             raise RuntimeError(f"KV cache for layer {layer_name!r} was not registered.")
         if kv_layer is not self._registered_kv_caches[layer_name]:
             raise RuntimeError("save_kv_layer received an unregistered tensor.")
-        active = self._active_worker_transfer
         if active is not None:
             if layer_name in active.saved_layer_names:
                 raise RuntimeError("A KV-cache layer was saved more than once.")
@@ -736,11 +772,11 @@ class GptOssCacheBlendConnector(
                 self._worker_resources.bridge.capture_prefill_layer(layer_name)
 
     def wait_for_save(self) -> None:
+        active = self._active_worker_transfer
+        if active is None:
+            return
         self._require_role(KVConnectorRole.WORKER, "wait_for_save")
         try:
-            active = self._active_worker_transfer
-            if active is None:
-                return
             expected_layers = set(self._registered_kv_caches)
             if active.saved_layer_names != expected_layers:
                 raise RuntimeError(
@@ -831,6 +867,15 @@ class GptOssCacheBlendConnector(
             raise RuntimeError(
                 "A request finished before CacheBlend completed KV writeback."
             )
+        if self._decode_diag and finished_req_ids:
+            import sys
+            print(
+                f"CACHEBLEND_DECODE_DIAG finished={len(finished_req_ids)} "
+                f"total_decode_steps={self._decode_step_count} "
+                f"total_prefill_steps={self._prefill_step_count}",
+                file=sys.stderr,
+                flush=True,
+            )
         for request_id in finished_req_ids:
             self._control_plane.discard(request_id)
             self._known_request_ids.discard(request_id)
@@ -907,15 +952,6 @@ class GptOssCacheBlendConnector(
         num_computed_tokens: int,
     ) -> tuple[int | None, bool]:
         self._require_role(KVConnectorRole.SCHEDULER, "get_num_new_matched_tokens")
-        import sys
-        print(
-            f"CACHEBLEND_PREFIX_DIAG request={request.request_id} "
-            f"prompt_tokens={request.num_tokens} "
-            f"prefix_cache_hits={num_computed_tokens} "
-            f"pct={100*num_computed_tokens/max(1,request.num_tokens):.1f}%",
-            file=sys.stderr,
-            flush=True,
-        )
         prompt_token_ids = copy_request_prompt_token_ids(request)
         request_id = request.request_id
         # These fields are present on the pinned vLLM 0.19.1 ``Request``.
@@ -1044,8 +1080,10 @@ class GptOssCacheBlendConnector(
 
     def build_connector_meta(
         self, scheduler_output: SchedulerOutput
-    ) -> GptOssCacheBlendMetadata:
+    ) -> GptOssCacheBlendMetadata | _DecodeStepMetadata:
         self._require_role(KVConnectorRole.SCHEDULER, "build_connector_meta")
+        if not self._pending_handoff_ids:
+            return _DecodeStepMetadata()
         handoffs = tuple(
             self._control_plane.handoff(request_id)
             for request_id in self._pending_handoff_ids
@@ -1065,15 +1103,6 @@ class GptOssCacheBlendConnector(
                 request_id = handoff.plan.request_id
                 lookup = self._scheduler_lookup_metadata.get(request_id)
                 scheduled_tokens = scheduled_by_request.get(request_id)
-                import sys
-                print(
-                    f"CACHEBLEND_SCHED_DIAG request={request_id} "
-                    f"prompt_tokens={len(lookup.prompt_token_ids) if lookup else '?'} "
-                    f"scheduled_tokens={scheduled_tokens} "
-                    f"complete_step={scheduled_tokens == len(lookup.prompt_token_ids) if lookup and isinstance(scheduled_tokens, int) else '?'}",
-                    file=sys.stderr,
-                    flush=True,
-                )
                 if lookup is None:
                     raise RuntimeError("Transfer handoff has no scheduler lookup.")
                 if (

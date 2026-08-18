@@ -35,11 +35,19 @@ echo "=== CACHEBLEND_SCHED_DIAG (per-request scheduled tokens) ==="
 grep "CACHEBLEND_SCHED_DIAG" "$LOG" | head -40
 echo ""
 
+echo "=== CACHEBLEND_DECODE_DIAG (decode step counts) ==="
+grep "CACHEBLEND_DECODE_DIAG" "$LOG" | tail -20
+echo ""
+
 echo "=== Summary ==="
 TOTAL=$(grep -c "CACHEBLEND_PREFIX_DIAG" "$LOG" 2>/dev/null || echo 0)
 HITS=$(grep "CACHEBLEND_PREFIX_DIAG" "$LOG" | grep -v "prefix_cache_hits=0 " | wc -l | tr -d ' ')
 echo "Total requests: $TOTAL"
 echo "Requests with prefix_cache_hits > 0: $HITS"
+FINAL_DECODE=$(grep "CACHEBLEND_DECODE_DIAG finished=" "$LOG" | tail -1)
+if test -n "$FINAL_DECODE"; then
+  echo "Final decode stats: $FINAL_DECODE"
+fi
 
 if test "$TOTAL" -gt 0; then
   echo ""

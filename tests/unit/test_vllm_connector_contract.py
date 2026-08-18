@@ -442,7 +442,8 @@ def test_scheduler_records_all_groups_while_recomputing_every_token(
         (11, 12),
     )
     assert metadata.handoffs[0].allocation.external_scheduler_tokens == 0
-    assert connector.build_connector_meta(SimpleNamespace()).handoffs == ()
+    decode_meta = connector.build_connector_meta(SimpleNamespace())
+    assert not hasattr(decode_meta, "handoffs")
 
     with pytest.raises(RuntimeError, match="must report zero external tokens"):
         connector.update_state_after_alloc(request, blocks, num_external_tokens=1)
