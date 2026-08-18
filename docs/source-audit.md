@@ -185,6 +185,67 @@ selective CacheBlend intentionally overlaps loaded and recomputed slots. The
 selective path needs a custom backend with load-before-selected-write ordering
 or a pinned ordering patch.
 
+### Hybrid-manager flag equivalence audit (2026-08-18)
+
+The BrowseComp diagnostic killed the hypothesis that the unified connector
+breaks local prefix caching: 46 of 47 connector lookups received nonzero local
+prefix tokens, the only zero was the cold first request, and the final native
+prefix-cache hit rate was 96.2%. The remaining claim that an omitted hybrid
+manager flag differs from explicit `False` also does not survive the pinned
+source trace:
+
+- [`SchedulerConfig.disable_hybrid_kv_cache_manager`](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/config/scheduler.py#L131-L137)
+  is a tri-state configuration input whose default is `None`.
+- vLLM generates a Boolean optional CLI pair for boolean fields
+  ([argument generation](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/engine/arg_utils.py#L285-L310))
+  and passes the raw value into `SchedulerConfig`
+  ([construction](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/engine/arg_utils.py#L1819-L1835)).
+- During `VllmConfig` validation, an omitted value is replaced with the
+  calculated requirement. With no connector or other disabling feature on the
+  pinned GPU path, that requirement is `False`
+  ([resolution](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/config/vllm.py#L1190-L1258)).
+- On the connector-free path, the remaining reachable read of the finalized
+  field decides whether to unify cache specs
+  ([group construction](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/v1/core/kv_cache_utils.py#L1222-L1252))
+  before the coordinator factory selects the unitary or hybrid implementation
+  from the resulting group count
+  ([coordinator selection](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/v1/core/kv_cache_coordinator.py#L547-L590)).
+  Connector configurations additionally check HMA support
+  ([connector factory](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/distributed/kv_transfer/kv_connector/factory.py#L43-L62)).
+  The connector factory is not called in either prefix-only arm.
+
+Therefore the connector-free omitted-flag arm and connector-free explicit
+`--no-disable-hybrid-kv-cache-manager` arm both reach the same finalized
+`False` value. GPT-OSS applies sliding-window attention to every other layer
+([model implementation](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/model_executor/models/gpt_oss.py#L128-L143)),
+so both arms preserve the same two cache groups and select the same
+`HybridKVCacheCoordinator`. A measured difference between those two scripts
+is not evidence for a hidden downstream branch on this field.
+
+The compared RAG trajectory was also not a deterministic fixture. The
+read-only `rag-system` client at commit `7f952009d458ea280ff26095e0cfebae4a4a194b`
+constructs its Responses payload without `temperature`, `top_p`, or `seed`
+([client payload](https://github.com/Gwance124/rag-system/blob/7f952009d458ea280ff26095e0cfebae4a4a194b/src/rag_system/generation/vllm_responses.py#L41-L72)).
+Because the server is launched with `--generation-config vllm`, model sampling
+overrides are empty
+([pinned model config](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/config/model.py#L1391-L1411)),
+so omitted Responses controls resolve to temperature 1.0 and top-p 1.0
+([pinned Responses defaults](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/entrypoints/openai/responses/protocol.py#L298-L325)),
+while the request seed defaults to `None`
+([seed field](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/entrypoints/openai/responses/protocol.py#L242-L246))
+and is forwarded into sampling
+([sampling construction](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/entrypoints/openai/responses/protocol.py#L363-L374)).
+One fast agent trajectory cannot identify a server configuration effect when
+the compared runs sampled different reasoning/tool paths.
+
+`local-m85-g3-hybrid-flag-equivalence.sh` is the next stop/go gate. It runs an
+A/B/A with fresh connector-free servers, resolves both raw flag values through
+the installed pinned `EngineArgs`, sends byte-stable append-only Responses with
+temperature 0, top-p 1, and seed 0, requires prefix reuse, and compares a full
+vocabulary next-token distribution. A future RAG diagnostic may expose those
+three sampling controls, but `rag-system` remains read-only until that separate
+change is explicitly authorized.
+
 ### Public out-of-tree extension points beyond the connector
 
 - [`vllm.general_plugins`](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/plugins/__init__.py#L12-L82)
