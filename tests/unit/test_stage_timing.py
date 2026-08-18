@@ -24,11 +24,16 @@ def test_data_plane_phase_timing_is_bounded_and_immutable() -> None:
         range_validation_latency_seconds=0.004,
         block_plan_latency_seconds=0.01,
         block_index_view_latency_seconds=0.02,
+        block_index_construction_latency_seconds=0.01,
+        block_index_validation_latency_seconds=0.002,
+        staging_view_construction_latency_seconds=0.003,
+        staging_view_validation_latency_seconds=0.004,
         legacy_view_latency_seconds=0.0,
     )
 
     assert timing.total_latency_seconds == pytest.approx(0.6)
     assert timing.preparation_subphase_latency_seconds == pytest.approx(0.085)
+    assert timing.block_index_view_subphase_latency_seconds == pytest.approx(0.019)
     assert timing.submitted_copy_operations == 96
     with pytest.raises(FrozenInstanceError):
         timing.prepared_copy_operations = 0  # type: ignore[misc]
@@ -41,6 +46,7 @@ def test_data_plane_phase_timing_is_bounded_and_immutable() -> None:
         {"enqueue_latency_seconds": float("nan")},
         {"synchronize_latency_seconds": True},
         {"span_validation_latency_seconds": -0.1},
+        {"block_index_construction_latency_seconds": -0.1},
         {"prepared_copy_operations": -1},
         {"prepared_copy_operations": True},
         {"submitted_copy_operations": -1},
@@ -52,6 +58,11 @@ def test_data_plane_phase_timing_is_bounded_and_immutable() -> None:
         {
             "prepare_latency_seconds": 0.1,
             "span_validation_latency_seconds": 0.11,
+        },
+        {
+            "prepare_latency_seconds": 0.1,
+            "block_index_view_latency_seconds": 0.01,
+            "block_index_construction_latency_seconds": 0.02,
         },
     ),
 )

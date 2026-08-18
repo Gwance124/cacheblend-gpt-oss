@@ -536,6 +536,10 @@ artifacts. Connector metric labels are limited to vLLM's bounded engine labels:
 | `vllm:cacheblend_store_preflight_range_validation_latency_seconds` | Document/staging range, overlap, and receipt validation nested inside read-only gather preparation |
 | `vllm:cacheblend_store_preflight_block_plan_latency_seconds` | Full-block eligibility and per-layer block-ID planning nested inside read-only gather preparation |
 | `vllm:cacheblend_store_preflight_block_index_view_latency_seconds` | CUDA block-index tensor and contiguous staging-view construction nested inside read-only gather preparation |
+| `vllm:cacheblend_store_preflight_block_index_construction_latency_seconds` | Twenty-four per-layer CUDA block-index tensor constructions nested inside the block-index/view envelope |
+| `vllm:cacheblend_store_preflight_block_index_validation_latency_seconds` | Shape, dtype, and device validation for prepared CUDA block-index tensors nested inside the block-index/view envelope |
+| `vllm:cacheblend_store_preflight_staging_view_construction_latency_seconds` | Forty-eight K/V staging destination-view constructions nested inside the block-index/view envelope |
+| `vllm:cacheblend_store_preflight_staging_view_validation_latency_seconds` | Shape, dtype, and device validation for block-batched staging destinations nested inside the block-index/view envelope |
 | `vllm:cacheblend_store_preflight_legacy_view_latency_seconds` | Per-span fallback view construction nested inside read-only gather preparation; zero on the aligned block-batched path |
 | `vllm:cacheblend_store_preflight_enqueue_latency_seconds` | Read-only preflight copy traversal time; zero when a retained prepared batch is used |
 | `vllm:cacheblend_store_preflight_synchronize_latency_seconds` | Read-only preflight synchronization time; zero when a retained prepared batch is used |

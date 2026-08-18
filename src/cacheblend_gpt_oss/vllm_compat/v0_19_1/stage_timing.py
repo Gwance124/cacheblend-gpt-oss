@@ -22,6 +22,10 @@ class DataPlanePhaseTiming:
     range_validation_latency_seconds: float = 0.0
     block_plan_latency_seconds: float = 0.0
     block_index_view_latency_seconds: float = 0.0
+    block_index_construction_latency_seconds: float = 0.0
+    block_index_validation_latency_seconds: float = 0.0
+    staging_view_construction_latency_seconds: float = 0.0
+    staging_view_validation_latency_seconds: float = 0.0
     legacy_view_latency_seconds: float = 0.0
 
     def __post_init__(self) -> None:
@@ -35,6 +39,10 @@ class DataPlanePhaseTiming:
             self.range_validation_latency_seconds,
             self.block_plan_latency_seconds,
             self.block_index_view_latency_seconds,
+            self.block_index_construction_latency_seconds,
+            self.block_index_validation_latency_seconds,
+            self.staging_view_construction_latency_seconds,
+            self.staging_view_validation_latency_seconds,
             self.legacy_view_latency_seconds,
         )
         if any(
@@ -62,6 +70,12 @@ class DataPlanePhaseTiming:
             > self.prepare_latency_seconds + tolerance
         ):
             raise ValueError("data-plane preparation subphases exceed preparation")
+        block_tolerance = max(1e-9, self.block_index_view_latency_seconds * 1e-6)
+        if (
+            self.block_index_view_subphase_latency_seconds
+            > self.block_index_view_latency_seconds + block_tolerance
+        ):
+            raise ValueError("data-plane block-index/view subphases exceed envelope")
 
     @property
     def total_latency_seconds(self) -> float:
@@ -83,6 +97,17 @@ class DataPlanePhaseTiming:
             + self.block_plan_latency_seconds
             + self.block_index_view_latency_seconds
             + self.legacy_view_latency_seconds
+        )
+
+    @property
+    def block_index_view_subphase_latency_seconds(self) -> float:
+        """Return nested index/view time without double-counting its envelope."""
+
+        return (
+            self.block_index_construction_latency_seconds
+            + self.block_index_validation_latency_seconds
+            + self.staging_view_construction_latency_seconds
+            + self.staging_view_validation_latency_seconds
         )
 
 

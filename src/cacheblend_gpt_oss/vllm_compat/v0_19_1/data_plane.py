@@ -283,6 +283,10 @@ class _PreparedBlockGather:
     operations: tuple[_PreparedBlockCopy, ...] | None
     plan_latency_seconds: float
     index_view_latency_seconds: float
+    index_construction_latency_seconds: float = 0.0
+    index_validation_latency_seconds: float = 0.0
+    staging_view_construction_latency_seconds: float = 0.0
+    staging_view_validation_latency_seconds: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -506,6 +510,18 @@ class GptOssDataPlane:
             block_index_view_latency_seconds=(
                 prepare_timing.block_index_view_latency_seconds
             ),
+            block_index_construction_latency_seconds=(
+                prepare_timing.block_index_construction_latency_seconds
+            ),
+            block_index_validation_latency_seconds=(
+                prepare_timing.block_index_validation_latency_seconds
+            ),
+            staging_view_construction_latency_seconds=(
+                prepare_timing.staging_view_construction_latency_seconds
+            ),
+            staging_view_validation_latency_seconds=(
+                prepare_timing.staging_view_validation_latency_seconds
+            ),
             legacy_view_latency_seconds=prepare_timing.legacy_view_latency_seconds,
         )
         return receipts
@@ -660,6 +676,18 @@ class GptOssDataPlane:
             block_plan_latency_seconds=block_preparation.plan_latency_seconds,
             block_index_view_latency_seconds=(
                 block_preparation.index_view_latency_seconds
+            ),
+            block_index_construction_latency_seconds=(
+                block_preparation.index_construction_latency_seconds
+            ),
+            block_index_validation_latency_seconds=(
+                block_preparation.index_validation_latency_seconds
+            ),
+            staging_view_construction_latency_seconds=(
+                block_preparation.staging_view_construction_latency_seconds
+            ),
+            staging_view_validation_latency_seconds=(
+                block_preparation.staging_view_validation_latency_seconds
             ),
             legacy_view_latency_seconds=legacy_view_latency_seconds,
         )
@@ -895,12 +923,17 @@ class GptOssDataPlane:
         plan_latency_seconds = perf_counter() - plan_started_at
 
         index_view_started_at = perf_counter()
+        index_construction_latency_seconds = 0.0
+        index_validation_latency_seconds = 0.0
+        staging_view_construction_latency_seconds = 0.0
+        staging_view_validation_latency_seconds = 0.0
         operations: list[_PreparedBlockCopy] = []
         for layer_plan in layer_plans:
             layer_index = layer_plan.layer_index
             paged = layer_plan.paged
             block_size = layer_plan.block_size
             block_ids = layer_plan.block_ids
+            index_construction_started_at = perf_counter()
             try:
                 block_indices = self._ops.block_indices(
                     paged,
@@ -911,6 +944,10 @@ class GptOssDataPlane:
                     DataPlaneErrorCode.TENSOR_VIEW_FAILED,
                     "failed to prepare paged block indices",
                 ) from exc
+            index_construction_latency_seconds += (
+                perf_counter() - index_construction_started_at
+            )
+            index_validation_started_at = perf_counter()
             if self._safe_shape(block_indices) != (len(block_ids),):
                 _fail(
                     DataPlaneErrorCode.TENSOR_VIEW_FAILED,
@@ -926,7 +963,11 @@ class GptOssDataPlane:
                     DataPlaneErrorCode.DEVICE_MISMATCH,
                     "paged block indices are on a different device",
                 )
+            index_validation_latency_seconds += (
+                perf_counter() - index_validation_started_at
+            )
             for component in (KEY_COMPONENT, VALUE_COMPONENT):
+                staging_view_construction_started_at = perf_counter()
                 try:
                     destination = self._ops.staging_rows(
                         staging,
@@ -940,10 +981,17 @@ class GptOssDataPlane:
                         DataPlaneErrorCode.TENSOR_VIEW_FAILED,
                         "failed to prepare block-batched staging view",
                     ) from exc
+                staging_view_construction_latency_seconds += (
+                    perf_counter() - staging_view_construction_started_at
+                )
+                staging_view_validation_started_at = perf_counter()
                 self._validate_view(
                     destination,
                     (total_tokens, GPT_OSS_KV_WIDTH),
                     staging,
+                )
+                staging_view_validation_latency_seconds += (
+                    perf_counter() - staging_view_validation_started_at
                 )
                 operations.append(
                     _PreparedBlockCopy(
@@ -959,6 +1007,10 @@ class GptOssDataPlane:
             tuple(operations),
             plan_latency_seconds,
             perf_counter() - index_view_started_at,
+            index_construction_latency_seconds,
+            index_validation_latency_seconds,
+            staging_view_construction_latency_seconds,
+            staging_view_validation_latency_seconds,
         )
 
     def _prepare_scatter_span(

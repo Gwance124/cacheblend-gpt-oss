@@ -906,6 +906,10 @@ class FakeTransferRuntime:
                 range_validation_latency_seconds=0.0004,
                 block_plan_latency_seconds=0.002,
                 block_index_view_latency_seconds=0.0015,
+                block_index_construction_latency_seconds=0.0007,
+                block_index_validation_latency_seconds=0.0002,
+                staging_view_construction_latency_seconds=0.0003,
+                staging_view_validation_latency_seconds=0.0002,
             ),
             store_gather_data_plane_timing=DataPlanePhaseTiming(
                 0.011, 0.012, 0.013, 10, 10
@@ -1061,6 +1065,16 @@ def test_transfer_mode_wires_full_recompute_scheduler_and_worker_hooks(
         "store_preflight_range_validation_latency_seconds": pytest.approx(0.0004),
         "store_preflight_block_plan_latency_seconds": pytest.approx(0.002),
         "store_preflight_block_index_view_latency_seconds": pytest.approx(0.0015),
+        "store_preflight_block_index_construction_latency_seconds": pytest.approx(
+            0.0007
+        ),
+        "store_preflight_block_index_validation_latency_seconds": pytest.approx(0.0002),
+        "store_preflight_staging_view_construction_latency_seconds": pytest.approx(
+            0.0003
+        ),
+        "store_preflight_staging_view_validation_latency_seconds": pytest.approx(
+            0.0002
+        ),
         "store_preflight_legacy_view_latency_seconds": 0.0,
         "store_preflight_enqueue_latency_seconds": pytest.approx(0.008),
         "store_preflight_synchronize_latency_seconds": pytest.approx(0.009),
@@ -1103,6 +1117,18 @@ def test_transfer_mode_wires_full_recompute_scheduler_and_worker_hooks(
     assert reduced["store_preflight_block_index_view_latency_seconds"] == pytest.approx(
         0.0015
     )
+    assert reduced[
+        "store_preflight_block_index_construction_latency_seconds"
+    ] == pytest.approx(0.0007)
+    assert reduced[
+        "store_preflight_block_index_validation_latency_seconds"
+    ] == pytest.approx(0.0002)
+    assert reduced[
+        "store_preflight_staging_view_construction_latency_seconds"
+    ] == pytest.approx(0.0003)
+    assert reduced[
+        "store_preflight_staging_view_validation_latency_seconds"
+    ] == pytest.approx(0.0002)
     assert reduced["store_preflight_legacy_view_latency_seconds"] == 0.0
     assert reduced["store_preflight_enqueue_latency_seconds"] == pytest.approx(0.008)
     assert reduced["store_preflight_synchronize_latency_seconds"] == pytest.approx(
@@ -1573,6 +1599,10 @@ def test_connector_metrics_aggregate_hits_fallbacks_and_reject_bad_data(
         store_preflight_range_validation_latency_seconds=0.0003,
         store_preflight_block_plan_latency_seconds=0.0015,
         store_preflight_block_index_view_latency_seconds=0.0014,
+        store_preflight_block_index_construction_latency_seconds=0.0006,
+        store_preflight_block_index_validation_latency_seconds=0.0002,
+        store_preflight_staging_view_construction_latency_seconds=0.0003,
+        store_preflight_staging_view_validation_latency_seconds=0.0002,
         store_preflight_legacy_view_latency_seconds=0.0,
         store_preflight_enqueue_latency_seconds=0.007,
         store_preflight_synchronize_latency_seconds=0.008,
@@ -1629,6 +1659,18 @@ def test_connector_metrics_aggregate_hits_fallbacks_and_reject_bad_data(
     assert reduced["store_preflight_block_index_view_latency_seconds"] == pytest.approx(
         0.0014
     )
+    assert reduced[
+        "store_preflight_block_index_construction_latency_seconds"
+    ] == pytest.approx(0.0006)
+    assert reduced[
+        "store_preflight_block_index_validation_latency_seconds"
+    ] == pytest.approx(0.0002)
+    assert reduced[
+        "store_preflight_staging_view_construction_latency_seconds"
+    ] == pytest.approx(0.0003)
+    assert reduced[
+        "store_preflight_staging_view_validation_latency_seconds"
+    ] == pytest.approx(0.0002)
     assert reduced["store_preflight_legacy_view_latency_seconds"] == 0.0
     assert reduced["store_preflight_enqueue_latency_seconds"] == pytest.approx(0.007)
     assert reduced["store_preflight_synchronize_latency_seconds"] == pytest.approx(

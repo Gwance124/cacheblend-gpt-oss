@@ -570,6 +570,9 @@ def test_prepared_gather_batch_is_read_only_and_executes_exactly_once() -> None:
         <= data_plane.last_gather_timing.prepare_latency_seconds
     )
     assert data_plane.last_gather_timing.block_index_view_latency_seconds == 0.0
+    assert (
+        data_plane.last_gather_timing.block_index_view_subphase_latency_seconds == 0.0
+    )
     assert data_plane.last_gather_timing.legacy_view_latency_seconds >= 0.0
     assert ops.copy_count == 0
     assert ops.synchronizations == []
@@ -613,6 +616,10 @@ def test_aligned_gather_batches_every_block_per_layer_and_component() -> None:
     )
     assert prepare_timing.block_plan_latency_seconds >= 0.0
     assert prepare_timing.block_index_view_latency_seconds >= 0.0
+    assert (
+        prepare_timing.block_index_view_subphase_latency_seconds
+        <= prepare_timing.block_index_view_latency_seconds
+    )
     assert prepare_timing.legacy_view_latency_seconds == 0.0
     assert ops.block_index_preparations == 24
     assert ops.copy_count == 0

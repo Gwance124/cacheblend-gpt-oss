@@ -448,6 +448,32 @@ data-plane report, and raw metric snapshots by SHA-256; requires the exact
 rejects nonzero legacy-view preparation. This isolates the remaining measured
 1.973888-second boundary without changing the failed block-batching gate.
 
+That decomposition ran as
+`solab-g3-m8.5-connector-presence-equivalence-20260818-retry20260818-134637`.
+The seven phases account for 1.954905 of the 1.955197-second enclosing
+preparation timer, leaving only 0.000292 seconds unattributed. CUDA block-index
+and staging-view construction/validation is the largest component at 1.082996
+seconds (55.3906%). Canonical span validation is second at 0.753636 seconds
+(38.5453%). Tensor-owner/bounds validation, block planning, range validation,
+and input materialization together account for 0.118274 seconds (6.0492%);
+legacy-view fallback remained exactly zero.
+
+The serving-level result remains healthy: cold connector latency was 4.789938
+seconds versus a 4.182687-second control mean (1.1452 times), and total
+connector latency was 28.726330 seconds versus 27.128568 seconds (1.0589
+times). The frozen historical block-batching gate still fails only its
+preparation-recovery condition (68.3409% versus 80%); it passes cold-excess
+recovery at 89.7033%. Output evidence remains inconclusive because the two
+connector-free controls again differed on their third sampled output.
+
+The next diagnostic splits the measured 1.082996-second block-index/view
+envelope into CUDA index-tensor construction, index metadata validation,
+staging-view construction, and staging-view validation. The
+`connector-block-index-view-breakdown.json` analyzer binds the prior preflight
+artifact and its verdict/data-plane/metric digest chain, requires the exact
+19,968-token, 59,904-logical-operation, 48-submission geometry, and reports the
+expected 24 index-tensor and 48 staging-view constructions per store batch.
+
 ### Public out-of-tree extension points beyond the connector
 
 - [`vllm.general_plugins`](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/plugins/__init__.py#L12-L82)
