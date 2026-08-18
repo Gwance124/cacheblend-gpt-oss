@@ -69,6 +69,14 @@ write_launch_command() {
   chmod 700 "$path"
 }
 
+require_clean_tracked_worktree() {
+  if test -n "$(git status --porcelain --untracked-files=no)"; then
+    echo "STOP_TRACKED_WORKTREE_CHANGES" >&2
+    git status --short --untracked-files=no >&2
+    return 1
+  fi
+}
+
 run_arm() {
   local label="$1"
   local mode="$2"
@@ -170,14 +178,15 @@ run_arm() {
 
 main() {
   cd "$CACHEBLEND_REPO"
+  require_clean_tracked_worktree
   git fetch origin
   git switch "$CACHEBLEND_BRANCH" 2>/dev/null \
     || git switch -c "$CACHEBLEND_BRANCH" --track "origin/$CACHEBLEND_BRANCH"
   git pull --ff-only
-  if test -n "$(git status --porcelain)"; then
-    echo "STOP_DIRTY_WORKTREE" >&2
-    git status --short >&2
-    return 1
+  require_clean_tracked_worktree
+  if test -n "$(git status --porcelain --untracked-files=normal)"; then
+    echo "PRESERVING_UNTRACKED_FILES"
+    git status --short --untracked-files=normal
   fi
 
   export TIKTOKEN_ENCODINGS_BASE=/mnt/nvme3n1/labuser/.cache/tiktoken/encodings
