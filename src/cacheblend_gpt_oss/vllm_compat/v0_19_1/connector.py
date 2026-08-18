@@ -1208,7 +1208,8 @@ class GptOssCacheBlendConnector(
                         scheduled_token_count=scheduled_tokens,
                         transfer_eligible=lookup.should_transfer,
                         store_eligible=(
-                            len(lookup.prompt_token_ids) >= LMCACHE_CHUNK_SIZE
+                            not self._transfer_config.disable_kv_store
+                            and len(lookup.prompt_token_ids) >= LMCACHE_CHUNK_SIZE
                         ),
                     )
                 )

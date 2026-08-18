@@ -21,6 +21,15 @@ copies corrected K/V into vLLM's real paged KV cache; see
 never be mistaken for a real transfer: ``kv_tokens_loaded`` stays zero and
 the suppressed run is reported through
 ``TransferFallbackCode.SCATTER_SUPPRESSED_DIAGNOSTIC``.
+
+``disable_kv_store`` is a second optional diagnostic switch on
+``transfer_100pct``. It defaults to ``False``. When set ``True``, complete
+full-prompt steps still execute connector lookup, metadata handoff, ordinary
+full prefill, and the post-forward connector hook, but that hook is marked
+store-ineligible before any KV gather, LMCache write, or sidecar publication.
+The store eligible/completed/fallback counters therefore remain zero. This
+switch is rejected for selective execution and is not a supported serving
+mode.
 """
 
 from __future__ import annotations
@@ -66,7 +75,12 @@ _TRANSFER_KEYS = frozenset(
     }
 )
 _TRANSFER_OPTIONAL_KEYS = frozenset(
-    {"transfer_evidence_path", "disable_kv_scatter", "allow_prefix_caching"}
+    {
+        "transfer_evidence_path",
+        "disable_kv_scatter",
+        "disable_kv_store",
+        "allow_prefix_caching",
+    }
 )
 _SELECTIVE_KEYS = frozenset(
     {"check_layer", "recompute_ratio", "suffix_tokens"}
@@ -117,11 +131,13 @@ class TransferConfigErrorCode(str, Enum):
     INVALID_REQUEST_TIMEOUT = "invalid_request_timeout"
     INVALID_TRANSFER_FAILURE_POLICY = "invalid_transfer_failure_policy"
     INVALID_DISABLE_KV_SCATTER = "invalid_disable_kv_scatter"
+    INVALID_DISABLE_KV_STORE = "invalid_disable_kv_store"
     INVALID_ALLOW_PREFIX_CACHING = "invalid_allow_prefix_caching"
     INVALID_SELECTIVE_CHECK_LAYER = "invalid_selective_check_layer"
     INVALID_SELECTIVE_RECOMPUTE_RATIO = "invalid_selective_recompute_ratio"
     INVALID_SELECTIVE_SUFFIX_TOKENS = "invalid_selective_suffix_tokens"
     INVALID_SELECTIVE_SCATTER = "invalid_selective_scatter"
+    INVALID_SELECTIVE_STORE = "invalid_selective_store"
 
 
 class TransferConfigError(ValueError):
@@ -232,6 +248,12 @@ def _require_transfer_evidence_path(value: object) -> str:
 def _require_disable_kv_scatter(value: object) -> bool:
     if not isinstance(value, bool):
         _fail(TransferConfigErrorCode.INVALID_DISABLE_KV_SCATTER)
+    return value
+
+
+def _require_disable_kv_store(value: object) -> bool:
+    if not isinstance(value, bool):
+        _fail(TransferConfigErrorCode.INVALID_DISABLE_KV_STORE)
     return value
 
 
@@ -352,6 +374,7 @@ class Transfer100PctConfig:
     transfer_failure_policy: TransferFailurePolicy
     transfer_evidence_path: str | None = None
     disable_kv_scatter: bool = False
+    disable_kv_store: bool = False
     allow_prefix_caching: bool = False
     mode: ConnectorTransferMode = field(
         default=ConnectorTransferMode.TRANSFER_100PCT,
@@ -372,6 +395,7 @@ class Transfer100PctConfig:
         kv_digest = _require_config_digest(self.kv_cache_config_digest)
         adapter_revision = _require_identity_field(self.adapter_revision)
         _require_disable_kv_scatter(self.disable_kv_scatter)
+        _require_disable_kv_store(self.disable_kv_store)
         if not isinstance(self.allow_prefix_caching, bool):
             _fail(TransferConfigErrorCode.INVALID_ALLOW_PREFIX_CACHING)
         _require_staging_capacity(self.staging_token_capacity)
@@ -435,6 +459,8 @@ class TransferSelectiveConfig(Transfer100PctConfig):
         _require_selective_suffix_tokens(self.suffix_tokens)
         if self.disable_kv_scatter:
             _fail(TransferConfigErrorCode.INVALID_SELECTIVE_SCATTER)
+        if self.disable_kv_store:
+            _fail(TransferConfigErrorCode.INVALID_SELECTIVE_STORE)
         object.__setattr__(self, "recompute_ratio", ratio)
 
 
@@ -546,6 +572,7 @@ def parse_connector_extra_config(
         transfer_failure_policy=TransferFailurePolicy.FULL_PREFILL,
         transfer_evidence_path=extra_config.get("transfer_evidence_path"),
         disable_kv_scatter=extra_config.get("disable_kv_scatter", False),
+        disable_kv_store=extra_config.get("disable_kv_store", False),
         allow_prefix_caching=extra_config.get("allow_prefix_caching", False),
         **selective_kwargs,
     )

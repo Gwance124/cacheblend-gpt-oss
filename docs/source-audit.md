@@ -281,6 +281,24 @@ bounded Prometheus lookup, transfer, correction, and store histograms and tests
 whether recorded synchronous store time accounts for at least 80% of the cold
 turn excess before any no-store diagnostic changes are introduced.
 
+That read-only analysis returned `RECORDED_STORE_DOMINATES_COLD_EXCESS`.
+Across the connector warmup and three workload turns, synchronous store time
+was 14.388 seconds, versus 0.400 seconds of lookup and 0.00016 seconds of load
+transfer. The byte-identical cold turn's measured excess over the two controls
+was 12.534 seconds. The store histogram had two observations: the deliberately
+sub-chunk warmup, whose store counters were all zero, and the cold workload
+turn, which completed 19,968 stored tokens without fallback. The aggregate
+store sum is therefore not treated as a per-turn equality, but its 1.148 ratio
+to cold excess passes the preregistered 0.8 dominance threshold decisively.
+
+`local-m85-g3-connector-no-store-equivalence.sh` is the next isolating gate. It
+uses the same A/B/A servers and byte-stable append-only transcript, while the
+connector arm adds only the explicit diagnostic `disable_kv_store` switch.
+That switch leaves lookup, transfer metadata, prefix caching, full prefill, and
+worker hooks enabled, but marks the post-forward path store-ineligible before
+KV gather, LMCache write, or sidecar publication. The verdict cannot pass
+unless eligible, completed, and fallback store counters are all exactly zero.
+
 ### Public out-of-tree extension points beyond the connector
 
 - [`vllm.general_plugins`](https://github.com/vllm-project/vllm/blob/b1388b1fbf5aaef47937fabe98931211684666a6/vllm/plugins/__init__.py#L12-L82)

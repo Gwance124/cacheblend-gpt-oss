@@ -53,6 +53,14 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--disable-kv-store",
+        action="store_true",
+        help=(
+            "Diagnostic only: skip post-forward KV gather, LMCache write, "
+            "and sidecar publication. Store counters remain zero."
+        ),
+    )
+    parser.add_argument(
         "--allow-prefix-caching",
         action="store_true",
         help="Allow vLLM prefix caching alongside CacheBlend transfer.",
@@ -90,6 +98,8 @@ def main() -> int:
         extra["transfer_evidence_path"] = str(args.transfer_evidence_path)
     if args.disable_kv_scatter:
         extra["disable_kv_scatter"] = True
+    if args.disable_kv_store:
+        extra["disable_kv_store"] = True
     if args.allow_prefix_caching:
         extra["allow_prefix_caching"] = True
     parse_connector_extra_config(extra)

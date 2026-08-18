@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import re
 import runpy
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -28,6 +30,7 @@ def _artifact(
     elapsed_seconds: list[float],
     *,
     connector: bool,
+    store_enabled: bool = True,
 ) -> dict[str, object]:
     input_tokens = [20_100, 40_200, 60_300]
     cached_tokens = [0, 20_000, 40_000]
@@ -120,8 +123,8 @@ def _artifact(
         ),
         "connector_store_counters": (
             {
-                "store_tokens_eligible": 60_160,
-                "store_tokens_completed": 60_160,
+                "store_tokens_eligible": 60_160 if store_enabled else 0,
+                "store_tokens_completed": 60_160 if store_enabled else 0,
                 "store_fallbacks": 0,
             }
             if connector
@@ -149,6 +152,53 @@ def test_gpu_runner_uses_valid_connector_request_timeout() -> None:
 
     assert matches == [str(int(MAX_REQUEST_TIMEOUT_SECONDS))]
     assert "--timeout-seconds 1800" in runner
+
+
+def test_no_store_gpu_runner_is_an_exact_gated_diagnostic() -> None:
+    runner = Path(
+        "local-m85-g3-connector-no-store-equivalence.sh"
+    ).read_text(encoding="utf-8")
+
+    assert re.findall(r"--request-timeout-seconds ([0-9.]+)", runner) == [
+        str(int(MAX_REQUEST_TIMEOUT_SECONDS))
+    ]
+    assert "--disable-kv-store" in runner
+    assert "--disable-kv-scatter" in runner
+    assert "--allow-prefix-caching" in runner
+    assert "--no-disable-hybrid-kv-cache-manager" in runner
+    assert "--require-zero-store" in runner
+    assert "--timeout-seconds 1800" in runner
+
+
+def test_transfer_config_renderer_emits_valid_no_store_switch(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/render_transfer_config.py",
+            "--sidecar-path",
+            str(tmp_path / "sidecar.sqlite3"),
+            "--model-revision",
+            "model-revision",
+            "--tokenizer-revision",
+            "tokenizer-revision",
+            "--model-config-digest",
+            "a" * 64,
+            "--kv-cache-config-digest",
+            "b" * 64,
+            "--adapter-revision",
+            "adapter-revision",
+            "--staging-token-capacity",
+            "256",
+            "--disable-kv-store",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    rendered = json.loads(result.stdout)
+    assert rendered["kv_connector_extra_config"]["disable_kv_store"] is True
 
 
 def test_connector_artifact_reader_validates_inert_counters(tmp_path: Path) -> None:
@@ -221,3 +271,41 @@ def test_connector_presence_gate_rejects_output_divergence() -> None:
 
     assert status == 1
     assert report["status"] == "FAIL_CONNECTOR_OUTPUT_DIVERGED"
+
+
+def test_connector_no_store_gate_passes_exact_zero_store_arm() -> None:
+    report, status = _evaluate["evaluate"](
+        _artifact("baseline", [1.0, 2.0, 3.0], connector=False),
+        _artifact("baseline", [1.1, 2.1, 3.1], connector=False),
+        _artifact(
+            "connector",
+            [1.05, 2.05, 3.05],
+            connector=True,
+            store_enabled=False,
+        ),
+        latency_ratio_limit=2.0,
+        minimum_final_input_tokens=50_000,
+        require_zero_store=True,
+    )
+
+    assert status == 0
+    assert report["status"] == "PASS_CONNECTOR_NO_STORE_EQUIVALENT"
+    assert report["store_policy"] == {
+        "zero_store_required": True,
+        "zero_store_observed": True,
+    }
+
+
+def test_connector_no_store_gate_rejects_any_store_activity() -> None:
+    report, status = _evaluate["evaluate"](
+        _artifact("baseline", [1.0, 2.0, 3.0], connector=False),
+        _artifact("baseline", [1.1, 2.1, 3.1], connector=False),
+        _artifact("connector", [1.05, 2.05, 3.05], connector=True),
+        latency_ratio_limit=2.0,
+        minimum_final_input_tokens=50_000,
+        require_zero_store=True,
+    )
+
+    assert status == 1
+    assert report["status"] == "FAIL_CONNECTOR_STORE_NOT_DISABLED"
+    assert report["store_policy"]["zero_store_observed"] is False

@@ -49,6 +49,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--connector", type=Path, required=True)
     parser.add_argument("--latency-ratio-limit", type=float, default=2.0)
     parser.add_argument("--minimum-final-input-tokens", type=int, default=50_000)
+    parser.add_argument(
+        "--require-zero-store",
+        action="store_true",
+        help="Require the connector arm to report zero store counters.",
+    )
     parser.add_argument("--output", type=Path, required=True)
     return parser
 
@@ -293,11 +298,14 @@ def evaluate(
     *,
     latency_ratio_limit: float,
     minimum_final_input_tokens: int,
+    require_zero_store: bool = False,
 ) -> tuple[dict[str, object], int]:
     if not math.isfinite(latency_ratio_limit) or latency_ratio_limit <= 1:
         raise ValueError("latency ratio limit must be finite and greater than one")
     if minimum_final_input_tokens <= 0:
         raise ValueError("minimum final input tokens must be positive")
+    if not isinstance(require_zero_store, bool):
+        raise ValueError("require_zero_store must be a boolean")
 
     baseline_a_signature = _signature(baseline_a)
     baseline_b_signature = _signature(baseline_b)
@@ -351,6 +359,10 @@ def evaluate(
         connector_total_ratio <= latency_ratio_limit
         and max(connector_turn_ratios) <= latency_ratio_limit
     )
+    connector_store_counters = connector["connector_store_counters"]
+    zero_store_observed = all(
+        value == 0 for value in connector_store_counters.values()
+    )
 
     if not baseline_outputs_stable:
         status = "INCONCLUSIVE_BASELINE_OUTPUT_UNSTABLE"
@@ -360,6 +372,9 @@ def evaluate(
         exit_status = 1
     elif not prefix_reuse_all:
         status = "FAIL_PREFIX_REUSE_MISSING"
+        exit_status = 1
+    elif require_zero_store and not zero_store_observed:
+        status = "FAIL_CONNECTOR_STORE_NOT_DISABLED"
         exit_status = 1
     elif not connector_outputs_match:
         status = "FAIL_CONNECTOR_OUTPUT_DIVERGED"
@@ -371,7 +386,11 @@ def evaluate(
         status = "FAIL_CONNECTOR_LATENCY_DIVERGED"
         exit_status = 1
     else:
-        status = "PASS_CONNECTOR_PRESENCE_WITHIN_LIMIT"
+        status = (
+            "PASS_CONNECTOR_NO_STORE_EQUIVALENT"
+            if require_zero_store
+            else "PASS_CONNECTOR_PRESENCE_WITHIN_LIMIT"
+        )
         exit_status = 0
 
     report: dict[str, object] = {
@@ -406,7 +425,11 @@ def evaluate(
         },
         "connector_warmup": connector["warmup"],
         "connector_counters": connector["connector_counters"],
-        "connector_store_counters": connector["connector_store_counters"],
+        "connector_store_counters": connector_store_counters,
+        "store_policy": {
+            "zero_store_required": require_zero_store,
+            "zero_store_observed": zero_store_observed,
+        },
         "response_signatures": {
             "baseline_a": baseline_a_signature,
             "baseline_b": baseline_b_signature,
@@ -438,6 +461,7 @@ def main() -> int:
         ),
         latency_ratio_limit=args.latency_ratio_limit,
         minimum_final_input_tokens=args.minimum_final_input_tokens,
+        require_zero_store=args.require_zero_store,
     )
     rendered = json.dumps(report, allow_nan=False, indent=2, sort_keys=True) + "\n"
     with args.output.open("x", encoding="utf-8") as output:

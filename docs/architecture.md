@@ -491,6 +491,13 @@ Prefix caching is disabled during isolated CacheBlend correctness runs. It is
 re-enabled only for the separate prefix baseline and the explicit interaction
 test.
 
+The optional `disable_kv_store` flag is a diagnostic-only `transfer_100pct`
+switch, not a serving mode. It leaves connector lookup, metadata handoff,
+ordinary full prefill, prefix caching, and post-forward hook execution intact,
+but makes complete requests store-ineligible before KV gather, LMCache write,
+or sidecar publication. It is rejected in selective mode and defaults to
+`False`; no production configuration silently disables source-cache storage.
+
 ## Metrics contract
 
 The initial stable metrics are connector-owned Prometheus counters,

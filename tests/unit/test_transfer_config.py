@@ -184,6 +184,13 @@ def test_valid_selective_config_is_explicit_and_strict() -> None:
         lambda: parse_connector_extra_config(rejected),
     )
 
+    rejected = dict(raw)
+    rejected["disable_kv_store"] = True
+    _assert_error(
+        TransferConfigErrorCode.INVALID_SELECTIVE_STORE,
+        lambda: parse_connector_extra_config(rejected),
+    )
+
     missing = dict(raw)
     del missing["suffix_tokens"]
     _assert_error(
@@ -229,6 +236,27 @@ def test_disable_kv_scatter_is_optional_bool_and_defaults_false() -> None:
         rejected["disable_kv_scatter"] = invalid
         _assert_error(
             TransferConfigErrorCode.INVALID_DISABLE_KV_SCATTER,
+            lambda rejected=rejected: parse_connector_extra_config(rejected),
+        )
+
+
+def test_disable_kv_store_is_optional_bool_and_defaults_false() -> None:
+    raw = _valid_config()
+    parsed = parse_connector_extra_config(raw)
+    assert isinstance(parsed, Transfer100PctConfig)
+    assert parsed.disable_kv_store is False
+
+    raw = _valid_config()
+    raw["disable_kv_store"] = True
+    parsed = parse_connector_extra_config(raw)
+    assert isinstance(parsed, Transfer100PctConfig)
+    assert parsed.disable_kv_store is True
+
+    for invalid in (1, "true", None, 0):
+        rejected = _valid_config()
+        rejected["disable_kv_store"] = invalid
+        _assert_error(
+            TransferConfigErrorCode.INVALID_DISABLE_KV_STORE,
             lambda rejected=rejected: parse_connector_extra_config(rejected),
         )
 
