@@ -27,9 +27,11 @@ the selective GPU evidence is independently validated.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from math import isfinite
+from time import perf_counter
 from typing import NoReturn, Protocol
 
 from cacheblend_gpt_oss.connector.control_plane import (
@@ -600,6 +602,11 @@ class PostForwardOutcome:
     sidecar_records_available: int
     sidecar_records_inserted: int
     prefill_tokens_avoided: int = 0
+    store_plan_latency_seconds: float = 0.0
+    store_preflight_latency_seconds: float = 0.0
+    store_gather_latency_seconds: float = 0.0
+    store_lmcache_latency_seconds: float = 0.0
+    store_sidecar_publish_latency_seconds: float = 0.0
 
     def __post_init__(self) -> None:
         if not isinstance(self.completion, FullPrefillCompletion) or not isinstance(
@@ -615,6 +622,21 @@ class PostForwardOutcome:
             self.prefill_tokens_avoided,
         )
         if any(not _is_int(value) or value < 0 for value in values):
+            _fail(TransferRuntimeErrorCode.INVALID_OUTCOME)
+        latencies = (
+            self.store_plan_latency_seconds,
+            self.store_preflight_latency_seconds,
+            self.store_gather_latency_seconds,
+            self.store_lmcache_latency_seconds,
+            self.store_sidecar_publish_latency_seconds,
+        )
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, int | float)
+            or not isfinite(value)
+            or value < 0
+            for value in latencies
+        ):
             _fail(TransferRuntimeErrorCode.INVALID_OUTCOME)
         metadata = self.completion.pre_forward.metadata
         expected_eligible = _store_eligible_tokens(metadata)
@@ -669,6 +691,7 @@ class TransferRuntime:
         *,
         disable_kv_scatter: bool = False,
         selective_config: TransferSelectiveConfig | None = None,
+        clock: Callable[[], float] = perf_counter,
     ) -> None:
         if not isinstance(layout, GptOssHybridCacheLayout) or not isinstance(
             disable_kv_scatter, bool
@@ -680,11 +703,14 @@ class TransferRuntime:
             _fail(TransferRuntimeErrorCode.INVALID_METADATA)
         if selective_config is not None and disable_kv_scatter:
             _fail(TransferRuntimeErrorCode.INVALID_METADATA)
+        if not callable(clock):
+            _fail(TransferRuntimeErrorCode.INVALID_METADATA)
         self._layout = layout
         self._storage = storage
         self._data_plane = data_plane
         self._disable_kv_scatter = disable_kv_scatter
         self._selective_config = selective_config
+        self._clock = clock
 
     def before_forward(
         self,
@@ -824,6 +850,7 @@ class TransferRuntime:
                 None,
                 eligible_tokens,
             )
+        plan_started = self._timestamp()
         try:
             plan = self._build_store_plan(metadata, adapted_blocks)
         except (TransferRuntimeError, HybridLayoutError):
@@ -832,7 +859,9 @@ class TransferRuntime:
                 TransferAttemptState.FULL_PREFILL_FALLBACK,
                 TransferFallbackCode.STORE_PLAN_REJECTED,
                 eligible_tokens,
+                store_plan_latency_seconds=self._elapsed(plan_started),
             )
+        plan_latency = self._elapsed(plan_started)
         if not plan.chunks:
             # Every complete chunk in this prompt was already proven present
             # by the load-side lookup.  Nothing needs to be gathered,
@@ -848,7 +877,9 @@ class TransferRuntime:
                 stored_chunks=0,
                 sidecar_records_available=0,
                 sidecar_records_inserted=0,
+                store_plan_latency_seconds=plan_latency,
             )
+        preflight_started = self._timestamp()
         try:
             self._data_plane.preflight_gather(plan)
             self._storage.preflight_store(plan)
@@ -858,7 +889,11 @@ class TransferRuntime:
                 TransferAttemptState.FULL_PREFILL_FALLBACK,
                 TransferFallbackCode.STORE_PREFLIGHT_FAILED,
                 eligible_tokens,
+                store_plan_latency_seconds=plan_latency,
+                store_preflight_latency_seconds=self._elapsed(preflight_started),
             )
+        preflight_latency = self._elapsed(preflight_started)
+        gather_started = self._timestamp()
         try:
             self._data_plane.gather_recomputed(plan)
         except Exception:
@@ -867,7 +902,12 @@ class TransferRuntime:
                 TransferAttemptState.FULL_PREFILL_FALLBACK,
                 TransferFallbackCode.GATHER_FAILED,
                 eligible_tokens,
+                store_plan_latency_seconds=plan_latency,
+                store_preflight_latency_seconds=preflight_latency,
+                store_gather_latency_seconds=self._elapsed(gather_started),
             )
+        gather_latency = self._elapsed(gather_started)
+        lmcache_started = self._timestamp()
         try:
             receipt = self._storage.store_precomputed(plan)
         except Exception:
@@ -876,14 +916,24 @@ class TransferRuntime:
                 TransferAttemptState.FULL_PREFILL_FALLBACK,
                 TransferFallbackCode.STORE_FAILED,
                 eligible_tokens,
+                store_plan_latency_seconds=plan_latency,
+                store_preflight_latency_seconds=preflight_latency,
+                store_gather_latency_seconds=gather_latency,
+                store_lmcache_latency_seconds=self._elapsed(lmcache_started),
             )
+        lmcache_latency = self._elapsed(lmcache_started)
         if not self._valid_store_receipt(receipt, plan):
             return self._store_outcome(
                 completion,
                 TransferAttemptState.FULL_PREFILL_FALLBACK,
                 TransferFallbackCode.STORE_RECEIPT_INVALID,
                 eligible_tokens,
+                store_plan_latency_seconds=plan_latency,
+                store_preflight_latency_seconds=preflight_latency,
+                store_gather_latency_seconds=gather_latency,
+                store_lmcache_latency_seconds=lmcache_latency,
             )
+        publish_started = self._timestamp()
         try:
             inserted = self._storage.publish_sidecar_records_atomically(
                 receipt.sidecar_records
@@ -894,7 +944,15 @@ class TransferRuntime:
                 TransferAttemptState.FULL_PREFILL_FALLBACK,
                 TransferFallbackCode.SIDECAR_PUBLISH_FAILED,
                 eligible_tokens,
+                store_plan_latency_seconds=plan_latency,
+                store_preflight_latency_seconds=preflight_latency,
+                store_gather_latency_seconds=gather_latency,
+                store_lmcache_latency_seconds=lmcache_latency,
+                store_sidecar_publish_latency_seconds=self._elapsed(
+                    publish_started
+                ),
             )
+        publish_latency = self._elapsed(publish_started)
         if (
             not _is_int(inserted)
             or inserted < 0
@@ -905,6 +963,11 @@ class TransferRuntime:
                 TransferAttemptState.FULL_PREFILL_FALLBACK,
                 TransferFallbackCode.SIDECAR_PUBLISH_FAILED,
                 eligible_tokens,
+                store_plan_latency_seconds=plan_latency,
+                store_preflight_latency_seconds=preflight_latency,
+                store_gather_latency_seconds=gather_latency,
+                store_lmcache_latency_seconds=lmcache_latency,
+                store_sidecar_publish_latency_seconds=publish_latency,
             )
         return PostForwardOutcome(
             completion=completion,
@@ -915,6 +978,11 @@ class TransferRuntime:
             stored_chunks=receipt.stored_chunks,
             sidecar_records_available=len(receipt.sidecar_records),
             sidecar_records_inserted=inserted,
+            store_plan_latency_seconds=plan_latency,
+            store_preflight_latency_seconds=preflight_latency,
+            store_gather_latency_seconds=gather_latency,
+            store_lmcache_latency_seconds=lmcache_latency,
+            store_sidecar_publish_latency_seconds=publish_latency,
         )
 
     def _build_load_plan(
@@ -1104,12 +1172,41 @@ class TransferRuntime:
             return 0.0
         return float(value)
 
+    def _timestamp(self) -> float | None:
+        """Read a monotonic diagnostic clock without making it a validity gate."""
+
+        try:
+            value = self._clock()
+        except Exception:
+            return None
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int | float)
+            or not isfinite(value)
+        ):
+            return None
+        return float(value)
+
+    def _elapsed(self, started_at: float | None) -> float:
+        if started_at is None:
+            return 0.0
+        finished_at = self._timestamp()
+        if finished_at is None or finished_at < started_at:
+            return 0.0
+        return finished_at - started_at
+
     @staticmethod
     def _store_outcome(
         completion: FullPrefillCompletion,
         state: TransferAttemptState,
         failure_code: TransferFallbackCode | None,
         eligible_tokens: int,
+        *,
+        store_plan_latency_seconds: float = 0.0,
+        store_preflight_latency_seconds: float = 0.0,
+        store_gather_latency_seconds: float = 0.0,
+        store_lmcache_latency_seconds: float = 0.0,
+        store_sidecar_publish_latency_seconds: float = 0.0,
     ) -> PostForwardOutcome:
         return PostForwardOutcome(
             completion=completion,
@@ -1120,6 +1217,13 @@ class TransferRuntime:
             stored_chunks=0,
             sidecar_records_available=0,
             sidecar_records_inserted=0,
+            store_plan_latency_seconds=store_plan_latency_seconds,
+            store_preflight_latency_seconds=store_preflight_latency_seconds,
+            store_gather_latency_seconds=store_gather_latency_seconds,
+            store_lmcache_latency_seconds=store_lmcache_latency_seconds,
+            store_sidecar_publish_latency_seconds=(
+                store_sidecar_publish_latency_seconds
+            ),
         )
 
 

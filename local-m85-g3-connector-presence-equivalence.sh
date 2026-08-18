@@ -314,10 +314,22 @@ main() {
   local verdict_status=${PIPESTATUS[0]}
   set -e
 
+  set +e
+  .venv/bin/python scripts/analyze_connector_store_stages.py \
+    --run-dir "$CACHEBLEND_RUN_DIR" \
+    --output "$CACHEBLEND_RUN_DIR/connector-store-stage-breakdown.json" \
+    | tee "$CACHEBLEND_RUN_DIR/connector-store-stage-breakdown.txt"
+  local store_stage_status=${PIPESTATUS[0]}
+  set -e
+
   stop_all_servers
   trap - EXIT
   echo "VERDICT_STATUS=$verdict_status"
+  echo "STORE_STAGE_STATUS=$store_stage_status"
   echo "RUN_DIR=$CACHEBLEND_RUN_DIR"
+  if test "$store_stage_status" -ne 0; then
+    return "$store_stage_status"
+  fi
   return "$verdict_status"
 }
 

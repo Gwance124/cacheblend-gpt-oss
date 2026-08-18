@@ -152,6 +152,8 @@ def test_gpu_runner_uses_valid_connector_request_timeout() -> None:
 
     assert matches == [str(int(MAX_REQUEST_TIMEOUT_SECONDS))]
     assert "--timeout-seconds 1800" in runner
+    assert "scripts/analyze_connector_store_stages.py" in runner
+    assert "connector-store-stage-breakdown.json" in runner
 
 
 def test_no_store_gpu_runner_is_an_exact_gated_diagnostic() -> None:

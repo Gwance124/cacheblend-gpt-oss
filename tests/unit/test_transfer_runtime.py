@@ -418,6 +418,35 @@ def test_moved_candidate_loads_then_full_prompt_recomputes_and_stores_chunks() -
     assert mutations[-3:] == ["gather", "store", "publish:2"]
 
 
+def test_store_substage_timings_cover_each_synchronous_boundary() -> None:
+    metadata, blocks = _metadata(
+        candidate_specs=(), transfer_eligible=False, store_eligible=True
+    )
+    _unused, storage, data_plane, _calls, _mutations = _runtime()
+    timestamps = iter(
+        (10.0, 10.1, 20.0, 20.2, 30.0, 30.3, 40.0, 40.4, 50.0, 50.5)
+    )
+    runtime = TransferRuntime(
+        _layout(),
+        storage,
+        data_plane,
+        clock=lambda: next(timestamps),
+    )
+    before = runtime.before_forward(metadata, blocks)
+    completion = runtime.mark_full_prefill_complete(
+        before, recomputed_token_count=metadata.prompt_token_count
+    )
+
+    outcome = runtime.after_forward(completion, blocks)
+
+    assert outcome.state is TransferAttemptState.SUCCEEDED
+    assert outcome.store_plan_latency_seconds == pytest.approx(0.1)
+    assert outcome.store_preflight_latency_seconds == pytest.approx(0.2)
+    assert outcome.store_gather_latency_seconds == pytest.approx(0.3)
+    assert outcome.store_lmcache_latency_seconds == pytest.approx(0.4)
+    assert outcome.store_sidecar_publish_latency_seconds == pytest.approx(0.5)
+
+
 def test_selective_transfer_emits_partial_full_shaped_row_plan() -> None:
     metadata, blocks = _metadata()
     runtime, _storage, _data_plane, _calls, _mutations = _runtime()
@@ -654,6 +683,10 @@ def test_outcomes_cannot_be_forged_to_credit_external_or_saved_tokens() -> None:
     _assert_runtime_error(
         TransferRuntimeErrorCode.INVALID_OUTCOME,
         lambda: replace(stored, prefill_tokens_avoided=1),
+    )
+    _assert_runtime_error(
+        TransferRuntimeErrorCode.INVALID_OUTCOME,
+        lambda: replace(stored, store_lmcache_latency_seconds=float("nan")),
     )
 
 

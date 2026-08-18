@@ -873,6 +873,21 @@ class GptOssCacheBlendConnector(
                     is TransferAttemptState.FULL_PREFILL_FALLBACK
                 ),
                 latency_seconds=perf_counter() - started_at,
+                store_plan_latency_seconds=(
+                    post_forward.store_plan_latency_seconds
+                ),
+                store_preflight_latency_seconds=(
+                    post_forward.store_preflight_latency_seconds
+                ),
+                store_gather_latency_seconds=(
+                    post_forward.store_gather_latency_seconds
+                ),
+                store_lmcache_latency_seconds=(
+                    post_forward.store_lmcache_latency_seconds
+                ),
+                store_sidecar_publish_latency_seconds=(
+                    post_forward.store_sidecar_publish_latency_seconds
+                ),
             )
             self._active_worker_transfer = None
         finally:

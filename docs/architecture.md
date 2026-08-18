@@ -518,6 +518,11 @@ artifacts. Connector metric labels are limited to vLLM's bounded engine labels:
 | `vllm:cacheblend_lookup_latency_seconds` | Scheduler-side matching/storage lookup wall time |
 | `vllm:cacheblend_transfer_latency_seconds` | Load preflight, transport, staging, correction, and scatter wall time |
 | `vllm:cacheblend_store_latency_seconds` | Post-prefill gather, LMCache store, and atomic sidecar publication wall time |
+| `vllm:cacheblend_store_plan_latency_seconds` | Nested time to validate allocation and construct the complete-chunk store plan |
+| `vllm:cacheblend_store_preflight_latency_seconds` | Nested data-plane and storage preflight time before writeback mutates state |
+| `vllm:cacheblend_store_gather_latency_seconds` | Nested time to gather recomputed paged KV into the contiguous staging tensors |
+| `vllm:cacheblend_store_lmcache_latency_seconds` | Nested time inside the pinned LMCache `store_precomputed` storage boundary |
+| `vllm:cacheblend_store_sidecar_publish_latency_seconds` | Nested time to publish the verified sidecar-record batch atomically |
 | `vllm:cacheblend_position_correction_latency_seconds` | Measured YaRN position-correction duration for completed 100%-recompute loads; zero on misses/fallbacks |
 | `vllm:cacheblend_selective_recomputation_latency_seconds` | Selective model/backend duration; zero in the current 100% connector hook and required before M7 GPU claims |
 | vLLM TTFT/prefill metrics | Server-measured TTFT and total prefill latency; the non-streaming client cannot infer TTFT |
@@ -531,6 +536,11 @@ derived report retains the artifact/prompt-fixture digests, one uniform
 warm/cold cache state, and the complete pinned runtime/config identity so a
 copied report cannot lose the conditions under which its confidence intervals
 were measured.
+
+The five `store_*` sub-stage histograms are nested within
+`store_latency_seconds`; they are not additional request latency and must not be
+summed with the enclosing histogram. Their sum can be compared with the
+enclosing value to expose uninstrumented validation and Python overhead.
 
 The Responses contract harness parses the pinned vLLM histogram families
 `vllm:time_to_first_token_seconds`, `vllm:e2e_request_latency_seconds`,

@@ -904,6 +904,11 @@ class FakeTransferRuntime:
             stored_chunks=chunks,
             sidecar_records_available=chunks,
             sidecar_records_inserted=chunks,
+            store_plan_latency_seconds=0.01,
+            store_preflight_latency_seconds=0.02,
+            store_gather_latency_seconds=0.03,
+            store_lmcache_latency_seconds=0.04,
+            store_sidecar_publish_latency_seconds=0.05,
         )
 
 
@@ -1044,6 +1049,11 @@ def test_transfer_mode_wires_full_recompute_scheduler_and_worker_hooks(
         "store_latency_seconds": pytest.approx(
             reduced["store_latency_seconds"]
         ),
+        "store_plan_latency_seconds": pytest.approx(0.01),
+        "store_preflight_latency_seconds": pytest.approx(0.02),
+        "store_gather_latency_seconds": pytest.approx(0.03),
+        "store_lmcache_latency_seconds": pytest.approx(0.04),
+        "store_sidecar_publish_latency_seconds": pytest.approx(0.05),
         "document_hit_fraction": 0.0,
         "token_hit_fraction": 0.0,
         "effective_saved_prefill_fraction": 0.0,
@@ -1053,6 +1063,11 @@ def test_transfer_mode_wires_full_recompute_scheduler_and_worker_hooks(
     assert reduced["position_correction_latency_seconds"] >= 0
     assert reduced["selective_recomputation_latency_seconds"] >= 0
     assert reduced["store_latency_seconds"] >= 0
+    assert reduced["store_plan_latency_seconds"] == pytest.approx(0.01)
+    assert reduced["store_preflight_latency_seconds"] == pytest.approx(0.02)
+    assert reduced["store_gather_latency_seconds"] == pytest.approx(0.03)
+    assert reduced["store_lmcache_latency_seconds"] == pytest.approx(0.04)
+    assert reduced["store_sidecar_publish_latency_seconds"] == pytest.approx(0.05)
     assert worker.get_kv_connector_stats() is None
 
 
@@ -1504,6 +1519,11 @@ def test_connector_metrics_aggregate_hits_fallbacks_and_reject_bad_data(
         stored_tokens=0,
         fallback=True,
         latency_seconds=0.75,
+        store_plan_latency_seconds=0.01,
+        store_preflight_latency_seconds=0.02,
+        store_gather_latency_seconds=0.03,
+        store_lmcache_latency_seconds=0.6,
+        store_sidecar_publish_latency_seconds=0.04,
     )
 
     other = module.GptOssCacheBlendStats()
@@ -1525,6 +1545,11 @@ def test_connector_metrics_aggregate_hits_fallbacks_and_reject_bad_data(
     assert reduced["token_hit_fraction"] == pytest.approx(2 / 3, abs=1e-6)
     assert reduced["effective_saved_prefill_fraction"] == 0.0
     assert reduced["transfer_latency_seconds"] == 1.0
+    assert reduced["store_plan_latency_seconds"] == pytest.approx(0.01)
+    assert reduced["store_preflight_latency_seconds"] == pytest.approx(0.02)
+    assert reduced["store_gather_latency_seconds"] == pytest.approx(0.03)
+    assert reduced["store_lmcache_latency_seconds"] == pytest.approx(0.6)
+    assert reduced["store_sidecar_publish_latency_seconds"] == pytest.approx(0.04)
 
     with pytest.raises(ValueError, match="lookup observation"):
         module.CacheBlendLookupObservation(

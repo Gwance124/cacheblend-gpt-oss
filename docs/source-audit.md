@@ -291,13 +291,37 @@ turn, which completed 19,968 stored tokens without fallback. The aggregate
 store sum is therefore not treated as a per-turn equality, but its 1.148 ratio
 to cold excess passes the preregistered 0.8 dominance threshold decisively.
 
-`local-m85-g3-connector-no-store-equivalence.sh` is the next isolating gate. It
-uses the same A/B/A servers and byte-stable append-only transcript, while the
-connector arm adds only the explicit diagnostic `disable_kv_store` switch.
-That switch leaves lookup, transfer metadata, prefix caching, full prefill, and
-worker hooks enabled, but marks the post-forward path store-ineligible before
-KV gather, LMCache write, or sidecar publication. The verdict cannot pass
-unless eligible, completed, and fallback store counters are all exactly zero.
+`local-m85-g3-connector-no-store-equivalence.sh` then ran the same A/B/A servers
+and fixed append-only workload with only the explicit diagnostic
+`disable_kv_store` intervention in the connector arm. The resulting run
+`solab-g3-m8.5-connector-no-store-equivalence-20260818` observed exactly zero
+eligible, completed, and fallback store tokens. Lookup, transfer metadata,
+prefix caching, full prefill, and worker hooks remained enabled; connector work
+counters were identical to the store-on run: three requests, 20,139 reusable
+tokens requested, zero found/loaded/rejected KV, and 120,438 recomputed tokens.
+
+The no-store connector cold turn took 4.525 seconds versus its 4.080-second
+control mean (1.1090x), and its 28.005-second total was 1.0726x the
+26.110-second control mean. Removing writeback therefore recovered 12.184
+seconds of the prior 12.534-second cold excess, or 97.212%, while preserving
+the exact store-on cold request/output/usage signature. The read-only
+`local-m85-analyze-connector-store-isolation.sh` binds both verdicts and the
+original stage diagnostic by SHA-256 and emits this cross-run calculation as a
+separate artifact.
+
+The no-store output verdict is deliberately not called a correctness pass. Its
+two connector-free controls produced different turn-two outputs for the same
+request digest and the same 48 cached tokens, and their replayed turn-three
+requests consequently differed. The result is conclusive for latency
+isolation but `NOT_TESTABLE_BASELINE_OUTPUT_UNSTABLE` for output equivalence.
+
+The next measured gate keeps storage enabled and adds nested monotonic timers
+for store-plan construction, preflight, paged-KV gather, the LMCache write
+boundary, and atomic sidecar publication. The existing enclosing store timer is
+unchanged. `local-m85-g3-connector-presence-equivalence.sh` now writes
+`connector-store-stage-breakdown.json` even when the independent output verdict
+returns nonzero, so writeback attribution cannot be hidden by sampled output
+instability.
 
 ### Public out-of-tree extension points beyond the connector
 

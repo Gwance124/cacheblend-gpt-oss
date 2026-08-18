@@ -53,6 +53,11 @@ _LATENCY_KEYS = (
     "position_correction_latency_seconds",
     "selective_recomputation_latency_seconds",
     "store_latency_seconds",
+    "store_plan_latency_seconds",
+    "store_preflight_latency_seconds",
+    "store_gather_latency_seconds",
+    "store_lmcache_latency_seconds",
+    "store_sidecar_publish_latency_seconds",
 )
 _ALL_KEYS = (*_COUNTER_KEYS, *_LATENCY_KEYS)
 
@@ -259,6 +264,11 @@ class GptOssCacheBlendStats(KVConnectorStats):  # type: ignore[misc]
         stored_tokens: int,
         fallback: bool,
         latency_seconds: float,
+        store_plan_latency_seconds: float = 0.0,
+        store_preflight_latency_seconds: float = 0.0,
+        store_gather_latency_seconds: float = 0.0,
+        store_lmcache_latency_seconds: float = 0.0,
+        store_sidecar_publish_latency_seconds: float = 0.0,
     ) -> None:
         if any(
             isinstance(value, bool) or not isinstance(value, int) or value < 0
@@ -273,6 +283,16 @@ class GptOssCacheBlendStats(KVConnectorStats):  # type: ignore[misc]
         self._append("store_tokens_completed", stored_tokens)
         self._append("store_fallbacks", int(fallback))
         self._append("store_latency_seconds", latency_seconds)
+        self._append("store_plan_latency_seconds", store_plan_latency_seconds)
+        self._append(
+            "store_preflight_latency_seconds", store_preflight_latency_seconds
+        )
+        self._append("store_gather_latency_seconds", store_gather_latency_seconds)
+        self._append("store_lmcache_latency_seconds", store_lmcache_latency_seconds)
+        self._append(
+            "store_sidecar_publish_latency_seconds",
+            store_sidecar_publish_latency_seconds,
+        )
 
     def _append(self, key: str, value: int | float) -> None:
         if (
